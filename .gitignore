@@ -1,0 +1,14 @@
+# data
+/crates/readstat-tests/tests/data/*.csv
+/crates/readstat-tests/tests/data/*.feather
+/crates/readstat-tests/tests/data/*.ndjson
+/crates/readstat-tests/tests/data/*.parquet
+# starts with _ are larger files to exclude
+/crates/readstat-tests/tests/data/_*.sas7bdat
+# environment
+.idea/
+.vscode/
+# target
+/target/
+# cargo
+Cargo.lock

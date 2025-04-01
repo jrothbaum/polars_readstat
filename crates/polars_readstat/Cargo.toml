@@ -1,0 +1,20 @@
+[package]
+name = "polars_readstat"
+version = "0.1.0"
+authors = ["Jon Rothbaum <jlrothbaum@gmail.com>"]
+edition = "2021"
+description = "Rust program to read files from readstat->arrow and from arrow->write with readstat"
+license = "MIT"
+#   repository = "https://github.com/curtisalexander/readstat-rs"
+[lib]
+name = "polars_readstat"
+crate-type= ["cdylib"]
+
+[dependencies]
+#   pyo3 = { version = "0.23.0", features = ["extension-module", "abi3-py39"] }
+#   pyo3-polars = { version = "0.20.0", features = ["derive"] }
+#   serde = { version = "1", features = ["derive"] }
+#   polars = { version = "0.46.0", default-features = false }
+polars-arrow = { version = "0.46.0", default-features = false }
+readstat-sys = { path = "../readstat-sys" }
+iconv-sys = { path = "../iconv-sys" }

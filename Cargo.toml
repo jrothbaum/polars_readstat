@@ -1,0 +1,9 @@
+
+[workspace]
+members = [
+    "crates/polars_readstat",
+    "crates/readstat-sys",
+    "crates/iconv-sys",
+]
+resolver = "2"
+
