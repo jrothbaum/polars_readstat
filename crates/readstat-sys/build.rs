@@ -61,8 +61,18 @@ fn main() {
         .file(txt.join("readstat_schema.c"))
         .file(txt.join("readstat_stata_dictionary_read.c"))
         .file(txt.join("readstat_txt_read.c"))
-        .include(&src)
-        .warnings(false);
+        .include(&src);
+
+    // Common flags and definitions for all platforms
+    cc.warnings(false);
+    
+    // Platform-specific flags
+    if target.contains("windows-msvc") {
+        cc.define("_CRT_SECURE_NO_WARNINGS", None);
+    } else {
+        // Unix-like systems (Linux, macOS, etc.)
+        cc.flag("-fPIC");
+    }
 
     // Include iconv.h
     if let Some(include) = env::var_os("DEP_ICONV_INCLUDE") {
@@ -74,7 +84,7 @@ fn main() {
         cc.include(include);
     }
 
-    // Linking
+    // Linking instructions
     if target.contains("windows-msvc") {
         // Path to libclang
         if env::var_os("LIBCLANG_PATH").is_none() {
@@ -85,6 +95,15 @@ fn main() {
     } else if target.contains("apple-darwin") {
         println!("cargo:rustc-link-lib=iconv");
         println!("cargo:rustc-link-lib=z");
+    } else {
+        // Linux and other Unix-like systems
+        println!("cargo:rustc-link-lib=z");
+        
+        // On Linux, iconv might be part of glibc, so explicitly linking may not be necessary
+        // but we check for the presence of a separate iconv library just in case
+        if pkg_config::probe_library("libiconv").is_ok() {
+            println!("cargo:rustc-link-lib=iconv");
+        }
     }
 
     // Compile
@@ -92,9 +111,6 @@ fn main() {
 
     // Tell cargo to invalidate the built crate whenever the wrapper changes
     println!("cargo:rerun-if-changed=wrapper.h");
-
-    // Linking
-    println!("cargo:rustc-link-lib=static=readstat");
 
     // The bindgen::Builder is the main entry point
     // to bindgen, and lets you build up options for
@@ -126,6 +142,7 @@ fn main() {
         .allowlist_function("readstat_get_table_name")
         .allowlist_function("readstat_get_file_label")
         .allowlist_function("readstat_get_file_encoding")
+        
         // Variables
         .allowlist_function("readstat_variable_get_index")
         .allowlist_function("readstat_variable_get_index_after_skipping")
@@ -153,6 +170,7 @@ fn main() {
         .allowlist_function("readstat_parser_init")
         .allowlist_function("readstat_parse_sas7bdat")
         .allowlist_function("readstat_parse_sas7bcat")
+        .allowlist_function("readstat_parse_dta")
         .allowlist_function("readstat_parse_xport")
         .allowlist_function("readstat_parser_free")
         // Parsing - Format
@@ -160,6 +178,8 @@ fn main() {
         // Types
         // Error
         .allowlist_type("readstat_error_t")
+        .allowlist_type("readstat_error_e")
+        .allowlist_function("readstat_error_message")
         // Metadata
         .allowlist_type("readstat_metadata_t")
         .allowlist_type("readstat_compress_t")
