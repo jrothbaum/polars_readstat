@@ -16,13 +16,15 @@ crate-type= ["cdylib"]
 #   serde = { version = "1", features = ["derive"] }
 polars = { version = "0.46.0", default-features = false }
 polars-arrow = { version = "0.46.0", default-features = false }
+polars-core = "0.46.0"
 readstat-sys = { path = "../readstat-sys" }
+readstat = { path = "../readstat" }
 iconv-sys = { path = "../iconv-sys" }
-chrono = { version = "0.4", features = ["serde"] } # Serde feature optional unless needed elsewhere
+chrono = { version = "0.4", features = ["serde"] } 
 libc = "0.2"
 thiserror = "2.0.12"
 rayon = "1.10" 
 lazy_static = "1.4"
 regex = "1.10"
 log = "0.4"
-env_logger = "0.10"
+env_logger = "0.11.8"

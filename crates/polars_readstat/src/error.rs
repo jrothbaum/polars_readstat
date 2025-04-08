@@ -5,6 +5,9 @@ use readstat_sys::readstat_error_t;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
+use polars_arrow;
+
+
 #[derive(Error, Debug)]
 pub enum ReadstatError {
     #[error("Readstat C API error: {message} (Code: {code:?})")]
@@ -17,8 +20,11 @@ pub enum ReadstatError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    //  #[error("Arrow error: {0}")]
-    //  Arrow(#[from] polars_arrow::error::ArrowError),
+    #[error("Invalid Argument: {0}")]
+    InvalidArgument(String),
+
+    #[error("Arrow error: {0}")]
+    Arrow(#[from] polars::error::PolarsError),
 
     #[error("UTF-8 conversion error: {0}")]
     Utf8(#[from] std::str::Utf8Error),

@@ -1,7 +1,10 @@
 use log::{debug, info, warn, error};
 use env_logger::Builder;
-use std::io::Write;
+use polars_arrow::types::Index;
+use std::{env, io::Write};
+use readstat;
 
+/*
 mod error;
 mod ffi;
 mod types;
@@ -9,10 +12,13 @@ mod common;
 mod formats;
 mod read;
 
-
+ */
 
 
 fn main() {
+    unsafe {
+        //  env::set_var("POLARS_MAX_THREADS", "1");
+    }
     //  env_logger::init();
     Builder::from_default_env()
         .format(|buf, record| {
@@ -27,15 +33,15 @@ fn main() {
     
     let _ = read::read_file_parallel(&std::path::PathBuf::from("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample_pyreadstat.dta"),
                              read::ReadstatFileType::Dta,
-                             1
+                             None // Some(2)
                             );
 
-    /* 
+    /*
     let _ = read::read_file_parallel(&std::path::PathBuf::from("/home/jrothbaum/python/readstat-rs/crates/readstat-tests/tests/data/all_types.sas7bdat"),
                             read::ReadstatFileType::Sas7bdat,
-                            1
+                            None
                            );
-    */
+*/    
     debug!("FINISHED");
     
                             
@@ -43,7 +49,7 @@ fn main() {
 }
 
 
-
+/*
 // Function to test the parser
 fn test_parser() {
     use crate::formats::{ReadStatVarFormatClass,match_var_format};
@@ -98,3 +104,4 @@ fn test_parser() {
         }
     }
 }
+ */
