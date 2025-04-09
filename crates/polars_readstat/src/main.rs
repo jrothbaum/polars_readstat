@@ -1,8 +1,11 @@
 use log::{debug, info, warn, error};
 use env_logger::Builder;
 use polars_arrow::types::Index;
-use std::{env, io::Write};
-use readstat;
+use std::io::Read;
+use std::{env, io::Write, path::PathBuf};
+
+
+mod read;
 
 /*
 mod error;
@@ -10,14 +13,14 @@ mod ffi;
 mod types;
 mod common;
 mod formats;
-mod read;
+
 
  */
 
 
 fn main() {
     unsafe {
-        //  env::set_var("POLARS_MAX_THREADS", "1");
+        env::set_var("POLARS_MAX_THREADS", "1");
     }
     //  env_logger::init();
     Builder::from_default_env()
@@ -29,19 +32,50 @@ fn main() {
         })
         .init();
 
+    let path_metadata:PathBuf = std::path::PathBuf::from("/home/jrothbaum/python/readstat-rs/crates/readstat-tests/tests/data/all_types.sas7bdat");
+    let path_read = path_metadata.clone();
     
+    let md = read::read_metadata(
+        //  std::path::PathBuf::from("/home/jrothbaum/python/readstat-rs/crates/readstat-tests/tests/data/all_types.sas7bdat"),
+        path_metadata,
+        false
+    ).unwrap();
     
+
+    debug!("rows = {}", md.row_count);
+    let rsp = ReadStatPath::new(
+        path_read,
+        None,
+        None,
+        false,
+        true,
+        None,
+        None).unwrap();
+    let mut rsd = ReadStatData::new()
+            .init(md.clone(),0,2);
+    debug!("Read chunk 1");
+    let read_result = rsd.read_data(&rsp);
+
+    let arrays = rsd.chunk.unwrap().into_arrays();
+    
+    debug!("Read chunk 2");
+    let mut rsd = ReadStatData::new()
+            .init(md.clone(),1,2);
+    let read_result = rsd.read_data(&rsp);
+
+    let arrays = rsd.chunk.unwrap().into_arrays();
+    
+    /*
     let _ = read::read_file_parallel(&std::path::PathBuf::from("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample_pyreadstat.dta"),
                              read::ReadstatFileType::Dta,
                              None // Some(2)
                             );
 
-    /*
     let _ = read::read_file_parallel(&std::path::PathBuf::from("/home/jrothbaum/python/readstat-rs/crates/readstat-tests/tests/data/all_types.sas7bdat"),
                             read::ReadstatFileType::Sas7bdat,
                             None
                            );
-*/    
+    */    
     debug!("FINISHED");
     
                             
@@ -49,6 +83,36 @@ fn main() {
 }
 
 
+use path_abs::{PathAbs, PathInfo};
+use readstat::ReadStatMetadata;
+use readstat::ReadStatData;
+use readstat::ReadStatPath;
+use std::{error::Error, fmt, sync::Arc, thread};
+fn test_readstat(
+    in_path:PathBuf,
+    skip_row_count:bool,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    // Validate and create path to sas7bdat/sas7bcat
+    let sas_path = PathAbs::new(in_path)?.as_path().to_path_buf();
+    debug!(
+        "Retrieving metadata from the file {}",
+        &sas_path.to_string_lossy()
+    );
+
+    // out_path and format determine the type of writing performed
+    let rsp = ReadStatPath::new(sas_path, None, None, false, false, None, None)?;
+
+    // Instantiate ReadStatMetadata
+    let mut md = ReadStatMetadata::new();
+
+    // Read metadata
+    md.read_metadata(&rsp, skip_row_count)?;
+
+    
+
+    // Return
+    Ok(())
+}
 /*
 // Function to test the parser
 fn test_parser() {

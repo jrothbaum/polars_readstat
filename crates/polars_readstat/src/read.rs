@@ -1,4 +1,46 @@
 use log::{debug, info, warn, error};
+use std::{env, io::Write, path::PathBuf};
+use std::{error::Error, fmt, sync::Arc, thread};
+
+use path_abs::{PathAbs, PathInfo};
+
+use readstat::ReadStatPath;
+use readstat::ReadStatMetadata;
+
+
+pub fn read_metadata(
+    in_path:PathBuf,
+    skip_row_count:bool,
+) -> Result<ReadStatMetadata,Box<dyn Error + Send + Sync>> {
+    // Validate and create path to sas7bdat/sas7bcat
+    let stat_path = PathAbs::new(in_path)?.as_path().to_path_buf();
+    debug!(
+        "Retrieving metadata from the file {}",
+        &stat_path.to_string_lossy()
+    );
+
+    // out_path and format determine the type of writing performed
+    let rsp = ReadStatPath::new(stat_path, None, None, false, false, None, None)?;
+
+    // Instantiate ReadStatMetadata
+    let mut md = ReadStatMetadata::new();
+
+    // Read metadata
+    md.read_metadata(&rsp, skip_row_count)?;
+
+    
+
+    // Return
+    Ok(md)
+}
+
+
+
+
+
+/*
+//  Prior, failed implementation
+use log::{debug, info, warn, error};
 
 use crate::error::{check_readstat_error, check_readstat_error_code, ReadstatError};
 use crate::types;
@@ -761,4 +803,4 @@ pub fn read_file_parallel(
      */
     Ok(true)
      
-}
+} */

@@ -162,7 +162,7 @@ pub extern "C" fn handle_variable(
     let var_name = unsafe { ptr_to_string(readstat_sys::readstat_variable_get_name(variable)) };
     let var_label = unsafe { ptr_to_string(readstat_sys::readstat_variable_get_label(variable)) };
     let var_format = unsafe { ptr_to_string(readstat_sys::readstat_variable_get_format(variable)) };
-    let var_format_class = formats::match_var_format(&var_format);
+    let var_format_class = formats::match_var_format(&var_format,&m.extension);
 
     debug!("var_type is {:#?}", &var_type);
     debug!("var_type_class is {:#?}", &var_type_class);

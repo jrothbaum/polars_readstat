@@ -284,6 +284,58 @@ impl ReadStatData {
                             <PrimitiveArray<i32>>::from(vec).to(DataType::Time32(TimeUnit::Second)),
                         )
                     }
+                    ReadStatVar::ReadStat_TimeWithMilliseconds(_) => {
+                        let vec = col
+                            .iter()
+                            .map(|dt| {
+                                if let ReadStatVar::ReadStat_TimeWithMilliseconds(v) = dt {
+                                    *v
+                                } else {
+                                    unreachable!()
+                                }
+                            })
+                            .collect::<Vec<Option<i64>>>();
+
+                            Box::new(
+                                <PrimitiveArray<i64>>::from(vec)
+                                    .to(DataType::Timestamp(TimeUnit::Microsecond, None)),
+                            )
+                    }
+                    ReadStatVar::ReadStat_TimeWithMicroseconds(_) => {
+                        let vec = col
+                            .iter()
+                            .map(|dt| {
+                                if let ReadStatVar::ReadStat_TimeWithMicroseconds(v) = dt {
+                                    *v
+                                } else {
+                                    unreachable!()
+                                }
+                            })
+                            .collect::<Vec<Option<i64>>>();
+
+                        Box::new(
+                            <PrimitiveArray<i64>>::from(vec)
+                                .to(DataType::Timestamp(TimeUnit::Microsecond, None)),
+                        )
+                    }
+                    ReadStatVar::ReadStat_TimeWithNanoseconds(_) => {
+                        let vec = col
+                            .iter()
+                            .map(|dt| {
+                                if let ReadStatVar::ReadStat_TimeWithNanoseconds(v) = dt {
+                                    *v
+                                } else {
+                                    unreachable!()
+                                }
+                            })
+                            .collect::<Vec<Option<i64>>>();
+
+                        Box::new(
+                            <PrimitiveArray<i64>>::from(vec)
+                                .to(DataType::Timestamp(TimeUnit::Nanosecond, None)),
+                        )
+                    }
+                    
                 };
 
                 // return

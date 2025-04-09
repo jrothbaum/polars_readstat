@@ -790,7 +790,10 @@ impl ReadStatWriter {
                         ReadStatVarFormatClass::DateTimeWithMilliseconds | 
                         ReadStatVarFormatClass::DateTimeWithMicroseconds |
                         ReadStatVarFormatClass::DateTimeWithNanoseconds => "DateTime",
-                        ReadStatVarFormatClass::Time => "Time",
+                        ReadStatVarFormatClass::Time  |
+                        ReadStatVarFormatClass::TimeWithMilliseconds | 
+                        ReadStatVarFormatClass::TimeWithMicroseconds |
+                        ReadStatVarFormatClass::TimeWithNanoseconds => "Time",
                     },
                     None => "",
                 })

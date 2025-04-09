@@ -24,10 +24,9 @@ pub enum ReadStatVar {
     ReadStat_DateTimeWithMicroseconds(Option<i64>),
     ReadStat_DateTimeWithNanoseconds(Option<i64>),
     ReadStat_Time(Option<i32>),
-    // TODO
-    // ReadStat_TimeWithMilliseconds(Option<i32>),
-    // ReadStat_TimeWithMicroseconds(Option<i32>),
-    // ReadStat_TimeWithNanoseconds(Option<i32>),
+    ReadStat_TimeWithMilliseconds(Option<i64>),
+    ReadStat_TimeWithMicroseconds(Option<i64>),
+    ReadStat_TimeWithNanoseconds(Option<i64>),
 }
 
 impl ReadStatVar {
@@ -118,7 +117,11 @@ impl ReadStatVar {
                 }
             }
             readstat_sys::readstat_type_e_READSTAT_TYPE_DOUBLE => {
-                let var_format_class = vars.get(&var_index).unwrap().var_format_class;
+                let var_format_class = match vars.get(&var_index) {
+                    Some(var_info) => var_info.var_format_class,
+                    None => None
+                };
+                //  let var_format_class = vars.get(&var_index).unwrap().var_format_class;
 
                 if is_missing == 1 {
                     match var_format_class {
@@ -136,6 +139,9 @@ impl ReadStatVar {
                                 Self::ReadStat_DateTimeWithNanoseconds(None)
                             }
                             ReadStatVarFormatClass::Time => Self::ReadStat_Time(None),
+                            ReadStatVarFormatClass::TimeWithMilliseconds => Self::ReadStat_TimeWithMilliseconds(None),
+                            ReadStatVarFormatClass::TimeWithMicroseconds => Self::ReadStat_TimeWithMicroseconds(None),
+                            ReadStatVarFormatClass::TimeWithNanoseconds => Self::ReadStat_TimeWithNanoseconds(None),
                         },
                     }
                 } else {
@@ -176,6 +182,21 @@ impl ReadStatVar {
                                 ))
                             }
                             ReadStatVarFormatClass::Time => Self::ReadStat_Time(Some(value as i32)),
+                            ReadStatVarFormatClass::TimeWithMilliseconds => {
+                                Self::ReadStat_DateTime(Some(
+                                    (value as i64).checked_sub(SEC_SHIFT).unwrap() * 1000,
+                                ))
+                            }
+                            ReadStatVarFormatClass::TimeWithMicroseconds => {
+                                Self::ReadStat_DateTime(Some(
+                                    (value as i64).checked_sub(SEC_SHIFT).unwrap() * 1000000,
+                                ))
+                            }
+                            ReadStatVarFormatClass::TimeWithNanoseconds => {
+                                Self::ReadStat_DateTime(Some(
+                                    (value as i64).checked_sub(SEC_SHIFT).unwrap() * 1000000000,
+                                ))
+                            }
                         },
                     }
                 }
@@ -194,6 +215,9 @@ pub enum ReadStatVarFormatClass {
     DateTimeWithMicroseconds,
     DateTimeWithNanoseconds,
     Time,
+    TimeWithMilliseconds,
+    TimeWithMicroseconds,
+    TimeWithNanoseconds
 }
 
 #[derive(Clone, Copy, Debug, FromPrimitive, Serialize)]

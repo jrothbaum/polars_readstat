@@ -30,8 +30,6 @@ pub fn match_var_format(format_str: &str,file_type: &ReadstatFileType) -> Option
 
 fn match_var_format_stata(format_str: &str) -> Option<ReadStatVarFormatClass> {
     // Compile regex patterns for different Stata format types
-    
-    // Compile regex patterns for different Stata format types
     // Date formats: %td, %d followed by optional display format
     let date_regex = Regex::new(r"(?i)^%t?d(?:[a-z0-9:._-]*)$").unwrap();
     

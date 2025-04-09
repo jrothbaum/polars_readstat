@@ -145,6 +145,21 @@ impl ReadStatParser {
         }
     }
 
+    pub fn parse_dta(
+        &mut self,
+        path: *const c_char,
+        user_ctx: *mut c_void,
+    ) -> readstat_sys::readstat_error_t {
+        let parse_dta_error: readstat_sys::readstat_error_t =
+            unsafe { readstat_sys::readstat_parse_dta(self.parser, path, user_ctx) };
+
+        debug!(
+            "After calling parse dta, error ==> {}",
+            &parse_dta_error
+        );
+
+        parse_dta_error
+    }
     pub fn parse_sas7bdat(
         &mut self,
         path: *const c_char,

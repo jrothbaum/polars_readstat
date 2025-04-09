@@ -28,6 +28,7 @@ pub struct ReadStatMetadata {
     pub vars: BTreeMap<i32, ReadStatVarMetadata>,
     #[serde(skip_serializing)]
     pub schema: Schema,
+    pub extension: String,
 }
 
 impl ReadStatMetadata {
@@ -46,6 +47,7 @@ impl ReadStatMetadata {
             endianness: ReadStatEndian::None,
             vars: BTreeMap::new(),
             schema: Schema::default(),
+            extension: String::new(),
         }
     }
 
@@ -80,6 +82,18 @@ impl ReadStatMetadata {
                             DataType::Timestamp(TimeUnit::Nanosecond, None)
                         }
                         Some(ReadStatVarFormatClass::Time) => DataType::Time32(TimeUnit::Second),
+                        Some(ReadStatVarFormatClass::TimeWithMilliseconds) => {
+                            // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
+                            DataType::Timestamp(TimeUnit::Millisecond, None)
+                        }
+                        Some(ReadStatVarFormatClass::TimeWithMicroseconds) => {
+                            // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
+                            DataType::Timestamp(TimeUnit::Microsecond, None)
+                        }
+                        Some(ReadStatVarFormatClass::TimeWithNanoseconds) => {
+                            // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
+                            DataType::Timestamp(TimeUnit::Nanosecond, None)
+                        }
                         None => DataType::Float64,
                     },
                 };
@@ -129,11 +143,31 @@ impl ReadStatMetadata {
 
         let row_limit = if skip_row_count { Some(1) } else { None };
 
-        let error = ReadStatParser::new()
-            .set_metadata_handler(Some(handle_metadata))?
-            .set_variable_handler(Some(handle_variable))?
-            .set_row_limit(row_limit)?
-            .parse_sas7bdat(ppath, ctx);
+        debug!("extension = {}",rsp.extension);
+        self.extension = rsp.extension.clone();
+        let error = match rsp.extension.as_str() {
+            "sas7bdat" => {
+                ReadStatParser::new()
+                    .set_metadata_handler(Some(handle_metadata))?
+                    .set_variable_handler(Some(handle_variable))?
+                    .set_row_limit(row_limit)?
+                    .parse_sas7bdat(ppath, ctx)
+            },
+            "dta" => {
+                ReadStatParser::new()
+                    .set_metadata_handler(Some(handle_metadata))?
+                    .set_variable_handler(Some(handle_variable))?
+                    .set_row_limit(row_limit)?
+                    .parse_dta(ppath, ctx)
+            },
+            _ => {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Unsupported file extension: {}", rsp.extension)
+                )))
+            }
+        };
+        
 
         /*
         if let Some(pb) = &self.pb {

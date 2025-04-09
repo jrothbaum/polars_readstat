@@ -9,7 +9,7 @@ use std::{
 use crate::OutFormat;
 use crate::ParquetCompression;
 
-const IN_EXTENSIONS: &[&str] = &["sas7bdat", "sas7bcat"];
+const IN_EXTENSIONS: &[&str] = &["sas7bdat", "sas7bcat","dta"];
 
 #[derive(Debug, Clone)]
 pub struct ReadStatPath {
