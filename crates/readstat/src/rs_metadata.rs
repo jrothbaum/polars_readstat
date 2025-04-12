@@ -1,10 +1,18 @@
+
+use polars::prelude::PlSmallStr;
+use polars_arrow::datatypes::{ArrowDataType as DataType,ArrowSchema as Schema, TimeUnit,Field};
+/*
 use arrow2::datatypes::{DataType, Field, Schema, TimeUnit};
+ */
+
+
 use colored::Colorize;
 use log::debug;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use serde::Serialize;
 use std::{collections::BTreeMap, error::Error, ffi::c_void, os::raw::c_int};
+
 
 use crate::cb::{handle_metadata, handle_variable};
 use crate::err::ReadStatError;
@@ -52,11 +60,13 @@ impl ReadStatMetadata {
     }
 
     fn initialize_schema(&self) -> Schema {
-        // build up Schema
-        let fields: Vec<Field> = self
-            .vars
-            .values()
-            .map(|vm| {
+
+        let field_count = self.vars.len();
+    
+        // Create a schema with pre-allocated capacity
+        let mut schema = Schema::with_capacity(field_count);
+        
+        for vm in self.vars.values() {
                 let var_dt = match &vm.var_type {
                     ReadStatVarType::String
                     | ReadStatVarType::StringRef
@@ -97,12 +107,14 @@ impl ReadStatMetadata {
                         None => DataType::Float64,
                     },
                 };
-                Field::new(&vm.var_name, var_dt, true)
-            })
-            .collect();
 
-        Schema::from(fields)
-        // Schema::new(fields)
+                let field = Field::new(PlSmallStr::from_str(&vm.var_name), var_dt, true);
+                schema.insert(PlSmallStr::from_str(&vm.var_name), field);
+                
+            }
+        dbg!(&schema);
+        schema
+
     }
 
     pub fn read_metadata(
@@ -167,7 +179,6 @@ impl ReadStatMetadata {
                 )))
             }
         };
-        
 
         /*
         if let Some(pb) = &self.pb {

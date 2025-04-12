@@ -32,38 +32,38 @@ fn main() {
         })
         .init();
 
-    let path_metadata:PathBuf = std::path::PathBuf::from("/home/jrothbaum/python/readstat-rs/crates/readstat-tests/tests/data/all_types.sas7bdat");
-    let path_read = path_metadata.clone();
+    //  let path_metadata:PathBuf = std::path::PathBuf::from("/home/jrothbaum/python/readstat-rs/crates/readstat-tests/tests/data/all_types.sas7bdat");
+    let path = std::path::PathBuf::from("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.dta");
+
+    let path_metadata = path.clone();
+    let path_read = path.clone();
     
     let md = read::read_metadata(
-        //  std::path::PathBuf::from("/home/jrothbaum/python/readstat-rs/crates/readstat-tests/tests/data/all_types.sas7bdat"),
         path_metadata,
         false
     ).unwrap();
     
 
     debug!("rows = {}", md.row_count);
+
     let rsp = ReadStatPath::new(
-        path_read,
-        None,
-        None,
-        false,
-        true,
-        None,
-        None).unwrap();
+        path_read).unwrap();
     let mut rsd = ReadStatData::new()
-            .init(md.clone(),0,2);
+            .init(md.clone(),0,5);
     debug!("Read chunk 1");
-    let read_result = rsd.read_data(&rsp);
+    let _ = rsd.read_data(&rsp);
 
-    let arrays = rsd.chunk.unwrap().into_arrays();
-    
+    let df1 = rsd.df.unwrap();
+    dbg!(&df1);
+    /*
     debug!("Read chunk 2");
-    let mut rsd = ReadStatData::new()
-            .init(md.clone(),1,2);
-    let read_result = rsd.read_data(&rsp);
+    // let mut rsd = ReadStatData::new()
+    //         .init(md.clone(),2,3);
+    // let read_result = rsd.read_data(&rsp);
 
-    let arrays = rsd.chunk.unwrap().into_arrays();
+    // let df2 = rsd.df.unwrap();
+    dbg!(&df1);
+    // dbg!(&df2);
     
     /*
     let _ = read::read_file_parallel(&std::path::PathBuf::from("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample_pyreadstat.dta"),
@@ -80,6 +80,7 @@ fn main() {
     
                             
     //  let _ = test_parser();
+     */
 }
 
 
@@ -100,7 +101,7 @@ fn test_readstat(
     );
 
     // out_path and format determine the type of writing performed
-    let rsp = ReadStatPath::new(sas_path, None, None, false, false, None, None)?;
+    let rsp = ReadStatPath::new(sas_path)?;
 
     // Instantiate ReadStatMetadata
     let mut md = ReadStatMetadata::new();

@@ -175,6 +175,13 @@ fn main() {
         .allowlist_function("readstat_parser_free")
         // Parsing - Format
         .allowlist_function("xport_parse_format")
+        .allowlist_function("dta_type_info")
+        .allowlist_function("dta_ctx_alloc")
+        .allowlist_function("dta_ctx_init")
+        .allowlist_function("dta_ctx_free")
+        
+        
+        
         // Types
         // Error
         .allowlist_type("readstat_error_t")

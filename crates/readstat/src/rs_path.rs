@@ -6,8 +6,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::OutFormat;
-use crate::ParquetCompression;
+//  use crate::OutFormat;
+//  use crate::ParquetCompression;
 
 const IN_EXTENSIONS: &[&str] = &["sas7bdat", "sas7bcat","dta"];
 
@@ -16,27 +16,28 @@ pub struct ReadStatPath {
     pub path: PathBuf,
     pub extension: String,
     pub cstring_path: CString,
-    pub out_path: Option<PathBuf>,
-    pub format: OutFormat,
-    pub overwrite: bool,
-    pub no_write: bool,
-    pub compression: Option<ParquetCompression>,
-    pub compression_level: Option<u32>,
+    //  pub out_path: Option<PathBuf>,
+    //  pub format: OutFormat,
+    //  pub overwrite: bool,
+    //  pub no_write: bool,
+    //  pub compression: Option<ParquetCompression>,
+    //  pub compression_level: Option<u32>,
 }
 
 impl ReadStatPath {
     pub fn new(
         path: PathBuf,
-        out_path: Option<PathBuf>,
-        format: Option<OutFormat>,
-        overwrite: bool,
-        no_write: bool,
-        compression: Option<ParquetCompression>,
-        compression_level: Option<u32>,
+        //  out_path: Option<PathBuf>,
+        //  format: Option<OutFormat>,
+        //  overwrite: bool,
+        //  no_write: bool,
+        //  compression: Option<ParquetCompression>,
+        //  compression_level: Option<u32>,
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let p = Self::validate_path(path)?;
         let ext = Self::validate_in_extension(&p)?;
         let csp = Self::path_to_cstring(&p)?;
+        /*
         let f = Self::validate_format(format)?;
         let op: Option<PathBuf> = Self::validate_out_path(out_path, overwrite)?;
         let op = match op {
@@ -57,17 +58,20 @@ impl ReadStatPath {
             },
             Some(pc) => Self::validate_compression_level(pc, compression_level)?,
         };
+         */
 
         Ok(Self {
             path: p,
             extension: ext,
             cstring_path: csp,
+            /*
             out_path: op,
             format: f,
             overwrite,
             no_write,
             compression,
             compression_level: cl,
+            */
         })
     }
 
@@ -83,7 +87,7 @@ impl ReadStatPath {
         let rust_str = path.as_os_str().to_str().ok_or("Invalid path")?;
         CString::new(rust_str).map_err(|_| From::from("Invalid path"))
     }
-
+    /* 
     fn validate_format(
         format: Option<OutFormat>,
     ) -> Result<OutFormat, Box<dyn Error + Send + Sync>> {
@@ -92,7 +96,7 @@ impl ReadStatPath {
             Some(f) => Ok(f),
         }
     }
-
+    */
     fn validate_in_extension(path: &Path) -> Result<String, Box<dyn Error + Send + Sync>> {
         path.extension()
             .and_then(|e| e.to_str())
@@ -110,7 +114,7 @@ impl ReadStatPath {
                     }
             )
     }
-
+    /*
     fn validate_out_extension(
         path: &Path,
         format: OutFormat,
@@ -176,7 +180,7 @@ impl ReadStatPath {
             }
         }
     }
-
+    */
     fn validate_path(path: PathBuf) -> Result<PathBuf, Box<dyn Error + Send + Sync>> {
         let abs_path = PathAbs::new(path)?;
 
@@ -189,7 +193,7 @@ impl ReadStatPath {
             )))
         }
     }
-
+    /*
     fn validate_compression_level(
         compression: ParquetCompression,
         compression_level: Option<u32>,
@@ -248,4 +252,5 @@ impl ReadStatPath {
             },
         }
     }
+     */
 }

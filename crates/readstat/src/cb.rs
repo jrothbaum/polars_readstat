@@ -167,7 +167,7 @@ pub extern "C" fn handle_variable(
     debug!("var_type is {:#?}", &var_type);
     debug!("var_type_class is {:#?}", &var_type_class);
     debug!("var_name is {}", &var_name);
-    debug!("var_label is {}", &var_label);
+    debug!("var_label is {}",    &var_label);
     debug!("var_format is {}", &var_format);
     debug!("var_format_class is {:#?}", &var_format_class);
 
@@ -184,6 +184,16 @@ pub extern "C" fn handle_variable(
         ),
     );
 
+    ReadStatHandler::READSTAT_HANDLER_OK as c_int
+}
+
+
+pub extern "C" fn handle_variable_noop(
+    _index: c_int,
+    _variable: *mut readstat_sys::readstat_variable_t,
+    _val_labels: *const c_char,
+    _ctx: *mut c_void,
+) -> c_int {
     ReadStatHandler::READSTAT_HANDLER_OK as c_int
 }
 

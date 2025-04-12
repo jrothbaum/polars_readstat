@@ -1,3 +1,4 @@
+/*
 use arrow2::{
     array::Array,
     chunk::Chunk,
@@ -807,3 +808,4 @@ impl ReadStatWriter {
         Ok(())
     }
 }
+    */

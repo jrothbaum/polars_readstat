@@ -13,7 +13,7 @@ pub use rs_data::ReadStatData;
 pub use rs_metadata::{ReadStatCompress, ReadStatEndian, ReadStatMetadata, ReadStatVarMetadata};
 pub use rs_path::ReadStatPath;
 pub use rs_var::{ReadStatVar, ReadStatVarFormatClass, ReadStatVarType, ReadStatVarTypeClass};
-pub use rs_write::ReadStatWriter;
+//  pub use rs_write::ReadStatWriter;
 
 mod cb;
 mod common;
@@ -24,12 +24,13 @@ mod rs_metadata;
 mod rs_parser;
 mod rs_path;
 mod rs_var;
-mod rs_write;
+//  mod rs_write;
 
 // GLOBALS
 // Default rows to stream
 const STREAM_ROWS: u32 = 10000;
 
+/*
 // CLI
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -477,3 +478,4 @@ pub fn run(rs: ReadStatCli) -> Result<(), Box<dyn Error + Send + Sync>> {
         }
     }
 }
+ */

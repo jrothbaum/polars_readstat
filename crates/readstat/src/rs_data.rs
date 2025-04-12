@@ -1,14 +1,14 @@
-//  use polars::datatypes::TimeUnit;
-//  use polars::prelude::Schema;
-//  use polars_arrow::array::{PrimitiveArray,Array,BinaryViewArray};
 
-
-
+use polars_arrow::array::{Array,PrimitiveArray,Utf8Array,MutableUtf8Array};
+use polars_arrow::datatypes::{ArrowDataType as DataType,ArrowSchema as Schema, TimeUnit};
+use polars::prelude::{Series,DataFrame};
+/*
 use arrow2::{
     array::{Array, PrimitiveArray, Utf8Array},
     chunk::Chunk,
     datatypes::{DataType, Schema, TimeUnit},
 };
+ */
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::debug;
@@ -39,7 +39,7 @@ pub struct ReadStatData {
     pub cols: Vec<Vec<ReadStatVar>>,
     pub schema: Schema,
     // chunk
-    pub chunk: Option<Chunk<Box<dyn Array>>>,
+    pub df: Option<DataFrame>,
     pub chunk_rows_to_process: usize, // min(stream_rows, row_limit, row_count)
     pub chunk_row_start: usize,
     pub chunk_row_end: usize,
@@ -63,8 +63,8 @@ impl ReadStatData {
             // data
             cols: Vec::new(),
             schema: Schema::default(),
-            // chunk
-            chunk: None,
+            // df/chunk
+            df: None,
             chunk_rows_to_process: 0,
             chunk_rows_processed: 0,
             chunk_row_start: 0,
@@ -88,7 +88,7 @@ impl ReadStatData {
         Self { cols, ..self }
     }
 
-    fn cols_to_chunk(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    fn cols_to_df(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
         // for each column in cols
         let arrays: Vec<Box<dyn Array>> = self
             .cols
@@ -98,23 +98,23 @@ impl ReadStatData {
                 // grab the first element to determine the column type
                 let col_type = &col[0];
 
-                // convert from a Vec<ReadStatVar> into a Box<dyn Array>
                 let array: Box<dyn Array> = match col_type {
                     ReadStatVar::ReadStat_String(_) => {
-                        // get the inner value
-                        let vec = col
-                            .iter()
-                            .map(|s| {
-                                if let ReadStatVar::ReadStat_String(v) = s {
-                                    v.clone()
-                                } else {
-                                    // should NEVER fall into this branch
-                                    unreachable!()
-                                }
-                            })
-                            .collect::<Vec<Option<String>>>();
+                        // Use the standard Utf8 builder, specifying the offset type
+                        let mut mutable_array: MutableUtf8Array<i64> = MutableUtf8Array::<i64>::with_capacity(col.len());
 
-                        Box::new(<Utf8Array<i32>>::from(vec))
+                        for s in col.iter() {
+                            match s {
+                                ReadStatVar::ReadStat_String(v_opt) => {
+                                    mutable_array.push(v_opt.as_deref());
+                                }
+                                _ => unreachable!("Type mismatch"),
+                            }
+                        }
+
+                        let arrow_array: Utf8Array<i64> = mutable_array.into();
+        
+                        Box::new(arrow_array) as Box<dyn Array>
                     }
                     ReadStatVar::ReadStat_i8(_) => {
                         let vec = col
@@ -128,7 +128,8 @@ impl ReadStatData {
                             })
                             .collect::<Vec<Option<i8>>>();
 
-                        Box::new(<PrimitiveArray<i8>>::from(vec))
+                        let primitive_array: PrimitiveArray<i8> = PrimitiveArray::<i8>::from(vec);
+                        Box::new(primitive_array) as Box<dyn Array>
                     }
                     ReadStatVar::ReadStat_i16(_) => {
                         let vec = col
@@ -142,7 +143,8 @@ impl ReadStatData {
                             })
                             .collect::<Vec<Option<i16>>>();
 
-                        Box::new(<PrimitiveArray<i16>>::from(vec))
+                        let primitive_array: PrimitiveArray<i16> = PrimitiveArray::<i16>::from(vec);
+                        Box::new(primitive_array) as Box<dyn Array>
                     }
                     ReadStatVar::ReadStat_i32(_) => {
                         let vec = col
@@ -156,7 +158,8 @@ impl ReadStatData {
                             })
                             .collect::<Vec<Option<i32>>>();
 
-                        Box::new(<PrimitiveArray<i32>>::from(vec))
+                        let primitive_array: PrimitiveArray<i32> = PrimitiveArray::<i32>::from(vec);
+                        Box::new(primitive_array) as Box<dyn Array>
                     }
                     ReadStatVar::ReadStat_f32(_) => {
                         let vec = col
@@ -170,7 +173,8 @@ impl ReadStatData {
                             })
                             .collect::<Vec<Option<f32>>>();
 
-                        Box::new(<PrimitiveArray<f32>>::from(vec))
+                        let primitive_array: PrimitiveArray<f32> = PrimitiveArray::<f32>::from(vec);
+                        Box::new(primitive_array) as Box<dyn Array>
                     }
                     ReadStatVar::ReadStat_f64(_) => {
                         let vec = col
@@ -184,7 +188,8 @@ impl ReadStatData {
                             })
                             .collect::<Vec<Option<f64>>>();
 
-                        Box::new(<PrimitiveArray<f64>>::from(vec))
+                        let primitive_array: PrimitiveArray<f64> = PrimitiveArray::<f64>::from(vec);
+                        Box::new(primitive_array) as Box<dyn Array>
                     }
                     ReadStatVar::ReadStat_Date(_) => {
                         let vec = col
@@ -193,12 +198,13 @@ impl ReadStatData {
                                 if let ReadStatVar::ReadStat_Date(v) = d {
                                     *v
                                 } else {
-                                    unreachable!()
+                                    None
                                 }
                             })
                             .collect::<Vec<Option<i32>>>();
 
-                        Box::new(<PrimitiveArray<i32>>::from(vec).to(DataType::Date32))
+                        let primitive_array: PrimitiveArray<i32> = PrimitiveArray::<i32>::from(vec).to(DataType::Date32);
+                        Box::new(primitive_array) as Box<dyn Array>
                     }
                     ReadStatVar::ReadStat_DateTime(_) => {
                         let vec = col
@@ -207,15 +213,13 @@ impl ReadStatData {
                                 if let ReadStatVar::ReadStat_DateTime(v) = dt {
                                     *v
                                 } else {
-                                    unreachable!()
+                                    None
                                 }
                             })
                             .collect::<Vec<Option<i64>>>();
 
-                        Box::new(
-                            <PrimitiveArray<i64>>::from(vec)
-                                .to(DataType::Timestamp(TimeUnit::Second, None)),
-                        )
+                        let primitive_array: PrimitiveArray<i64> = PrimitiveArray::<i64>::from(vec).to(DataType::Timestamp(TimeUnit::Second, None));
+                        Box::new(primitive_array) as Box<dyn Array>
                     }
                     ReadStatVar::ReadStat_DateTimeWithMilliseconds(_) => {
                         let vec = col
@@ -224,15 +228,13 @@ impl ReadStatData {
                                 if let ReadStatVar::ReadStat_DateTimeWithMilliseconds(v) = dt {
                                     *v
                                 } else {
-                                    unreachable!()
+                                    None
                                 }
                             })
                             .collect::<Vec<Option<i64>>>();
 
-                        Box::new(
-                            <PrimitiveArray<i64>>::from(vec)
-                                .to(DataType::Timestamp(TimeUnit::Millisecond, None)),
-                        )
+                        let primitive_array: PrimitiveArray<i64> = PrimitiveArray::<i64>::from(vec).to(DataType::Timestamp(TimeUnit::Millisecond, None));
+                        Box::new(primitive_array) as Box<dyn Array>
                     }
                     ReadStatVar::ReadStat_DateTimeWithMicroseconds(_) => {
                         let vec = col
@@ -241,15 +243,13 @@ impl ReadStatData {
                                 if let ReadStatVar::ReadStat_DateTimeWithMicroseconds(v) = dt {
                                     *v
                                 } else {
-                                    unreachable!()
+                                    None
                                 }
                             })
                             .collect::<Vec<Option<i64>>>();
 
-                        Box::new(
-                            <PrimitiveArray<i64>>::from(vec)
-                                .to(DataType::Timestamp(TimeUnit::Microsecond, None)),
-                        )
+                        let primitive_array: PrimitiveArray<i64> = PrimitiveArray::<i64>::from(vec).to(DataType::Timestamp(TimeUnit::Microsecond, None));
+                        Box::new(primitive_array) as Box<dyn Array>
                     }
                     ReadStatVar::ReadStat_DateTimeWithNanoseconds(_) => {
                         let vec = col
@@ -258,15 +258,13 @@ impl ReadStatData {
                                 if let ReadStatVar::ReadStat_DateTimeWithNanoseconds(v) = dt {
                                     *v
                                 } else {
-                                    unreachable!()
+                                    None
                                 }
                             })
                             .collect::<Vec<Option<i64>>>();
 
-                        Box::new(
-                            <PrimitiveArray<i64>>::from(vec)
-                                .to(DataType::Timestamp(TimeUnit::Nanosecond, None)),
-                        )
+                        let primitive_array: PrimitiveArray<i64> = PrimitiveArray::<i64>::from(vec).to(DataType::Timestamp(TimeUnit::Nanosecond, None));
+                        Box::new(primitive_array) as Box<dyn Array>
                     }
                     ReadStatVar::ReadStat_Time(_) => {
                         let vec = col
@@ -275,14 +273,13 @@ impl ReadStatData {
                                 if let ReadStatVar::ReadStat_Time(v) = t {
                                     *v
                                 } else {
-                                    unreachable!()
+                                    None
                                 }
                             })
                             .collect::<Vec<Option<i32>>>();
 
-                        Box::new(
-                            <PrimitiveArray<i32>>::from(vec).to(DataType::Time32(TimeUnit::Second)),
-                        )
+                        let primitive_array: PrimitiveArray<i32> = PrimitiveArray::<i32>::from(vec).to(DataType::Time32(TimeUnit::Second));
+                        Box::new(primitive_array) as Box<dyn Array>
                     }
                     ReadStatVar::ReadStat_TimeWithMilliseconds(_) => {
                         let vec = col
@@ -291,15 +288,13 @@ impl ReadStatData {
                                 if let ReadStatVar::ReadStat_TimeWithMilliseconds(v) = dt {
                                     *v
                                 } else {
-                                    unreachable!()
+                                    None
                                 }
                             })
                             .collect::<Vec<Option<i64>>>();
 
-                            Box::new(
-                                <PrimitiveArray<i64>>::from(vec)
-                                    .to(DataType::Timestamp(TimeUnit::Microsecond, None)),
-                            )
+                        let primitive_array: PrimitiveArray<i64> = PrimitiveArray::<i64>::from(vec).to(DataType::Time32(TimeUnit::Millisecond));
+                        Box::new(primitive_array) as Box<dyn Array>
                     }
                     ReadStatVar::ReadStat_TimeWithMicroseconds(_) => {
                         let vec = col
@@ -308,15 +303,13 @@ impl ReadStatData {
                                 if let ReadStatVar::ReadStat_TimeWithMicroseconds(v) = dt {
                                     *v
                                 } else {
-                                    unreachable!()
+                                    None
                                 }
                             })
                             .collect::<Vec<Option<i64>>>();
 
-                        Box::new(
-                            <PrimitiveArray<i64>>::from(vec)
-                                .to(DataType::Timestamp(TimeUnit::Microsecond, None)),
-                        )
+                        let primitive_array: PrimitiveArray<i64> = PrimitiveArray::<i64>::from(vec).to(DataType::Time32(TimeUnit::Microsecond));
+                        Box::new(primitive_array) as Box<dyn Array>
                     }
                     ReadStatVar::ReadStat_TimeWithNanoseconds(_) => {
                         let vec = col
@@ -325,15 +318,13 @@ impl ReadStatData {
                                 if let ReadStatVar::ReadStat_TimeWithNanoseconds(v) = dt {
                                     *v
                                 } else {
-                                    unreachable!()
+                                    None
                                 }
                             })
                             .collect::<Vec<Option<i64>>>();
 
-                        Box::new(
-                            <PrimitiveArray<i64>>::from(vec)
-                                .to(DataType::Timestamp(TimeUnit::Nanosecond, None)),
-                        )
+                        let primitive_array: PrimitiveArray<i64> = PrimitiveArray::<i64>::from(vec).to(DataType::Time32(TimeUnit::Nanosecond));
+                        Box::new(primitive_array) as Box<dyn Array>
                     }
                     
                 };
@@ -343,16 +334,33 @@ impl ReadStatData {
             })
             .collect();
 
-        // convert into a chunk
-        self.chunk = Some(Chunk::try_new(arrays)?);
-
+        let schema = &self.schema; // Your existing schema
+        
+        // Get the field names from the schema
+        let field_names: Vec<String> = schema.iter()
+            .map(|(name, _)| name.to_string())
+            .collect();
+        
+        // Create a Series for each array
+        let series_vec: Vec<Series> = arrays.iter()
+            .zip(field_names.iter())
+            .map(|(array, name)| {
+                // We can use from_arrow directly with a reference to the Box<dyn Array>
+                Series::from_arrow(name.as_str().into(), array.clone())
+                    .expect("Failed to convert Arrow array to Series")
+            })
+            .collect();
+        
+        // Create a DataFrame from the Series collection
+        let df = DataFrame::from_iter(series_vec);
+        self.df = Some(df);
         Ok(())
     }
 
     pub fn read_data(&mut self, rsp: &ReadStatPath) -> Result<(), Box<dyn Error + Send + Sync>> {
         // parse data and if successful then convert cols into a chunk
         self.parse_data(rsp)?;
-        self.cols_to_chunk()?;
+        self.cols_to_df()?;
         Ok(())
     }
 
@@ -391,12 +399,32 @@ impl ReadStatData {
 
         // setup parser
         // once call parse_sas7bdat, iteration begins
-        let error = ReadStatParser::new()
-            // do not set metadata handler nor variable handler as already processed
-            .set_value_handler(Some(cb::handle_value))?
-            .set_row_limit(Some(self.chunk_rows_to_process.try_into().unwrap()))?
-            .set_row_offset(Some(self.chunk_row_start.try_into().unwrap()))?
-            .parse_sas7bdat(ppath, ctx);
+        
+        let error = match rsp.extension.as_str() {
+            "sas7bdat" => {
+                ReadStatParser::new()
+                    // do not set metadata handler nor variable handler as already processed
+                    .set_value_handler(Some(cb::handle_value))?
+                    .set_row_limit(Some(self.chunk_rows_to_process.try_into().unwrap()))?
+                    .set_row_offset(Some(self.chunk_row_start.try_into().unwrap()))?
+                    .parse_sas7bdat(ppath, ctx)
+            },
+            "dta" => {
+                ReadStatParser::new()
+                    // .set_metadata_handler(Some(cb::handle_metadata))?
+                    .set_variable_handler(Some(cb::handle_variable_noop))?
+                    .set_value_handler(Some(cb::handle_value))?
+                    .set_row_limit(Some(self.chunk_rows_to_process.try_into().unwrap()))?
+                    .set_row_offset(Some(self.chunk_row_start.try_into().unwrap()))?
+                    .parse_dta(ppath, ctx)
+            }
+            _ => {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Unsupported file extension: {}", rsp.extension)
+                )))
+            }
+        };
 
         #[allow(clippy::useless_conversion)]
         match FromPrimitive::from_i32(error.try_into().unwrap()) {
@@ -430,7 +458,7 @@ impl ReadStatData {
     */
 
     pub fn init(self, md: ReadStatMetadata, row_start: u32, row_end: u32) -> Self {
-        self.set_metadata(md)
+        self.set_metadata(&md)
             .set_chunk_counts(row_start, row_end)
             .allocate_cols()
     }
@@ -450,14 +478,14 @@ impl ReadStatData {
         }
     }
 
-    fn set_metadata(self, md: ReadStatMetadata) -> Self {
+    fn set_metadata(self, md: &ReadStatMetadata) -> Self {
         let var_count = md.var_count;
-        let vars = md.vars;
-        let schema = md.schema;
+        let vars = &md.vars.clone();
+        let schema = &md.schema.clone();
         Self {
             var_count,
-            vars,
-            schema,
+            vars: vars.clone(),
+            schema: schema.clone(),
             ..self
         }
     }

@@ -8,16 +8,16 @@ license = "MIT"
 repository = "https://github.com/curtisalexander/readstat-rs"
 
 [dependencies]
-arrow2 = { version = "0.18", features = [
-    "io_csv",
-    "io_ipc",
-    "io_ipc_compression",
-    "io_json",
-    "io_parquet",
-    "io_parquet_compression",
-] }
-polars = { version = "0.46.0", default-features = false }
-polars-arrow = { version = "0.46.0", default-features = false }
+# arrow2 = { version = "0.18", features = [
+#     "io_csv",
+#     "io_ipc",
+#     "io_ipc_compression",
+#     "io_json",
+#     "io_parquet",
+#     "io_parquet_compression",
+# ] }
+polars = { version = "0.46.0", default-features = true }
+polars-arrow = { version = "0.46.0", default-features = true }
 clap = { version = "4", features = ["derive", "unicode", "wrap_help"] }
 crossbeam = "0.8"
 csv = "1.3"
