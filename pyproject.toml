@@ -1,7 +1,7 @@
 [project]
 name = "polars-readstat"
 version = "0.1.0"
-description = "Add your description here"
+description = "Read SAS (sas7bdat) and Stata (dta) files with polars"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

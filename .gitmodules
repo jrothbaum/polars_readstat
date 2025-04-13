@@ -1,6 +1,0 @@
-[submodule "crates/readstat-sys/vendor/ReadStat"]
-	path = crates/readstat-sys/vendor/ReadStat
-	url = https://github.com/WizardMac/ReadStat.git
-[submodule "crates/iconv-sys/vendor/libiconv-win-build"]
-	path = crates/iconv-sys/vendor/libiconv-win-build
-	url = https://github.com/kiyolee/libiconv-win-build.git
