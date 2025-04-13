@@ -8,7 +8,7 @@ This plugin calls rust bindings to load files in chunks, it  is only possible du
 - [Polars](https://github.com/pola-rs/polars) (obviously) developed by [Ritchie Vink](https://www.ritchievink.com/) and many others
 
 This takes a modified version of the readstat-rs bindings to readstat's C functions.  My modifications:
-- Swapped out the now unmaintained arrow2 crate for polars
+- Swapped out the now unmaintained [arrow2](https://github.com/jorgecarleitao/arrow2) crate for [Polars](https://github.com/pola-rs/polars)
 - Removed the CLI and write capabilities
 - Add read support for Stata (dta) files
 - Modified the parsing of SAS and Stata data formats (particularly dates and datetimes) to map to provide a better (?... hopefully) mapping to polars data types
