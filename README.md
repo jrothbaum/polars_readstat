@@ -17,4 +17,5 @@ Pending tasks:
 - Write support for Stata (dta) files.  Readstat itself cannot write SAS (sas7bdat) files that SAS can read, and I'm not fool enough to try to figure that out.  Also, any workflow that involves SAS should be one-way (SAS->something else) so you should only read SAS files, never write them.
 - Actual python polars bindings as an IO plugin
 - Unit tests on the data sets used by [pyreadstat](https://github.com/Roche/pyreadstat) to confirm that my output matches theirs
+- Actual columns selection - just iterate over columns that aren't being read
 
