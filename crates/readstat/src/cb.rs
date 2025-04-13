@@ -212,15 +212,15 @@ pub extern "C" fn handle_value(
         unsafe { readstat_sys::readstat_value_type(value) };
     let is_missing: c_int = unsafe { readstat_sys::readstat_value_is_system_missing(value) };
 
-    debug!("chunk_rows_to_process is {}", d.chunk_rows_to_process);
-    debug!("chunk_row_start is {}", d.chunk_row_start);
-    debug!("chunk_row_end is {}", d.chunk_row_end);
-    debug!("chunk_rows_processed is {}", d.chunk_rows_processed);
-    debug!("var_count is {}", d.var_count);
-    debug!("obs_index is {}", obs_index);
-    debug!("var_index is {}", var_index);
-    debug!("value_type is {:#?}", &value_type);
-    debug!("is_missing is {}", is_missing);
+    // debug!("chunk_rows_to_process is {}", d.chunk_rows_to_process);
+    // debug!("chunk_row_start is {}", d.chunk_row_start);
+    // debug!("chunk_row_end is {}", d.chunk_row_end);
+    // debug!("chunk_rows_processed is {}", d.chunk_rows_processed);
+    // debug!("var_count is {}", d.var_count);
+    // debug!("obs_index is {}", obs_index);
+    // debug!("var_index is {}", var_index);
+    // debug!("value_type is {:#?}", &value_type);
+    // debug!("is_missing is {}", is_missing);
 
     // get value and push into arrays
     let value = ReadStatVar::get_readstat_value(value, value_type, is_missing, &d.vars, var_index);

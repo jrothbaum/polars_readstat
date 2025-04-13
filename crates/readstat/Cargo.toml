@@ -5,17 +5,9 @@ authors = ["Curtis Alexander <calex@calex.org>"]
 edition = "2021"
 description = "Rust wrapper of the ReadStat C library, modified to use polars arrow by Jon Rothbaum"
 license = "MIT"
-repository = "https://github.com/curtisalexander/readstat-rs"
+repository = "https://github.com/jrothbaum/polars_readstat"
 
 [dependencies]
-# arrow2 = { version = "0.18", features = [
-#     "io_csv",
-#     "io_ipc",
-#     "io_ipc_compression",
-#     "io_json",
-#     "io_parquet",
-#     "io_parquet_compression",
-# ] }
 polars = { version = "0.46.0", default-features = true }
 polars-arrow = { version = "0.46.0", default-features = true }
 clap = { version = "4", features = ["derive", "unicode", "wrap_help"] }

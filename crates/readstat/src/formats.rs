@@ -1,4 +1,5 @@
 use lazy_static::lazy_static;
+use log::debug;
 use regex::Regex;
 
 use crate::rs_var::ReadStatVarFormatClass;
@@ -100,43 +101,83 @@ fn match_var_format_sas(
     }
 }
 
-fn match_var_format_stata(
-    format_str: &str
-) -> Option<ReadStatVarFormatClass> {
-// Compile regex patterns for different Stata format types
-    // Date formats: %td, %d followed by optional display format
-    let date_regex = Regex::new(r"(?i)^%t?d(?:[a-z0-9:._-]*)$").unwrap();
-    
-    // Time formats: %th followed by optional display format
-    let time_regex = Regex::new(r"(?i)^%t?h(?:[a-z0-9:._-]*)$").unwrap();
-    
-    // Basic datetime formats: %tc followed by optional display format
-    let datetime_regex = Regex::new(r"(?i)^%t?c(?:[a-z0-9:._-]*)$").unwrap();
-    
-    // Datetime with milliseconds precision: %tC followed by optional display format
-    let datetime_ms_regex = Regex::new(r"(?i)^%t?C(?:[a-z0-9:._-]*)$").unwrap();
-    
-    // Datetime with microseconds: %tu followed by optional display format
-    let datetime_us_regex = Regex::new(r"(?i)^%t?u(?:[a-z0-9:._-]*)$").unwrap();
-    
-    // Datetime with nanoseconds: %tN followed by optional display format
-    let datetime_ns_regex = Regex::new(r"(?i)^%t?N(?:[a-z0-9:._-]*)$").unwrap();
 
+fn match_var_format_stata(format_str: &str) -> Option<ReadStatVarFormatClass> {
+    // --- Regex Definitions (inside function scope as requested) ---
+    // WARNING: Compiling Regexes on every call is inefficient. Consider using once_cell or lazy_static.
 
-    // Check the format string against each regex pattern
-    if datetime_ns_regex.is_match(format_str) {
+    // 1. Specific Time-Only Display Formats (Check FIRST!)
+    let time_hms_sub_regex = Regex::new(r"(?i)^%t[ch]\s*[Hh][Hh]:[Mm][Mm]:[Ss][Ss](?:\.[Ss]{1,9})?$").unwrap();
+    let time_hms_regex = Regex::new(r"(?i)^%t[ch]\s*[Hh][Hh]:[Mm][Mm]:[Ss][Ss]$").unwrap();
+    let time_hm_regex = Regex::new(r"(?i)^%t[ch]\s*[Hh][Hh]:[Mm][Mm]$").unwrap();
+
+    // 2. High Precision DateTime (Potentially less standard)
+    let datetime_ns_regex = Regex::new(r"(?i)^%t?N").unwrap(); // e.g., %tN...
+    let datetime_us_regex = Regex::new(r"(?i)^%t?u").unwrap(); // e.g., %tU...
+
+    // 3. DateTime with Milliseconds (%tC base type)
+    let datetime_milli_base_regex = Regex::new(r"(?i)^%t?C$").unwrap(); // Exact %tC or %C
+    // Matches %tC... or %C... *with display specifiers* (that are not time-only)
+    let datetime_milli_display_regex = Regex::new(r"(?i)^%t?C.").unwrap();
+
+    // 4. Standard DateTime (%tc base type)
+    let datetime_base_regex = Regex::new(r"(?i)^%t?c$").unwrap(); // Exact %tc or %c
+     // Matches %tc... or %c... *with display specifiers* (that are not time-only)
+    let datetime_display_regex = Regex::new(r"(?i)^%t?c.").unwrap();
+
+    // 5. Date Formats (includes %td, %d, and periods)
+    let date_td_base_regex = Regex::new(r"(?i)^%t?d$").unwrap(); // Exact %td or %d
+    // Matches %td... or %d... *with display specifiers*
+    let date_td_display_regex = Regex::new(r"(?i)^%t?d.").unwrap();
+    // Matches period formats like %tw, %tm, %tq, %th, %ty, %tb (with or without display specifiers)
+    let date_periods_regex = Regex::new(r"(?i)^%t[wmtqhyb]").unwrap();
+    // Specific examples from pyreadstat/original code
+    let date_format_regex = Regex::new(r"(?i)^%tdD_m_Y$").unwrap();
+    let date_iso_regex = Regex::new(r"(?i)^%tdCCYY-NN-DD$").unwrap();
+
+    // Add other date formats from your original code if needed, e.g.:
+    // let dmy_regex = Regex::new(r"(?i)^%(?:dmy|dmys)(?:[a-z0-9:._\s-]*)$").unwrap();
+    // let mdy_regex = Regex::new(r"(?i)^%(?:mdy|mdys)(?:[a-z0-9:._\s-]*)$").unwrap();
+    // Be careful they don't incorrectly match other types.
+
+    // --- Check the format string against each regex pattern (ORDER MATTERS!) ---
+
+    // 1. Check for TIME FIRST
+    if time_hms_sub_regex.is_match(format_str)
+        || time_hms_regex.is_match(format_str)
+        || time_hm_regex.is_match(format_str)
+    {
+        Some(ReadStatVarFormatClass::Time)
+    }
+    // 2. Then High Precision DateTime
+    else if datetime_ns_regex.is_match(format_str) {
         Some(ReadStatVarFormatClass::DateTimeWithNanoseconds)
     } else if datetime_us_regex.is_match(format_str) {
         Some(ReadStatVarFormatClass::DateTimeWithMicroseconds)
-    } else if datetime_ms_regex.is_match(format_str) {
+    }
+    // 3. Then Millisecond DateTime (%tC)
+    else if datetime_milli_base_regex.is_match(format_str) || datetime_milli_display_regex.is_match(format_str) {
+        // Time-only versions were already caught by the first check
         Some(ReadStatVarFormatClass::DateTimeWithMilliseconds)
-    } else if datetime_regex.is_match(format_str) {
+    }
+    // 4. Then Standard DateTime (%tc)
+    else if datetime_base_regex.is_match(format_str) || datetime_display_regex.is_match(format_str) {
+         // Time-only versions were already caught by the first check
         Some(ReadStatVarFormatClass::DateTime)
-    } else if date_regex.is_match(format_str) {
+    }
+    // 5. Then Date formats
+    else if date_td_base_regex.is_match(format_str)
+        || date_td_display_regex.is_match(format_str)
+        || date_periods_regex.is_match(format_str)
+        || date_format_regex.is_match(format_str) // pyreadstat specific example
+        || date_iso_regex.is_match(format_str)   // pyreadstat specific example
+        // || dmy_regex.is_match(format_str) // Add others here if needed
+        // || mdy_regex.is_match(format_str)
+    {
         Some(ReadStatVarFormatClass::Date)
-    } else if time_regex.is_match(format_str) {
-        Some(ReadStatVarFormatClass::Time)
-    } else {
-        None // Format not recognized
+    }
+    // --- NO MATCH ---
+    else {
+        None // Format not recognized as a known date/time type
     }
 }

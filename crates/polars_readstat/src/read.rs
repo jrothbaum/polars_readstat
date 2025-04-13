@@ -1,5 +1,6 @@
 use log::{debug, info, warn, error};
-use polars_arrow::array::Array;
+use polars::frame::DataFrame;
+use std::io::Read;
 use std::{env, io::Write, path::PathBuf};
 use std::{error::Error, fmt, sync::Arc, thread};
 
@@ -34,6 +35,54 @@ pub fn read_metadata(
     Ok(md)
 }
 
+
+pub fn read_chunk(
+    in_path:PathBuf,
+    md:Option<&ReadStatMetadata>,
+    skip_rows:Option<u32>,
+    n_rows:Option<u32>,
+) -> Result<DataFrame,Box<dyn Error + Send + Sync>> {
+
+    let owned_md = if md.is_none() {
+        Some(read_metadata(in_path.clone(), false)?)
+    } else {
+        None
+    };
+    
+    // Get a reference to whichever metadata we're using
+    let md_ref = match md {
+        Some(ref_md) => ref_md,
+        None => owned_md.as_ref().unwrap(),
+    };
+
+    debug!("rows = {}", md_ref.row_count);
+
+    let rsp = ReadStatPath::new(
+        in_path).unwrap();
+
+
+
+    let row_start:u32 = if skip_rows.is_none() {
+        0
+    } else {
+        skip_rows.unwrap()
+    };
+
+    let row_end:u32 = if n_rows.is_none() {
+        md_ref.row_count as u32
+    } else {
+        row_start + n_rows.unwrap()
+    };
+
+    let mut rsd = ReadStatData::new()
+            .init(md_ref.clone(),row_start,row_end);
+    let _ = rsd.read_data(&rsp);
+
+    rsd.df.ok_or_else(|| Box::new(std::io::Error::new(
+        std::io::ErrorKind::Other, 
+        "Failed to read DataFrame"
+    )) as Box<dyn Error + Send + Sync>)
+}
 /*
 pub fn read_chunk(
     in_path:PathBuf,

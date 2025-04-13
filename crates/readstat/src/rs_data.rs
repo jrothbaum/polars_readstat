@@ -1,7 +1,8 @@
 
+use chrono::DateTime;
 use polars_arrow::array::{Array,PrimitiveArray,Utf8Array,MutableUtf8Array};
-use polars_arrow::datatypes::{ArrowDataType as DataType,ArrowSchema as Schema, TimeUnit};
-use polars::prelude::{Series,DataFrame};
+use polars_arrow::datatypes::{ArrowSchema as Schema};
+use polars::prelude::{Series,DataFrame,datatypes::DataType,datatypes::TimeUnit,PolarsResult};
 /*
 use arrow2::{
     array::{Array, PrimitiveArray, Utf8Array},
@@ -27,7 +28,7 @@ use crate::{
     rs_metadata::{ReadStatMetadata, ReadStatVarMetadata},
     rs_parser::ReadStatParser,
     rs_path::ReadStatPath,
-    rs_var::ReadStatVar,
+    rs_var::{ReadStatVar,SEC_MICROSECOND},
 };
 
 #[derive(Default)]
@@ -90,266 +91,196 @@ impl ReadStatData {
 
     fn cols_to_df(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
         // for each column in cols
-        let arrays: Vec<Box<dyn Array>> = self
+        use polars::prelude::*;
+
+        let series_vec: Vec<Series> = self
             .cols
             .iter()
-            .map(|col| {
-                // what kind of column is this?
-                // grab the first element to determine the column type
-                let col_type = &col[0];
-
-                let array: Box<dyn Array> = match col_type {
+            .zip(self.schema.iter())
+            .map(|(col, (name, _field))| {
+                let series = match &col[0] {
                     ReadStatVar::ReadStat_String(_) => {
-                        // Use the standard Utf8 builder, specifying the offset type
-                        let mut mutable_array: MutableUtf8Array<i64> = MutableUtf8Array::<i64>::with_capacity(col.len());
-
-                        for s in col.iter() {
-                            match s {
-                                ReadStatVar::ReadStat_String(v_opt) => {
-                                    mutable_array.push(v_opt.as_deref());
-                                }
-                                _ => unreachable!("Type mismatch"),
+                        let values = col.iter().map(|v| {
+                            if let ReadStatVar::ReadStat_String(s) = v {
+                                s.clone()
+                            } else {
+                                unreachable!()
                             }
-                        }
+                        }).collect::<Vec<Option<String>>>();
 
-                        let arrow_array: Utf8Array<i64> = mutable_array.into();
-        
-                        Box::new(arrow_array) as Box<dyn Array>
+                        Series::new(name.clone(),values)
                     }
                     ReadStatVar::ReadStat_i8(_) => {
-                        let vec = col
-                            .iter()
-                            .map(|i| {
-                                if let ReadStatVar::ReadStat_i8(v) = i {
-                                    *v
-                                } else {
-                                    unreachable!()
-                                }
-                            })
-                            .collect::<Vec<Option<i8>>>();
+                        let values = col.iter().map(|v| {
+                            if let ReadStatVar::ReadStat_i8(i) = v {
+                                i.map(|x| x as i32)
+                            } else {
+                                unreachable!()
+                            }
+                        }).collect::<Vec<Option<i32>>>();
 
-                        let primitive_array: PrimitiveArray<i8> = PrimitiveArray::<i8>::from(vec);
-                        Box::new(primitive_array) as Box<dyn Array>
+                        Series::new(name.clone(), values)
                     }
                     ReadStatVar::ReadStat_i16(_) => {
-                        let vec = col
-                            .iter()
-                            .map(|i| {
-                                if let ReadStatVar::ReadStat_i16(v) = i {
-                                    *v
-                                } else {
-                                    unreachable!()
-                                }
-                            })
-                            .collect::<Vec<Option<i16>>>();
+                        let values = col.iter().map(|v| {
+                            if let ReadStatVar::ReadStat_i16(i) = v {
+                                i.map(|x| x as i32)
+                            } else {
+                                unreachable!()
+                            }
+                        }).collect::<Vec<Option<i32>>>();
 
-                        let primitive_array: PrimitiveArray<i16> = PrimitiveArray::<i16>::from(vec);
-                        Box::new(primitive_array) as Box<dyn Array>
+                        Series::new(name.clone(), values)
                     }
                     ReadStatVar::ReadStat_i32(_) => {
-                        let vec = col
-                            .iter()
-                            .map(|i| {
-                                if let ReadStatVar::ReadStat_i32(v) = i {
-                                    *v
-                                } else {
-                                    unreachable!()
-                                }
-                            })
-                            .collect::<Vec<Option<i32>>>();
+                        let values = col.iter().map(|v| {
+                            if let ReadStatVar::ReadStat_i32(i) = v {
+                                *i
+                            } else {
+                                unreachable!()
+                            }
+                        }).collect::<Vec<Option<i32>>>();
 
-                        let primitive_array: PrimitiveArray<i32> = PrimitiveArray::<i32>::from(vec);
-                        Box::new(primitive_array) as Box<dyn Array>
+                        Series::new(name.clone(), values)
                     }
                     ReadStatVar::ReadStat_f32(_) => {
-                        let vec = col
-                            .iter()
-                            .map(|f| {
-                                if let ReadStatVar::ReadStat_f32(v) = f {
-                                    *v
-                                } else {
-                                    unreachable!()
-                                }
-                            })
-                            .collect::<Vec<Option<f32>>>();
+                        let values = col.iter().map(|v| {
+                            if let ReadStatVar::ReadStat_f32(f) = v {
+                                *f
+                            } else {
+                                unreachable!()
+                            }
+                        }).collect::<Vec<Option<f32>>>();
 
-                        let primitive_array: PrimitiveArray<f32> = PrimitiveArray::<f32>::from(vec);
-                        Box::new(primitive_array) as Box<dyn Array>
+                        Series::new(name.clone(), values)
                     }
                     ReadStatVar::ReadStat_f64(_) => {
-                        let vec = col
-                            .iter()
-                            .map(|f| {
-                                if let ReadStatVar::ReadStat_f64(v) = f {
-                                    *v
-                                } else {
-                                    unreachable!()
-                                }
-                            })
-                            .collect::<Vec<Option<f64>>>();
+                        let values = col.iter().map(|v| {
+                            if let ReadStatVar::ReadStat_f64(f) = v {
+                                *f
+                            } else {
+                                unreachable!()
+                            }
+                        }).collect::<Vec<Option<f64>>>();
 
-                        let primitive_array: PrimitiveArray<f64> = PrimitiveArray::<f64>::from(vec);
-                        Box::new(primitive_array) as Box<dyn Array>
+                        Series::new(name.clone(), values)
                     }
                     ReadStatVar::ReadStat_Date(_) => {
-                        let vec = col
-                            .iter()
-                            .map(|d| {
-                                if let ReadStatVar::ReadStat_Date(v) = d {
-                                    *v
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<Option<i32>>>();
+                        let values = col.iter().map(|v| {
+                            if let ReadStatVar::ReadStat_Date(i) = v {
+                                *i
+                            } else {
+                                unreachable!()
+                            }
+                        }).collect::<Vec<Option<i32>>>();
 
-                        let primitive_array: PrimitiveArray<i32> = PrimitiveArray::<i32>::from(vec).to(DataType::Date32);
-                        Box::new(primitive_array) as Box<dyn Array>
-                    }
-                    ReadStatVar::ReadStat_DateTime(_) => {
-                        let vec = col
-                            .iter()
-                            .map(|dt| {
-                                if let ReadStatVar::ReadStat_DateTime(v) = dt {
-                                    *v
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<Option<i64>>>();
-
-                        let primitive_array: PrimitiveArray<i64> = PrimitiveArray::<i64>::from(vec).to(DataType::Timestamp(TimeUnit::Second, None));
-                        Box::new(primitive_array) as Box<dyn Array>
-                    }
-                    ReadStatVar::ReadStat_DateTimeWithMilliseconds(_) => {
-                        let vec = col
-                            .iter()
-                            .map(|dt| {
-                                if let ReadStatVar::ReadStat_DateTimeWithMilliseconds(v) = dt {
-                                    *v
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<Option<i64>>>();
-
-                        let primitive_array: PrimitiveArray<i64> = PrimitiveArray::<i64>::from(vec).to(DataType::Timestamp(TimeUnit::Millisecond, None));
-                        Box::new(primitive_array) as Box<dyn Array>
-                    }
-                    ReadStatVar::ReadStat_DateTimeWithMicroseconds(_) => {
-                        let vec = col
-                            .iter()
-                            .map(|dt| {
-                                if let ReadStatVar::ReadStat_DateTimeWithMicroseconds(v) = dt {
-                                    *v
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<Option<i64>>>();
-
-                        let primitive_array: PrimitiveArray<i64> = PrimitiveArray::<i64>::from(vec).to(DataType::Timestamp(TimeUnit::Microsecond, None));
-                        Box::new(primitive_array) as Box<dyn Array>
-                    }
-                    ReadStatVar::ReadStat_DateTimeWithNanoseconds(_) => {
-                        let vec = col
-                            .iter()
-                            .map(|dt| {
-                                if let ReadStatVar::ReadStat_DateTimeWithNanoseconds(v) = dt {
-                                    *v
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<Option<i64>>>();
-
-                        let primitive_array: PrimitiveArray<i64> = PrimitiveArray::<i64>::from(vec).to(DataType::Timestamp(TimeUnit::Nanosecond, None));
-                        Box::new(primitive_array) as Box<dyn Array>
+                        cast_series(Series::new(name.clone(), values),&DataType::Date).unwrap()
                     }
                     ReadStatVar::ReadStat_Time(_) => {
-                        let vec = col
-                            .iter()
-                            .map(|t| {
-                                if let ReadStatVar::ReadStat_Time(v) = t {
-                                    *v
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<Option<i32>>>();
-
-                        let primitive_array: PrimitiveArray<i32> = PrimitiveArray::<i32>::from(vec).to(DataType::Time32(TimeUnit::Second));
-                        Box::new(primitive_array) as Box<dyn Array>
+                        
+                        let values = col.iter().map(|v| {
+                            if let ReadStatVar::ReadStat_Time(i) = v {
+                                i.map(|val| (val as i64*SEC_MICROSECOND)) //  Convert to milliseconds
+                            } else {
+                                None
+                            }
+                        }).collect::<Vec<Option<i64>>>();
+                        cast_series(Series::new(name.clone(), values),&DataType::Time).unwrap()
+                    }
+                    ReadStatVar::ReadStat_DateTime(_) => {
+                        let values = col.iter().map(|v| {
+                            if let ReadStatVar::ReadStat_DateTime(i) = v {
+                                *i
+                            } else {
+                                None
+                            }
+                        }).collect::<Vec<Option<i64>>>();
+                        cast_series(Series::new(name.clone(), values),&DataType::Datetime(TimeUnit::Milliseconds,None)).unwrap()
+                    }
+                    ReadStatVar::ReadStat_DateTimeWithMilliseconds(_) => {
+                        let values = col.iter().map(|v| {
+                            if let ReadStatVar::ReadStat_DateTime(i) = v {
+                                *i
+                            } else {
+                                None
+                            }
+                        }).collect::<Vec<Option<i64>>>();
+                        cast_series(Series::new(name.clone(), values),&DataType::Datetime(TimeUnit::Milliseconds,None)).unwrap()
+                    }
+                    ReadStatVar::ReadStat_DateTimeWithMicroseconds(_) => {
+                        let values = col.iter().map(|v| {
+                            if let ReadStatVar::ReadStat_DateTime(i) = v {
+                                *i
+                            } else {
+                                None
+                            }
+                        }).collect::<Vec<Option<i64>>>();
+                        cast_series(Series::new(name.clone(), values),&DataType::Datetime(TimeUnit::Microseconds,None)).unwrap()
+                    }
+                    ReadStatVar::ReadStat_DateTimeWithNanoseconds(_) => {
+                        let values = col.iter().map(|v| {
+                            if let ReadStatVar::ReadStat_DateTime(i) = v {
+                                *i
+                            } else {
+                                None
+                            }
+                        }).collect::<Vec<Option<i64>>>();
+                        cast_series(Series::new(name.clone(), values),&DataType::Datetime(TimeUnit::Nanoseconds,None)).unwrap()
                     }
                     ReadStatVar::ReadStat_TimeWithMilliseconds(_) => {
-                        let vec = col
-                            .iter()
-                            .map(|dt| {
-                                if let ReadStatVar::ReadStat_TimeWithMilliseconds(v) = dt {
-                                    *v
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<Option<i64>>>();
-
-                        let primitive_array: PrimitiveArray<i64> = PrimitiveArray::<i64>::from(vec).to(DataType::Time32(TimeUnit::Millisecond));
-                        Box::new(primitive_array) as Box<dyn Array>
+                        let values = col.iter().map(|v| {
+                            if let ReadStatVar::ReadStat_DateTime(i) = v {
+                                *i
+                            } else {
+                                None
+                            }
+                        }).collect::<Vec<Option<i64>>>();
+                        cast_series(Series::new(name.clone(), values),&DataType::Time).unwrap()
                     }
                     ReadStatVar::ReadStat_TimeWithMicroseconds(_) => {
-                        let vec = col
-                            .iter()
-                            .map(|dt| {
-                                if let ReadStatVar::ReadStat_TimeWithMicroseconds(v) = dt {
-                                    *v
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<Option<i64>>>();
-
-                        let primitive_array: PrimitiveArray<i64> = PrimitiveArray::<i64>::from(vec).to(DataType::Time32(TimeUnit::Microsecond));
-                        Box::new(primitive_array) as Box<dyn Array>
+                        
+                        let values = col.iter().map(|v| {
+                            if let ReadStatVar::ReadStat_TimeWithMicroseconds(i) = v {
+                                *i
+                            } else {
+                                None
+                            }
+                        }).collect::<Vec<Option<i64>>>();
+                        cast_series(Series::new(name.clone(), values),&DataType::Time).unwrap()
                     }
-                    ReadStatVar::ReadStat_TimeWithNanoseconds(_) => {
-                        let vec = col
-                            .iter()
-                            .map(|dt| {
-                                if let ReadStatVar::ReadStat_TimeWithNanoseconds(v) = dt {
-                                    *v
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<Option<i64>>>();
-
-                        let primitive_array: PrimitiveArray<i64> = PrimitiveArray::<i64>::from(vec).to(DataType::Time32(TimeUnit::Nanosecond));
-                        Box::new(primitive_array) as Box<dyn Array>
+                    | ReadStatVar::ReadStat_TimeWithNanoseconds(_) => {
+                        //  TODO - check and fix if needed...
+                        let values = col.iter().map(|v| {
+                            if let ReadStatVar::ReadStat_TimeWithNanoseconds(i) = v {
+                                i.map(|val| (val as i64)) //  Convert to milliseconds
+                            } else {
+                                None
+                            }
+                        }).collect::<Vec<Option<i64>>>();
+                        cast_series(Series::new(name.clone(), values),&DataType::Time).unwrap()
                     }
-                    
                 };
 
-                // return
-                array
+                series
             })
             .collect();
 
         let schema = &self.schema; // Your existing schema
         
-        // Get the field names from the schema
-        let field_names: Vec<String> = schema.iter()
-            .map(|(name, _)| name.to_string())
-            .collect();
+        // // Get the field names from the schema
+        // let field_names: Vec<String> = schema.iter()
+        //     .map(|(name, _)| name.to_string())
+        //     .collect();
         
-        // Create a Series for each array
-        let series_vec: Vec<Series> = arrays.iter()
-            .zip(field_names.iter())
-            .map(|(array, name)| {
-                // We can use from_arrow directly with a reference to the Box<dyn Array>
-                Series::from_arrow(name.as_str().into(), array.clone())
-                    .expect("Failed to convert Arrow array to Series")
-            })
-            .collect();
+        // // Create a Series for each array
+        // let series_vec: Vec<Series> = arrays.iter()
+        //     .zip(field_names.iter())
+        //     .map(|(array, name)| {
+        //         // We can use from_arrow directly with a reference to the Box<dyn Array>
+        //         Series::from_arrow(name.as_str().into(), array.clone())
+        //             .expect("Failed to convert Arrow array to Series")
+        //     })
+        //     .collect();
         
         // Create a DataFrame from the Series collection
         let df = DataFrame::from_iter(series_vec);
@@ -510,4 +441,9 @@ impl ReadStatData {
             ..self
         }
     }
+}
+
+
+fn cast_series(series: Series, dtype: &DataType) -> PolarsResult<Series> {
+    series.cast(dtype)
 }
