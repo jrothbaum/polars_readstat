@@ -2,12 +2,7 @@
 use chrono::DateTime;
 use polars_arrow::array::{Array,PrimitiveArray,Utf8Array,MutableUtf8Array};
 use polars::prelude::{
-    Series,
-    DataFrame,
-    datatypes::DataType,
-    datatypes::TimeUnit,
-    PolarsResult,
-    Schema};
+    datatypes::{DataType, TimeUnit}, DataFrame, PlSmallStr, PolarsResult, Schema, Series};
 /*
 use arrow2::{
     array::{Array, PrimitiveArray, Utf8Array},
@@ -30,7 +25,11 @@ use std::{
 use crate::{
     cb,
     err::ReadStatError,
-    rs_metadata::{ReadStatMetadata, ReadStatVarMetadata},
+    rs_metadata::{
+        ReadStatMetadata, 
+        ReadStatVarMetadata,
+        schema_with_filter_pushdown
+    },
     rs_parser::ReadStatParser,
     rs_path::ReadStatPath,
     rs_var::{ReadStatVar,SEC_MICROSECOND},
@@ -58,10 +57,11 @@ pub struct ReadStatData {
     pub no_progress: bool,
     // errors
     pub errors: Vec<String>,
+    pub columns_to_read: Option<Vec<usize>>,
 }
 
 impl ReadStatData {
-    pub fn new() -> Self {
+    pub fn new(columns_to_read: Option<Vec<usize>>) -> Self {
         Self {
             // metadata
             var_count: 0,
@@ -83,14 +83,23 @@ impl ReadStatData {
             no_progress: false,
             // errors
             errors: Vec::new(),
+            columns_to_read: columns_to_read,
         }
     }
 
     fn allocate_cols(self) -> Self {
-        let mut cols = Vec::with_capacity(self.var_count as usize);
-        for _ in 0..self.var_count {
-            cols.push(Vec::with_capacity(self.chunk_rows_to_process))
+        let column_count = if self.columns_to_read.is_some() {
+            self.columns_to_read.as_ref().unwrap().len()
+        } else {
+            self.var_count as usize
+        };
+        
+        // Initialize the columns
+        let mut cols = Vec::with_capacity(column_count);
+        for _ in 0..column_count {
+            cols.push(Vec::with_capacity(self.chunk_rows_to_process));
         }
+
         Self { cols, ..self }
     }
 
@@ -98,10 +107,14 @@ impl ReadStatData {
         // for each column in cols
         use polars::prelude::*;
 
+        let sub_schema = schema_with_filter_pushdown(
+            &self.schema,
+            self.columns_to_read.clone()
+        );
         let series_vec: Vec<Series> = self
             .cols
             .iter()
-            .zip(self.schema.iter())
+            .zip(sub_schema.iter())
             .map(|(col, (name, _field))| {
                 let series = match &col[0] {
                     ReadStatVar::ReadStat_String(_) => {
@@ -270,23 +283,6 @@ impl ReadStatData {
             })
             .collect();
 
-        let schema = &self.schema; // Your existing schema
-        
-        // // Get the field names from the schema
-        // let field_names: Vec<String> = schema.iter()
-        //     .map(|(name, _)| name.to_string())
-        //     .collect();
-        
-        // // Create a Series for each array
-        // let series_vec: Vec<Series> = arrays.iter()
-        //     .zip(field_names.iter())
-        //     .map(|(array, name)| {
-        //         // We can use from_arrow directly with a reference to the Box<dyn Array>
-        //         Series::from_arrow(name.as_str().into(), array.clone())
-        //             .expect("Failed to convert Arrow array to Series")
-        //     })
-        //     .collect();
-        
         // Create a DataFrame from the Series collection
         let df = DataFrame::from_iter(series_vec);
         self.df = Some(df);
@@ -393,7 +389,12 @@ impl ReadStatData {
     }
     */
 
-    pub fn init(self, md: ReadStatMetadata, row_start: u32, row_end: u32) -> Self {
+    pub fn init(
+        self, 
+        md: ReadStatMetadata, 
+        row_start: u32, 
+        row_end: u32) -> Self {
+
         self.set_metadata(&md)
             .set_chunk_counts(row_start, row_end)
             .allocate_cols()

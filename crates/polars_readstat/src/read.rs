@@ -1,5 +1,6 @@
 use log::{debug, info, warn, error};
 use polars::frame::DataFrame;
+use polars::prelude::PlSmallStr;
 use std::io::Read;
 use std::{env, io::Write, path::PathBuf};
 use std::{error::Error, fmt, sync::Arc, thread};
@@ -41,6 +42,7 @@ pub fn read_chunk(
     md:Option<&ReadStatMetadata>,
     skip_rows:Option<u32>,
     n_rows:Option<u32>,
+    columns:Option<Vec<usize>>,
 ) -> Result<DataFrame,Box<dyn Error + Send + Sync>> {
 
     let owned_md = if md.is_none() {
@@ -74,7 +76,7 @@ pub fn read_chunk(
         row_start + n_rows.unwrap()
     };
 
-    let mut rsd = ReadStatData::new()
+    let mut rsd = ReadStatData::new(columns)
             .init(md_ref.clone(),row_start,row_end);
     let _ = rsd.read_data(&rsp);
 

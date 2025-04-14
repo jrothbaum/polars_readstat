@@ -197,7 +197,44 @@ impl ReadStatMetadata {
             )),
         }
     }
+
+    pub fn schema_with_filter_pushdown(
+        self,
+        columns_to_read:Option<Vec<usize>>
+    ) -> Schema {
+        schema_with_filter_pushdown(
+            &self.schema, 
+            columns_to_read)
+    }
+    
 }
+
+pub fn schema_with_filter_pushdown(
+    schema:&Schema,
+    columns_to_read:Option<Vec<usize>>,
+) -> Schema {
+    if columns_to_read.is_none() {
+        //  If columns_to_read is None, return schema
+        schema.clone()
+    } else {
+
+        // If columns_to_read is Some, return subset of schema matching the variable names
+        let mut sub_schema = Schema::with_capacity(columns_to_read.as_ref().unwrap().len());
+        for col_idx in columns_to_read.as_ref().unwrap() {
+            
+            // Make sure the index is valid
+            if col_idx < &schema.len() {
+                // Get the schema item at this index
+                let (name,dt) = &schema.get_at_index(col_idx.clone()).unwrap().clone();
+                
+                // Add this field to our new schema
+                sub_schema.insert(name.as_str().into(), dt.as_ref().clone());
+            }
+        }            
+        sub_schema
+    }
+}
+
 
 #[derive(Clone, Debug, Default, FromPrimitive, Serialize)]
 pub enum ReadStatCompress {

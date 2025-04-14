@@ -1,5 +1,6 @@
 use log::{debug, info, warn, error};
 use env_logger::Builder;
+use polars::prelude::PlSmallStr;
 use std::{env, io::Write};
 
 
@@ -35,11 +36,20 @@ fn main() {
 
     let skip_rows:u32 = 0;
     let n_rows:u32 = 1000;
+
+    let columns: Vec<usize> = vec![
+        1,
+        2,
+    ];
+
     let df = read::read_chunk(
         path.clone(),
         Some(&md),
         Some(skip_rows),
-        Some(n_rows))
+        Some(n_rows),
+        //Some(columns)
+        None
+    )
         .unwrap();
     dbg!(&df);
 

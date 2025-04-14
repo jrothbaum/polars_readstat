@@ -208,6 +208,30 @@ pub extern "C" fn handle_value(
 
     // get index, type, and missingness
     let var_index: c_int = unsafe { readstat_sys::readstat_variable_get_index(variable) };
+
+    let var_index_usize = var_index as usize;
+
+    //  If d.columns_to_read is not none,
+    //      Get the assignment position of the variable (if it's there)
+    //          and None if it isn't
+    //  If d.columns_to_read
+    let var_index_assign = if d.columns_to_read.is_none() {
+        // If columns_to_read is None, use the variable index directly
+        Some(var_index_usize)
+    } else {
+        // If columns_to_read exists, check if it contains the variable index
+        d.columns_to_read.as_ref()
+            .unwrap()
+            .iter()
+            .position(|&x| x == var_index_usize)
+    };
+
+    if var_index_assign.is_none() {
+        //  Don't read it, we're good
+        return ReadStatHandler::READSTAT_HANDLER_OK as c_int;
+    }
+
+
     let value_type: readstat_sys::readstat_type_t =
         unsafe { readstat_sys::readstat_value_type(value) };
     let is_missing: c_int = unsafe { readstat_sys::readstat_value_is_system_missing(value) };
@@ -226,7 +250,8 @@ pub extern "C" fn handle_value(
     let value = ReadStatVar::get_readstat_value(value, value_type, is_missing, &d.vars, var_index);
 
     // push into cols
-    d.cols[var_index as usize].push(value);
+    //  dbg!("var_index_assign = {}", var_index_assign.unwrap());
+    d.cols[var_index_assign.unwrap()].push(value);
 
     // if row is complete
     if var_index == (d.var_count - 1) {

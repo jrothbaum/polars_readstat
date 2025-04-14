@@ -10,7 +10,6 @@ def scan_readstat(path:str) -> pl.LazyFrame:
     
     def schema() -> pl.Schema:
         src = read_readstat(path,
-                            None,
                             0, 
                             0)
         return src.schema()
@@ -23,7 +22,6 @@ def scan_readstat(path:str) -> pl.LazyFrame:
     ) -> Iterator[pl.DataFrame]:
         
         src = read_readstat(path,
-                            with_columns,
                             batch_size,
                             n_rows)
         
@@ -57,7 +55,12 @@ def scan_readstat(path:str) -> pl.LazyFrame:
 
 if __name__ == "__main__":
     df = scan_readstat("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.sas7bdat")
-    df = df.head(2)
+    df = df.head(5)
+    print(df.schema)
+    
+    df = df.select("mychar",
+                   "mynum",
+                   "myord")
     print(df)
     print(df.collect_schema())
     df = df.collect()
