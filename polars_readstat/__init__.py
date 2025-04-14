@@ -6,8 +6,7 @@ import polars as pl
 
 from polars_readstat import read_readstat 
 
-def scan_readstat(path:str,
-                n_rows:int | None=None) -> pl.LazyFrame:
+def scan_readstat(path:str) -> pl.LazyFrame:
     
     def schema() -> pl.Schema:
         src = read_readstat(path,
@@ -57,8 +56,8 @@ def scan_readstat(path:str,
 
 
 if __name__ == "__main__":
-    df = scan_readstat("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.sas7bdat",
-                       n_rows=2)
+    df = scan_readstat("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.sas7bdat")
+    df = df.head(2)
     print(df)
     print(df.collect_schema())
     df = df.collect()

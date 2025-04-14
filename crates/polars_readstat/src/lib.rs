@@ -14,6 +14,7 @@ use read::{
 };
 use std::env;
 use std::thread;
+use std::cmp::min;
 
 use readstat::ReadStatMetadata;
 
@@ -51,8 +52,9 @@ impl read_readstat {
 
         //  Pre-fetch the metadata from the file, to populate the schema
         let md = read_metadata(std::path::PathBuf::from(path.clone()), false).unwrap();
+        dbg!("n_rows = {}",n_rows);
         let n_rows = n_rows.unwrap_or(md.row_count as usize);
-
+        dbg!("n_rows = {}",n_rows);
         Self {
             path,
             columns,
@@ -115,11 +117,14 @@ impl read_readstat {
             // dbg!(&self.md.schema);
             // dbg!("n_rows_read = {}", self.n_rows_read);
             // dbg!("size_hint = {}", self.size_hint);
+
+            let rows_to_read = min(self.size_hint,self.n_rows);
+
             let mut df = read_chunk(
                 in_path,
                 Some(&self.md),
                 Some(self.n_rows_read as u32),
-                Some(self.size_hint as u32)
+                Some(rows_to_read as u32)
             ).unwrap();
             // dbg!(&df);
 
