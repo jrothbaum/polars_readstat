@@ -84,10 +84,10 @@ fn match_var_format_sas(
         Some(ReadStatVarFormatClass::DateTimeWithMicroseconds)
     } else if datetime_ms_regex.is_match(format_str) {
         Some(ReadStatVarFormatClass::DateTimeWithMilliseconds)
-    } else if time_ns_regex.is_match(format_str) {
-        Some(ReadStatVarFormatClass::TimeWithNanoseconds)
-    } else if time_us_regex.is_match(format_str) {
-        Some(ReadStatVarFormatClass::TimeWithMicroseconds)
+    // } else if time_ns_regex.is_match(format_str) {
+    //     Some(ReadStatVarFormatClass::TimeWithNanoseconds)
+    // } else if time_us_regex.is_match(format_str) {
+    //     Some(ReadStatVarFormatClass::TimeWithMicroseconds)
     } else if time_ms_regex.is_match(format_str) {
         Some(ReadStatVarFormatClass::TimeWithMilliseconds)
     } else if datetime_regex.is_match(format_str) {

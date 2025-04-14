@@ -1,10 +1,31 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
 [project]
 name = "polars-readstat"
 version = "0.1.0"
 description = "Read SAS (sas7bdat) and Stata (dta) files with polars"
 readme = "README.md"
-requires-python = ">=3.12"
+authors = [{name = "Jon Rothbaum", email = "jlrothbaum@gmail.com"}]
+requires-python = ">=3.9"
+license = {text = "MIT"}
+
+classifiers = [
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+]
 dependencies = [
     "maturin>=1.8.3",
-    "polars>=1.27.1",
+    "polars==1.25.2",
+    "cffi>=1.17.1",
+    "patchelf>=0.17.2.2",
 ]
+
+
+
+
+[tool.maturin]
+manifest-path = "crates/polars_readstat/Cargo.toml"
+module-name = "polars_readstat"

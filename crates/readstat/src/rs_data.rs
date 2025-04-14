@@ -1,8 +1,13 @@
 
 use chrono::DateTime;
 use polars_arrow::array::{Array,PrimitiveArray,Utf8Array,MutableUtf8Array};
-use polars_arrow::datatypes::{ArrowSchema as Schema};
-use polars::prelude::{Series,DataFrame,datatypes::DataType,datatypes::TimeUnit,PolarsResult};
+use polars::prelude::{
+    Series,
+    DataFrame,
+    datatypes::DataType,
+    datatypes::TimeUnit,
+    PolarsResult,
+    Schema};
 /*
 use arrow2::{
     array::{Array, PrimitiveArray, Utf8Array},
@@ -237,28 +242,28 @@ impl ReadStatData {
                         }).collect::<Vec<Option<i64>>>();
                         cast_series(Series::new(name.clone(), values),&DataType::Time).unwrap()
                     }
-                    ReadStatVar::ReadStat_TimeWithMicroseconds(_) => {
+                    // ReadStatVar::ReadStat_TimeWithMicroseconds(_) => {
                         
-                        let values = col.iter().map(|v| {
-                            if let ReadStatVar::ReadStat_TimeWithMicroseconds(i) = v {
-                                *i
-                            } else {
-                                None
-                            }
-                        }).collect::<Vec<Option<i64>>>();
-                        cast_series(Series::new(name.clone(), values),&DataType::Time).unwrap()
-                    }
-                    | ReadStatVar::ReadStat_TimeWithNanoseconds(_) => {
-                        //  TODO - check and fix if needed...
-                        let values = col.iter().map(|v| {
-                            if let ReadStatVar::ReadStat_TimeWithNanoseconds(i) = v {
-                                i.map(|val| (val as i64)) //  Convert to milliseconds
-                            } else {
-                                None
-                            }
-                        }).collect::<Vec<Option<i64>>>();
-                        cast_series(Series::new(name.clone(), values),&DataType::Time).unwrap()
-                    }
+                    //     let values = col.iter().map(|v| {
+                    //         if let ReadStatVar::ReadStat_TimeWithMicroseconds(i) = v {
+                    //             *i
+                    //         } else {
+                    //             None
+                    //         }
+                    //     }).collect::<Vec<Option<i64>>>();
+                    //     cast_series(Series::new(name.clone(), values),&DataType::Time).unwrap()
+                    // }
+                    // | ReadStatVar::ReadStat_TimeWithNanoseconds(_) => {
+                    //     //  TODO - check and fix if needed...
+                    //     let values = col.iter().map(|v| {
+                    //         if let ReadStatVar::ReadStat_TimeWithNanoseconds(i) = v {
+                    //             i.map(|val| (val as i64)) //  Convert to milliseconds
+                    //         } else {
+                    //             None
+                    //         }
+                    //     }).collect::<Vec<Option<i64>>>();
+                    //     cast_series(Series::new(name.clone(), values),&DataType::Time).unwrap()
+                    // }
                 };
 
                 series

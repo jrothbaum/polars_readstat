@@ -30,11 +30,11 @@ fn main() {
         false
     ).unwrap();
     
-
+    dbg!(&md.schema);
     debug!("rows = {}", md.row_count);
 
-    let skip_rows:u32 = 2;
-    let n_rows:u32 = 1;
+    let skip_rows:u32 = 0;
+    let n_rows:u32 = 1000;
     let df = read::read_chunk(
         path.clone(),
         Some(&md),

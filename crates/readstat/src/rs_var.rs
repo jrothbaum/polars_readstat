@@ -27,10 +27,10 @@ pub enum ReadStatVar {
     ReadStat_DateTimeWithMilliseconds(Option<i64>),
     ReadStat_DateTimeWithMicroseconds(Option<i64>),
     ReadStat_DateTimeWithNanoseconds(Option<i64>),
-    ReadStat_Time(Option<i32>),
+    ReadStat_Time(Option<i64>),
     ReadStat_TimeWithMilliseconds(Option<i64>),
-    ReadStat_TimeWithMicroseconds(Option<i64>),
-    ReadStat_TimeWithNanoseconds(Option<i64>),
+    // ReadStat_TimeWithMicroseconds(Option<i64>),
+    // ReadStat_TimeWithNanoseconds(Option<i64>),
 }
 
 impl ReadStatVar {
@@ -144,8 +144,8 @@ impl ReadStatVar {
                             }
                             ReadStatVarFormatClass::Time => Self::ReadStat_Time(None),
                             ReadStatVarFormatClass::TimeWithMilliseconds => Self::ReadStat_TimeWithMilliseconds(None),
-                            ReadStatVarFormatClass::TimeWithMicroseconds => Self::ReadStat_TimeWithMicroseconds(None),
-                            ReadStatVarFormatClass::TimeWithNanoseconds => Self::ReadStat_TimeWithNanoseconds(None),
+                            // ReadStatVarFormatClass::TimeWithMicroseconds => Self::ReadStat_TimeWithMicroseconds(None),
+                            // ReadStatVarFormatClass::TimeWithNanoseconds => Self::ReadStat_TimeWithNanoseconds(None),
                         },
                     }
                 } else {
@@ -185,22 +185,26 @@ impl ReadStatVar {
                                     (value as i64).checked_sub(SEC_SHIFT*SEC_NANOSECOND).unwrap(),
                                 ))
                             }
-                            ReadStatVarFormatClass::Time => Self::ReadStat_Time(Some(value as i32)),
+                            ReadStatVarFormatClass::Time => {
+                                Self::ReadStat_DateTime(Some(
+                                    (value as i64).checked_sub(SEC_SHIFT*SEC_MILLISECOND).unwrap(),
+                                ))
+                            }
                             ReadStatVarFormatClass::TimeWithMilliseconds => {
                                 Self::ReadStat_DateTime(Some(
                                     (value as i64).checked_sub(SEC_SHIFT*SEC_MILLISECOND).unwrap(),
                                 ))
                             }
-                            ReadStatVarFormatClass::TimeWithMicroseconds => {
-                                Self::ReadStat_DateTime(Some(
-                                    (value as i64).checked_sub(SEC_SHIFT*SEC_MICROSECOND).unwrap(),
-                                ))
-                            }
-                            ReadStatVarFormatClass::TimeWithNanoseconds => {
-                                Self::ReadStat_DateTime(Some(
-                                    (value as i64).checked_sub(SEC_SHIFT*SEC_NANOSECOND).unwrap(),
-                                ))
-                            }
+                            // ReadStatVarFormatClass::TimeWithMicroseconds => {
+                            //     Self::ReadStat_DateTime(Some(
+                            //         (value as i64).checked_sub(SEC_SHIFT*SEC_MICROSECOND).unwrap(),
+                            //     ))
+                            // }
+                            // ReadStatVarFormatClass::TimeWithNanoseconds => {
+                            //     Self::ReadStat_DateTime(Some(
+                            //         (value as i64).checked_sub(SEC_SHIFT*SEC_NANOSECOND).unwrap(),
+                            //     ))
+                            // }
                         },
                     }
                 }
@@ -220,8 +224,8 @@ pub enum ReadStatVarFormatClass {
     DateTimeWithNanoseconds,
     Time,
     TimeWithMilliseconds,
-    TimeWithMicroseconds,
-    TimeWithNanoseconds
+    // TimeWithMicroseconds,
+    // TimeWithNanoseconds
 }
 
 #[derive(Clone, Copy, Debug, FromPrimitive, Serialize)]
