@@ -15,7 +15,7 @@ This takes a modified version of the readstat-rs bindings to readstat's C functi
 
 Pending tasks:
 - Write support for Stata (dta) files.  Readstat itself cannot write SAS (sas7bdat) files that SAS can read, and I'm not fool enough to try to figure that out.  Also, any workflow that involves SAS should be one-way (SAS->something else) so you should only read SAS files, never write them.
-- Actual python polars bindings as an IO plugin
+- Actual python polars bindings as an IO plugin - there is a "functioning" io plugin now, but it doesn't actually read a subset of rows if you ask it to and I haven't really tested how it handles bigger files.  I also want to implement projection pushdown to avoid reading columns that aren't needed, but I'm not there yet.
 - Unit tests on the data sets used by [pyreadstat](https://github.com/Roche/pyreadstat) to confirm that my output matches theirs
 - Actual columns selection - just iterate over columns that aren't being read
 
