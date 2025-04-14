@@ -53,16 +53,25 @@ def scan_readstat(path:str) -> pl.LazyFrame:
     return register_io_source(io_source=source_generator, schema=schema())
 
 
+
 if __name__ == "__main__":
-    df = scan_readstat("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.sas7bdat")
-    df = df.head(5)
-    print(df.schema)
-    
-    df = df.select("mychar",
-                   "mynum",
-                   "myord")
-    print(df)
-    print(df.collect_schema())
-    df = df.collect()
-    print(df)
-    print(df.schema)
+    def read_test(path:str) -> None:
+        print(path)
+        df = scan_readstat(path)
+        print(df.collect_schema())
+        print(df.collect())
+        df = df.head(2)
+        print(df.collect())
+        
+        df = df.select("mychar",
+                    "mynum",
+                    "myord")
+        
+        print(df.collect_schema())
+        df = df.collect()
+        print(df)
+        print("\n\n\n")
+        
+    read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.sas7bdat")
+
+    read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.dta")

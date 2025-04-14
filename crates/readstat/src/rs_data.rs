@@ -58,6 +58,7 @@ pub struct ReadStatData {
     // errors
     pub errors: Vec<String>,
     pub columns_to_read: Option<Vec<usize>>,
+    pub columns_original_index_to_data: Option<Vec<Option<usize>>>,
 }
 
 impl ReadStatData {
@@ -84,6 +85,7 @@ impl ReadStatData {
             // errors
             errors: Vec::new(),
             columns_to_read: columns_to_read,
+            columns_original_index_to_data: None,
         }
     }
 
@@ -111,6 +113,8 @@ impl ReadStatData {
             &self.schema,
             self.columns_to_read.clone()
         );
+
+
         let series_vec: Vec<Series> = self
             .cols
             .iter()
@@ -290,7 +294,7 @@ impl ReadStatData {
     }
 
     pub fn read_data(&mut self, rsp: &ReadStatPath) -> Result<(), Box<dyn Error + Send + Sync>> {
-        // parse data and if successful then convert cols into a chunk
+        // parse data and if successful then convert cols into a dataframe
         self.parse_data(rsp)?;
         self.cols_to_df()?;
         Ok(())
@@ -331,7 +335,9 @@ impl ReadStatData {
 
         // setup parser
         // once call parse_sas7bdat, iteration begins
+
         
+
         let error = match rsp.extension.as_str() {
             "sas7bdat" => {
                 ReadStatParser::new()
@@ -389,6 +395,41 @@ impl ReadStatData {
     }
     */
 
+    fn map_cols_to_lookup_indices(self) -> Self {
+       
+        if !self.columns_to_read.is_none() {
+            
+            let n_cols: usize = self.schema.len();
+            let mut cols_index:Vec<Option<usize>> = Vec::with_capacity(n_cols);
+
+            for idx in 0..n_cols {
+                if self.columns_to_read.as_ref().unwrap().contains(&idx) {
+                    let value = self.columns_to_read.as_ref()
+                        .unwrap()
+                        .iter()
+                        .position(|&x| x == idx).unwrap();
+                    cols_index.push(Some(value));
+                } else {
+                    cols_index.push(None)
+                }
+
+                let idx = idx + 1;
+            }
+            
+            Self {
+                columns_original_index_to_data:Some(cols_index),
+                ..self
+            }
+        } else {
+            Self {
+                ..self
+            }
+        }
+
+
+        
+    }
+
     pub fn init(
         self, 
         md: ReadStatMetadata, 
@@ -398,6 +439,7 @@ impl ReadStatData {
         self.set_metadata(&md)
             .set_chunk_counts(row_start, row_end)
             .allocate_cols()
+            .map_cols_to_lookup_indices()
     }
 
     fn set_chunk_counts(self, row_start: u32, row_end: u32) -> Self {

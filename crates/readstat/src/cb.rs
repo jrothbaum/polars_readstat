@@ -219,11 +219,9 @@ pub extern "C" fn handle_value(
         // If columns_to_read is None, use the variable index directly
         Some(var_index_usize)
     } else {
-        // If columns_to_read exists, check if it contains the variable index
-        d.columns_to_read.as_ref()
-            .unwrap()
-            .iter()
-            .position(|&x| x == var_index_usize)
+        //  Lookup the value (or None) of the assignment column index
+        d.columns_original_index_to_data.as_ref().unwrap()[var_index_usize]
+
     };
 
     if var_index_assign.is_none() {
