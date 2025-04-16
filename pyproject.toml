@@ -29,3 +29,8 @@ dependencies = [
 [tool.maturin]
 manifest-path = "crates/polars_readstat/Cargo.toml"
 module-name = "polars_readstat"
+
+[dependency-groups]
+dev = [
+    "pandas>=2.2.3",
+]

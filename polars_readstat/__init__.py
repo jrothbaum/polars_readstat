@@ -11,19 +11,21 @@ def scan_readstat(path:str) -> pl.LazyFrame:
     def schema() -> pl.Schema:
         src = read_readstat(path,
                             0, 
-                            0)
+                            0,
+                            1)
         return src.schema()
     
     def source_generator(
         with_columns: list[str] | None,
         predicate: pl.Expr | None,
         n_rows: int | None,
-        batch_size: int | None,
+        batch_size: int | None=1_000_000,
     ) -> Iterator[pl.DataFrame]:
         
         src = read_readstat(path,
                             batch_size,
-                            n_rows)
+                            n_rows,
+                            threads=pl.thread_pool_size())
         
 
         if with_columns is not None:
@@ -71,7 +73,40 @@ if __name__ == "__main__":
         df = df.collect()
         print(df)
         print("\n\n\n")
-        
-    read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.sas7bdat")
 
-    read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.dta")
+    def read_multithreaded_test():
+        import time
+
+        path = "/home/jrothbaum/Downloads/usa_00008.dta"
+        columns = ["index",
+                   "YEAR",
+                   "SAMPLE",
+                   "BIRTHYR"]
+        
+        start_pl = time.time()
+        df = scan_readstat(path)
+        if columns is not None:
+            
+            df = df.filter(pl.col("BIRTHYR") >= 1980)
+        df = df.collect()
+        elapsed_pl = time.time() - start_pl
+        print(df)
+        
+        import pandas as pd
+
+        start_pd = time.time()
+        dfp = pd.read_stata(path)
+        # dfp = dfp[columns]
+        elapsed_pd = time.time() - start_pd
+        print(dfp)
+        
+        dfp = pl.from_pandas(dfp)
+        dfp = dfp[dfp['BIRTHYR'] >= 1980]
+        print(dfp.equals(df))
+        print(f"Polars: {elapsed_pl}")
+        print(f"Pandas: {elapsed_pd}")
+        
+    # read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.sas7bdat")
+
+    # read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.dta")
+    read_multithreaded_test()

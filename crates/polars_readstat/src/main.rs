@@ -9,9 +9,6 @@ mod read;
 
 
 fn main() {
-    unsafe {
-        env::set_var("POLARS_MAX_THREADS", "1");
-    }
     //  env_logger::init();
     Builder::from_default_env()
         .format(|buf, record| {
@@ -23,7 +20,7 @@ fn main() {
         .init();
 
     //  let path_metadata:PathBuf = std::path::PathBuf::from("/home/jrothbaum/python/readstat-rs/crates/readstat-tests/tests/data/all_types.sas7bdat");
-    let path = std::path::PathBuf::from("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.dta");
+    let path = std::path::PathBuf::from("/home/jrothbaum/Downloads/usa_00008.dta");
 
     
     let md = read::read_metadata(
@@ -35,13 +32,14 @@ fn main() {
     debug!("rows = {}", md.row_count);
 
     let skip_rows:u32 = 0;
-    let n_rows:u32 = 1000;
+    let n_rows:u32 = 1_000_000;
 
     let columns: Vec<usize> = vec![
         1,
         2,
     ];
 
+    /*
     let df = read::read_chunk(
         path.clone(),
         Some(&md),
@@ -51,6 +49,42 @@ fn main() {
         None
     )
         .unwrap();
+    */
+
+    use std::time::{Duration, Instant};
+    let start = Instant::now();
+    let n_threads = 16 as usize;
+    let df = read::read_chunks_parallel(
+        path.clone(),
+        Some(&md),
+        Some(skip_rows),
+        Some(n_rows),
+        // None,
+        //Some(columns)
+        None,
+        Some(n_threads)
+    )
+        .unwrap();
+    let duration = start.elapsed();
+    println!("Time elapsed: {:?}", duration);
+    dbg!(&df);
+
+
+
+    let start = Instant::now();
+    let df = read::read_chunks_parallel(
+        path.clone(),
+        Some(&md),
+        Some(skip_rows),
+        Some(n_rows),
+        // None,
+        //Some(columns)
+        None,
+        Some(1 as usize)
+    )
+        .unwrap();
+    let duration = start.elapsed();
+    println!("Time elapsed (1 thread): {:?}", duration);
     dbg!(&df);
 
     // let rsp = ReadStatPath::new(

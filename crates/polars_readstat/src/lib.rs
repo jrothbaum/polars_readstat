@@ -10,7 +10,7 @@ use pyo3_polars::{PyDataFrame, PySchema,PyExpr};
 use rayon::iter::empty;
 use read::{
     read_metadata,
-    read_chunk
+    read_chunks_parallel
 };
 use std::env;
 use std::thread;
@@ -23,6 +23,7 @@ pub struct read_readstat {
     path:String,
     size_hint: usize,
     n_rows: usize,
+    threads: Option<usize>,
     predicate: Option<Expr>,
     with_columns: Option<Vec<usize>>,
     n_rows_read: usize,
@@ -32,17 +33,16 @@ pub struct read_readstat {
 #[pymethods]
 impl read_readstat {
     #[new]
-    #[pyo3(signature = (path, size_hint, n_rows, 
-        //  threads
+    #[pyo3(signature = (path, size_hint, n_rows, threads
     ))]
     fn new_source(
         path:String,
         size_hint: Option<usize>,
         n_rows: Option<usize>,
-        //  threads: Option<usize>
+        threads: Option<usize>
     ) -> Self {
-        let size_hint = size_hint.unwrap_or(10_000);
-        //  let threads = configure_threads(threads);
+        let size_hint = size_hint.unwrap_or(100_000);
+        
         let n_rows_read = 0 as usize;
 
         //  Pre-fetch the metadata from the file, to populate the schema
@@ -54,6 +54,7 @@ impl read_readstat {
             path,
             size_hint,
             n_rows,
+            threads,
             predicate: None,
             with_columns: None,
             n_rows_read: n_rows_read,
@@ -94,15 +95,28 @@ impl read_readstat {
             // dbg!("n_rows_read = {}", self.n_rows_read);
             // dbg!("size_hint = {}", self.size_hint);
 
-            let rows_to_read = min(self.size_hint,self.n_rows);
+            let rows_to_read = min(self.size_hint,self.n_rows - self.n_rows_read);
 
-            let mut df = read_chunk(
-                in_path,
-                Some(&self.md),
-                Some(self.n_rows_read as u32),
-                Some(rows_to_read as u32),
-                self.with_columns.clone()
-            ).unwrap();
+            let mut df = Python::with_gil(|py| {
+                py.allow_threads(|| {
+                    read_chunks_parallel(
+                        in_path,
+                        Some(&self.md),
+                        Some(self.n_rows_read as u32),
+                        Some(rows_to_read as u32),
+                        self.with_columns.clone(),
+                        self.threads
+                    ).unwrap()
+                })
+            });
+            // let mut df = read_chunks_parallel(
+            //     in_path,
+            //     Some(&self.md),
+            //     Some(self.n_rows_read as u32),
+            //     Some(rows_to_read as u32),
+            //     self.with_columns.clone(),
+            //     self.threads
+            // ).unwrap();
             // dbg!(&df);
 
 
