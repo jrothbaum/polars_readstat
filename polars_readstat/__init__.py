@@ -35,17 +35,18 @@ def scan_readstat(path:str) -> pl.LazyFrame:
 
 
         # Set the predicate.
-        predicate_set = True
-        if predicate is not None:
-            try:
-                src.try_set_predicate(predicate)
-            except pl.exceptions.ComputeError:
-                predicate_set = False
+        # predicate_set = True
+        # if predicate is not None:
+        #     try:
+        #         src.try_set_predicate(predicate)
+        #     except pl.exceptions.ComputeError:
+        #         predicate_set = False
 
         while (out := src.next()) is not None:
             # If the source could not apply the predicate
             # (because it wasn't able to deserialize it), we do it here.
-            if not predicate_set and predicate is not None:
+            # if not predicate_set and predicate is not None:
+            if predicate is not None:
                 out = out.filter(predicate)
 
             yield out
@@ -86,8 +87,9 @@ if __name__ == "__main__":
         start_pl = time.time()
         df = scan_readstat(path)
         if columns is not None:
-            
+            df = df.select(columns)
             df = df.filter(pl.col("BIRTHYR") >= 1980)
+            
         df = df.collect()
         elapsed_pl = time.time() - start_pl
         print(df)
@@ -96,12 +98,12 @@ if __name__ == "__main__":
 
         start_pd = time.time()
         dfp = pd.read_stata(path)
-        # dfp = dfp[columns]
+        dfp = dfp[columns]
+        dfp = dfp[dfp['BIRTHYR'] >= 1980]
         elapsed_pd = time.time() - start_pd
         print(dfp)
         
         dfp = pl.from_pandas(dfp)
-        dfp = dfp[dfp['BIRTHYR'] >= 1980]
         print(dfp.equals(df))
         print(f"Polars: {elapsed_pl}")
         print(f"Pandas: {elapsed_pd}")

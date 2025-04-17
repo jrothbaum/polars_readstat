@@ -24,7 +24,6 @@ pub struct read_readstat {
     size_hint: usize,
     n_rows: usize,
     threads: Option<usize>,
-    predicate: Option<Expr>,
     with_columns: Option<Vec<usize>>,
     n_rows_read: usize,
     md:ReadStatMetadata
@@ -55,7 +54,6 @@ impl read_readstat {
             size_hint,
             n_rows,
             threads,
-            predicate: None,
             with_columns: None,
             n_rows_read: n_rows_read,
             md:md
@@ -68,9 +66,9 @@ impl read_readstat {
         )))
     }
 
-    fn try_set_predicate(&mut self, predicate: PyExpr) {
-        self.predicate = Some(predicate.0);
-    }
+    // fn try_set_predicate(&mut self, predicate: PyExpr) {
+    //     self.predicate = Some(predicate.0);
+    // }
 
     fn set_with_columns(&mut self, columns: Vec<String>) {
         let schema = self.schema().0;
@@ -97,7 +95,7 @@ impl read_readstat {
 
             let rows_to_read = min(self.size_hint,self.n_rows - self.n_rows_read);
 
-            let mut df = Python::with_gil(|py| {
+            let df = Python::with_gil(|py| {
                 py.allow_threads(|| {
                     read_chunks_parallel(
                         in_path,
@@ -123,14 +121,14 @@ impl read_readstat {
             // Apply predicate pushdown.
             // This is done after the fact, but there could be sources where this could be applied
             // lower.
-            if let Some(predicate) = &self.predicate {
-                df = df
-                    .lazy()
-                    .filter(predicate.clone())
-                    ._with_eager(true)
-                    .collect()
-                    .map_err(PyPolarsErr::from)?;
-            }
+            // if let Some(predicate) = &self.predicate {
+            //     df = df
+            //         .lazy()
+            //         .filter(predicate.clone())
+            //         ._with_eager(true)
+            //         .collect()
+            //         .map_err(PyPolarsErr::from)?;
+            // }
             
             //  Update number of rows read
             self.n_rows_read = self.n_rows_read + self.size_hint;
