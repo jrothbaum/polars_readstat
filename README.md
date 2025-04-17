@@ -15,11 +15,9 @@ This takes a modified version of the readstat-rs bindings to readstat's C functi
 
 Other notable features
 - Multithreaded using the number of pl.thread_pool_size
-- Currently slower than (but close-ish to) pandas on reading a large stata file 
+- Currently slower than (but close-ish to) pandas on reading a large SAS and Stata file
 
 Pending tasks:
 - Write support for Stata (dta) files.  Readstat itself cannot write SAS (sas7bdat) files that SAS can read, and I'm not fool enough to try to figure that out.  Also, any workflow that involves SAS should be one-way (SAS->something else) so you should only read SAS files, never write them.
-- Actual python polars bindings as an IO plugin - there is a functioning io plugin now, with filter pushdown but but I haven't tested it enough yet.  For readstat, filter pushdown just means it iterates over the columns that aren't being loaded doing nothing as they can't really be skipped, AFAIK
 - Unit tests on the data sets used by [pyreadstat](https://github.com/Roche/pyreadstat) to confirm that my output matches theirs
-- Error deserializing Expr due to mismatched polars versions io error failed to fill the whole buffer when filtering after scan...
-
+- Refactor some readstat-rs code to avoid redundant building of column arrays? - tradeoff between faster iteration across values and redundant copying of columns at the end...  Possibly need to fast-path/fork subset/non-subset code to speed up load of full file
