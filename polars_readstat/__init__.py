@@ -75,40 +75,119 @@ if __name__ == "__main__":
         print(df)
         print("\n\n\n")
 
-    def read_multithreaded_test():
+    def read_multithreaded_test_dta(subset_columns:bool=False,
+                                    filter_rows:bool=False):
         import time
 
         path = "/home/jrothbaum/Downloads/usa_00008.dta"
-        columns = ["index",
-                   "YEAR",
-                   "SAMPLE",
-                   "BIRTHYR"]
+
+        columns = None
+        if subset_columns:
+            columns = ["index",
+                        "YEAR",
+                        "SAMPLE",
+                        "BIRTHYR"]
+            
         
         start_pl = time.time()
         df = scan_readstat(path)
-        if columns is not None:
+        if subset_columns:
             df = df.select(columns)
+        if filter_rows:
             df = df.filter(pl.col("BIRTHYR") >= 1980)
             
         df = df.collect()
         elapsed_pl = time.time() - start_pl
-        print(df)
+        # print(df)
         
         import pandas as pd
 
         start_pd = time.time()
         dfp = pd.read_stata(path)
-        dfp = dfp[columns]
-        dfp = dfp[dfp['BIRTHYR'] >= 1980]
+        if subset_columns:
+            dfp = dfp[columns]
+        if filter_rows:
+            dfp = dfp[dfp['BIRTHYR'] >= 1980]
         elapsed_pd = time.time() - start_pd
-        print(dfp)
+        # print(dfp)
         
         dfp = pl.from_pandas(dfp)
-        print(dfp.equals(df))
-        print(f"Polars: {elapsed_pl}")
-        print(f"Pandas: {elapsed_pd}")
         
+        print(f"Subset: {subset_columns}, Filter: {filter_rows}")
+        print(f"    Polars: {elapsed_pl}")
+        print(f"    Pandas: {elapsed_pd}")
+        print(f"    Are identical: {dfp.equals(df)}")
     # read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.sas7bdat")
 
     # read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.dta")
-    read_multithreaded_test()
+
+    def dta_test():
+        print("\n\n\nStata")
+        read_multithreaded_test_dta(subset_columns=False,
+                                    filter_rows=False)
+        read_multithreaded_test_dta(subset_columns=True,
+                                    filter_rows=False)
+        read_multithreaded_test_dta(subset_columns=False,
+                                    filter_rows=True)
+        read_multithreaded_test_dta(subset_columns=True,
+                                    filter_rows=True)
+        
+
+    def read_multithreaded_test_sas7bdat(subset_columns:bool=False,
+                                    filter_rows:bool=False):
+        import time
+
+        path = "/home/jrothbaum/Downloads/psam_p17.sas7bdat"
+
+        columns = None
+        if subset_columns:
+            columns = ["SERIALNO",
+                       "STATE",
+                       "PINCP"]
+            
+        
+        start_pl = time.time()
+        df = scan_readstat(path)
+        if subset_columns:
+            df = df.select(columns)
+        if filter_rows:
+            df = df.filter(pl.col("PINCP") >= 5000)
+            
+        df = df.collect()
+        elapsed_pl = time.time() - start_pl
+        # print(df)
+        
+        import pandas as pd
+
+        start_pd = time.time()
+        dfp = pd.read_sas(path)
+        if subset_columns:
+            dfp = dfp[columns]
+        if filter_rows:
+            dfp = dfp[dfp['PINCP'] >= 5000]
+        elapsed_pd = time.time() - start_pd
+        # print(dfp)
+        
+        dfp = pl.from_pandas(dfp)
+        
+        print(f"Subset: {subset_columns}, Filter: {filter_rows}")
+        print(f"    Polars: {elapsed_pl}")
+        print(f"    Pandas: {elapsed_pd}")
+        print(f"    Are identical: {dfp.equals(df)}")
+
+    def sas7bdat_test():
+
+        path = "/home/jrothbaum/Downloads/psam_p06.sas7bdat"
+        
+        print("\n\n\nSAS")
+        read_multithreaded_test_sas7bdat(subset_columns=False,
+                                         filter_rows=False)
+        read_multithreaded_test_sas7bdat(subset_columns=True,
+                                         filter_rows=False)
+        read_multithreaded_test_sas7bdat(subset_columns=False,
+                                         filter_rows=True)
+        read_multithreaded_test_sas7bdat(subset_columns=True,
+                                         filter_rows=True)
+
+    # sas7bdat_test()
+    dta_test()
