@@ -1,0 +1,124 @@
+name: Build and publish polars_readstat
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: 
+
+jobs:
+  build:
+    name: Build wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.9", "3.10", "3.11", "3.12"] 
+        include:
+          - os: ubuntu-latest
+            rust-target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            rust-target: x86_64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+        shell: bash
+
+      - name: Add uv to PATH (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        shell: bash
+
+      - name: Add uv to PATH (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        shell: bash
+
+      - name: Install ReadStat dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool zlib1g-dev
+
+      - name: Install ReadStat dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install autoconf automake libtool
+
+      - name: Install ReadStat dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          choco install autoconf automake libtool
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Install build dependencies
+        run: |
+          uv install maturin
+        shell: bash
+
+      - name: Build wheels (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.rust-target }}
+          manylinux: auto
+          args: --release --strip --out dist --features="abi3-py39" 
+          singlefile: true
+
+      - name: Build wheels (macOS & Windows)
+        if: matrix.os != 'ubuntu-latest'
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.rust-target }}
+          args: --release --strip --out dist --features="abi3-py39"
+          singlefile: true
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
+          path: dist
+
+  # publish:
+  #   name: Publish to PyPI
+  #   needs: [build]
+  #   runs-on: ubuntu-latest
+  #   # Only run on tag pushes
+  #   if: startsWith(github.ref, 'refs/tags/')
+
+  #   steps:
+  #     - name: Download all wheels
+  #       uses: actions/download-artifact@v3
+  #       with:
+  #         path: dist
+
+  #     - name: Flatten wheel directory structure
+  #       run: |
+  #         find dist -name "*.whl" -exec mv {} dist/ \;
+  #         find dist -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} \;
+
+  #     - name: Publish to PyPI
+  #       uses: pypa/gh-action-pypi-publish@v1.8.10
+  #       with:
+  #         packages-dir: dist/
+  #         password: ${{ secrets.PYPI_API_TOKEN }}
+  #         # Uncomment for testing on Test PyPI first
+  #         # repository-url: https://test.pypi.org/legacy/
