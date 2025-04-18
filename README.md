@@ -24,11 +24,11 @@ Pending tasks:
 
 
 Benchmark:
-This was run on my computer, with the following specs (and reading the data from an external SSD):
-CPU: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics
-Cores: 16
-RAM: 14Gi
-OS: Linux Mint 22
+This was run on my computer, with the following specs (and reading the data from an external SSD):<br>
+CPU: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics<br>
+Cores: 16<br>
+RAM: 14Gi<br>
+OS: Linux Mint 22<br>
 
 This is not intended to be a scientific benchmark, just a test of loading realistic files.  The Stata and SAS files used are different.  One is tall and narrow (lots of rows, few columns) and the other is shorter and wider (fewer rows, many more columns).
 
@@ -38,79 +38,79 @@ All reported times are in seconds using python's time.time() (I know...).
 
 Compared to Pyreadstat (using read_file_multiprocessing for parallel processing):
 * Stata
-        Subset: False, Filter: False
-            Polars: 2.245
-            Pyreadstat: 7.200
-            Are identical: True
-        Subset: True, Filter: False
-            Polars: 0.892
-            Pyreadstat: 2.209
-            Are identical: True
-        Subset: False, Filter: True
-            Polars: 2.250
-            Pyreadstat: 7.598
-            Are identical: True
-        Subset: True, Filter: True
-            Polars: 0.892
-            Pyreadstat: 2.361
-            Are identical: True
+        * Subset: False, Filter: False
+            * Polars: 2.245
+            * Pyreadstat: 7.200
+            * Are identical: True
+        * Subset: True, Filter: False
+            * Polars: 0.892
+            * Pyreadstat: 2.209
+            * Are identical: True
+        * Subset: False, Filter: True
+            * Polars: 2.250
+            * Pyreadstat: 7.598
+            * Are identical: True
+        * Subset: True, Filter: True
+            * Polars: 0.892
+            * Pyreadstat: 2.361
+            * Are identical: True
 
 * SAS
-        Subset: False, Filter: False
-            Polars: 5.262
-            Pyreadstat: 13.693
-            Are identical: True
-        Subset: True, Filter: False
-            Polars: 2.575
-            Pyreadstat: 0.855
-            Are identical: True
-        Subset: False, Filter: True
-            Polars: 3.912
-            Pyreadstat: 13.485
-            Are identical: True
-        Subset: True, Filter: True
-            Polars: 1.0439
-            Pyreadstat: 1.445
-            Are identical: True
+        * Subset: False, Filter: False
+            * Polars: 5.262
+            * Pyreadstat: 13.693
+            * Are identical: True
+        * Subset: True, Filter: False
+            * Polars: 2.575
+            * Pyreadstat: 0.855
+            * Are identical: True
+        * Subset: False, Filter: True
+            * Polars: 3.912
+            * Pyreadstat: 13.485
+            * Are identical: True
+        * Subset: True, Filter: True
+            * Polars: 1.0439
+            * Pyreadstat: 1.445
+            * Are identical: True
 
 
 
 
 Compared to Pandas:
 * Stata
-        Subset: False, Filter: False
-            Polars: 2.312
-            Pandas: 1.276
-            Are identical: True
-        Subset: True, Filter: False
-            Polars: 0.877
-            Pandas: 1.312
-            Are identical: True
-        Subset: False, Filter: True
-            Polars: 2.335
-            Pandas: 1.366
-            Are identical: True
-        Subset: True, Filter: True
-            Polars: 0.908
-            Pandas: 1.378
-            Are identical: True
+        * Subset: False, Filter: False
+            * Polars: 2.312
+            * Pandas: 1.276
+            * Are identical: True
+        * Subset: True, Filter: False
+            * Polars: 0.877
+            * Pandas: 1.312
+            * Are identical: True
+        * Subset: False, Filter: True
+            * Polars: 2.335
+            * Pandas: 1.366
+            * Are identical: True
+        * Subset: True, Filter: True
+            * Polars: 0.908
+            * Pandas: 1.378
+            * Are identical: True
 * SAS
-        Subset: False, Filter: False
-            Polars: 3.843
-            Pandas: 8.432
-            Are identical: False
-        Subset: True, Filter: False
-            Polars: 1.027
-            Pandas: 4.125
-            Are identical: True
-        Subset: False, Filter: True
-            Polars: 3.848
-            Pandas: 8.534
-            Are identical: False
-        Subset: True, Filter: True
-            Polars: 1.624
-            Pandas: 4.531
-            Are identical: True
+        * Subset: False, Filter: False
+            * Polars: 3.843
+            * Pandas: 8.432
+            * Are identical: False
+        * Subset: True, Filter: False
+            * Polars: 1.027
+            * Pandas: 4.125
+            * Are identical: True
+        * Subset: False, Filter: True
+            * Polars: 3.848
+            * Pandas: 8.534
+            * Are identical: False
+        * Subset: True, Filter: True
+            * Polars: 1.624
+            * Pandas: 4.531
+            * Are identical: True
 
 
 
