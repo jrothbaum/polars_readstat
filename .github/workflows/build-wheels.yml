@@ -67,22 +67,19 @@ jobs:
       - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
         env:
-          # Install dependencies AND try to find/export LIBCLANG_PATH inside container
+          # Install dependencies inside the container
           CIBW_BEFORE_BUILD_LINUX: >
             apt-get update &&
-            apt-get install -y --no-install-recommends autoconf automake libtool zlib1g-dev build-essential pkg-config libclang-dev clang llvm-dev &&
-            export LIBCLANG_DIR=$(find /usr/lib/ -name libclang.so* | head -n 1 | xargs dirname) &&
-            echo "Found LIBCLANG_DIR: $LIBCLANG_DIR" &&
-            echo "LIBCLANG_PATH=$LIBCLANG_DIR" >> $GITHUB_ENV
-
+            apt-get install -y --no-install-recommends autoconf automake libtool zlib1g-dev build-essential pkg-config libclang-dev clang llvm-dev
+          # ---> Set LIBCLANG_PATH directly for the maturin-action step <---
+          # Try the standard library path for x86_64 Linux systems first.
+          LIBCLANG_PATH: /usr/lib/x86_64-linux-gnu
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.rust-target }}
-          manylinux: auto
-          # Add -vv for verbose output, hoping to see stderr
+          manylinux: auto # Or you could specify a specific image like 'manylinux2014'
+          # Keep verbose flags for now, remove them once it works
           args: --release --strip --out dist -vv
-          # singlefile: true # Keep this commented/removed as it's deprecated
-
       - name: Build wheels (macOS & Windows)
         if: matrix.os != 'ubuntu-latest'
         
