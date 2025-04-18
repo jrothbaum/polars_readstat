@@ -52,10 +52,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y autoconf automake libtool zlib1g-dev build-essential pkg-config libclang-dev clang llvm-dev
+          sudo apt-get install -y libiconv-hook-dev
+          
           # Find and set the libclang path
           LIBCLANG_PATH=$(find /usr/lib -name libclang.so | head -n 1 | xargs dirname)
           echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> $GITHUB_ENV
-          
+
       - name: Install ReadStat dependencies (macOS)
         if: matrix.os == 'macos-latest'
         run: |
