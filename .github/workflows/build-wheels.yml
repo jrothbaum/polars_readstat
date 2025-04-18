@@ -71,7 +71,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          uv install maturin
+          uv pip install maturin
         shell: bash
 
       - name: Build wheels (Linux)
