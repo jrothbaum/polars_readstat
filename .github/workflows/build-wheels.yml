@@ -24,84 +24,72 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
         with:
           python-version: ${{ matrix.python-version }}
-          
+
       - name: Install uv
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
         shell: bash
-        
-      - name: Add uv to PATH (Windows)
-        if: matrix.os == 'windows-latest'
+
+      # Add uv to PATH (Simplified)
+      - name: Add uv to PATH
         run: |
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
         shell: bash
-        
-      - name: Add uv to PATH (Unix)
-        if: matrix.os != 'windows-latest'
-        run: |
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-        shell: bash
-        
-      - name: Install ReadStat dependencies (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y autoconf automake libtool zlib1g-dev build-essential pkg-config libclang-dev clang llvm-dev
-          
-          
-          
-          
-          # Find and set the libclang path
-          CLANG_LIB=$(dpkg -L libclang-dev | grep libclang.so)
-          if [ -z "$CLANG_LIB" ]; then
-            CLANG_LIB=$(find /usr -name libclang.so 2>/dev/null | head -n 1)
-          fi
+
+      # REMOVED Linux dependency installation here - it will be done inside the container
+
       - name: Install ReadStat dependencies (macOS)
         if: matrix.os == 'macos-latest'
         run: |
           brew install autoconf automake libtool
-          
+
       - name: Install ReadStat dependencies (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          choco install msys2 llvm
-          C:\tools\msys64\usr\bin\bash -lc "pacman -S --noconfirm autoconf automake libtool make pkg-config zlib-devel"
-          echo "C:\tools\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo "LIBCLANG_PATH=C:\Program Files\LLVM\lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          choco install msys2 llvm --params "'/InstallDir:C:\tools\LLVM'" # Specify install dir for predictability
+          C:\tools\msys64\usr\bin\bash -lc "pacman -S --noconfirm --needed mingw-w64-x86_64-toolchain autoconf automake-wrapper libtool make mingw-w64-x86_64-pkg-config mingw-w64-x86_64-zlib"
+          echo "C:\tools\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append # Add mingw tools to PATH
+          echo "C:\tools\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append # Add msys tools like bash to PATH
+          echo "LIBCLANG_PATH=C:\tools\LLVM\lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append # Use specified install dir
         shell: powershell
-        
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust-target }}
-          
+
       - name: Install build dependencies
         run: |
           uv pip install --system maturin
         shell: bash
-        
+
       - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
+        # Use environment variable to install dependencies inside the manylinux container
+        env:
+          CIBW_BEFORE_BUILD_LINUX: >
+            apt-get update &&
+            apt-get install -y --no-install-recommends autoconf automake libtool zlib1g-dev build-essential pkg-config libclang-dev clang llvm-dev
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.rust-target }}
-          manylinux: auto
+          manylinux: auto # Or specify a version like 'manylinux2014'
           args: --release --strip --out dist
-          singlefile: true
-          
+          # singlefile: true # Deprecated in maturin 1.0, use --profile release-lto in args if needed for size
+
       - name: Build wheels (macOS & Windows)
         if: matrix.os != 'ubuntu-latest'
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.rust-target }}
           args: --release --strip --out dist
-          singlefile: true
-          
+          # singlefile: true # Deprecated
+
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
