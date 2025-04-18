@@ -52,10 +52,29 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y autoconf automake libtool zlib1g-dev build-essential pkg-config libclang-dev clang llvm-dev
-          # Find and set the libclang path
-          LIBCLANG_PATH=$(find /usr/lib -name libclang.so | head -n 1 | xargs dirname)
-          echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> $GITHUB_ENV
+          # Find and explicitly set LIBCLANG_PATH
+          CLANG_LIB=$(dpkg -L libclang-dev | grep libclang.so)
+          if [ -z "$CLANG_LIB" ]; then
+            CLANG_LIB=$(find /usr -name libclang.so 2>/dev/null | head -n 1)
+          fi
           
+          if [ -n "$CLANG_LIB" ]; then
+            echo "Found libclang at $CLANG_LIB"
+            LIBCLANG_PATH=$(dirname "$CLANG_LIB")
+            echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> $GITHUB_ENV
+            echo "Setting LIBCLANG_PATH to $LIBCLANG_PATH"
+          else
+            echo "Could not find libclang.so, installing additional packages"
+            sudo apt-get install -y libclang1
+            CLANG_LIB=$(find /usr -name libclang.so 2>/dev/null | head -n 1)
+            if [ -n "$CLANG_LIB" ]; then
+              LIBCLANG_PATH=$(dirname "$CLANG_LIB")
+              echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> $GITHUB_ENV
+              echo "Setting LIBCLANG_PATH to $LIBCLANG_PATH"
+            else
+              echo "Still could not find libclang.so, this will likely fail"
+            fi
+          fi
       - name: Install ReadStat dependencies (macOS)
         if: matrix.os == 'macos-latest'
         run: |
