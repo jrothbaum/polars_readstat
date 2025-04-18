@@ -80,7 +80,7 @@ jobs:
         with:
           target: ${{ matrix.rust-target }}
           manylinux: auto
-          args: --release --strip --out dist --features="abi3-py39"
+          args: --release --strip --out dist 
           singlefile: true
 
       - name: Build wheels (macOS & Windows)
@@ -88,7 +88,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.rust-target }}
-          args: --release --strip --out dist --features="abi3-py39"
+          args: --release --strip --out dist 
           singlefile: true
 
       - name: Upload wheels
