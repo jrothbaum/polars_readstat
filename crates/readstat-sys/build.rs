@@ -95,12 +95,13 @@ fn main() {
     } else if target.contains("apple-darwin") {
         println!("cargo:rustc-link-lib=iconv");
         println!("cargo:rustc-link-lib=z");
-    } else {
-        // Linux and other Unix-like systems
+    } else if target.contains("linux") {
+        // On Linux, iconv is part of glibc, so we don't need to link separately
         println!("cargo:rustc-link-lib=z");
-        
-        // On Linux, iconv might be part of glibc, so explicitly linking may not be necessary
-        // but we check for the presence of a separate iconv library just in case
+    } else {
+        // Other Unix-like systems
+        println!("cargo:rustc-link-lib=z");
+        // Try to link against libiconv if available
         if pkg_config::probe_library("libiconv").is_ok() {
             println!("cargo:rustc-link-lib=iconv");
         }

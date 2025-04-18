@@ -1,98 +1,104 @@
-name: Test Ubuntu Build
+name: Build and publish polars_readstat
 on:
-  workflow_dispatch: # Manual trigger only
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: # Allows manual triggering
 
 jobs:
   build:
-    name: Test Build on Ubuntu
-    runs-on: ubuntu-latest
-    
+    name: Build wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        include:
+          - os: ubuntu-latest
+            rust-target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            rust-target: x86_64-apple-darwin
+
     steps:
       - uses: actions/checkout@v4
       
-      - name: Set up Python 3.9
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
         with:
-          python-version: 3.9
+          python-version: ${{ matrix.python-version }}
           
       - name: Install uv
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
         shell: bash
         
-      - name: Add uv to PATH
+      - name: Add uv to PATH (Windows)
+        if: matrix.os == 'windows-latest'
         run: |
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
         shell: bash
         
-      - name: Install ReadStat dependencies
+      - name: Add uv to PATH (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        shell: bash
+        
+      - name: Install ReadStat dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y autoconf automake libtool zlib1g-dev build-essential pkg-config libclang-dev clang llvm-dev
-          
-          # Install GNU libiconv
-          wget http://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz
-          tar -xzvf libiconv-1.17.tar.gz
-          cd libiconv-1.17
-          ./configure --prefix=/usr/local
-          make
-          sudo make install
-          
           # Find and set the libclang path
           LIBCLANG_PATH=$(find /usr/lib -name libclang.so | head -n 1 | xargs dirname)
           echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> $GITHUB_ENV
           
+      - name: Install ReadStat dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install autoconf automake libtool
+          
+      - name: Install ReadStat dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          choco install msys2 llvm
+          C:\tools\msys64\usr\bin\bash -lc "pacman -S --noconfirm autoconf automake libtool make pkg-config zlib-devel"
+          echo "C:\tools\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "LIBCLANG_PATH=C:\Program Files\LLVM\lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        shell: powershell
+        
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-gnu
+          targets: ${{ matrix.rust-target }}
           
       - name: Install build dependencies
         run: |
           uv pip install --system maturin
         shell: bash
         
-      - name: Create patch for build.rs
-        run: |
-          cat > build_rs_patch.txt << 'EOF'
-          // For Linux, make iconv optional
-          if target.contains("windows-msvc") {
-              // Path to libclang
-              if env::var_os("LIBCLANG_PATH").is_none() {
-                  println!("cargo:rustc-env=LIBCLANG_PATH='C:/Program Files/LLVM/lib'");
-              }
-              println!("cargo:rustc-link-lib=static=iconv");
-              println!("cargo:rustc-link-lib=static=z");
-          } else if target.contains("apple-darwin") {
-              println!("cargo:rustc-link-lib=iconv");
-              println!("cargo:rustc-link-lib=z");
-          } else {
-              // Linux and other Unix-like systems
-              println!("cargo:rustc-link-lib=z");
-              
-              // On Linux, try to find libiconv but don't fail if not found
-              let _ = pkg_config::probe_library("libiconv");
-              
-              // Specify the library search path for libiconv if installed from source
-              println!("cargo:rustc-link-search=/usr/local/lib");
-              println!("cargo:rustc-env=LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH");
-          }
-          EOF
-          
-          # Apply the patch (replacing the existing if-else block)
-          sed -i '/if target.contains("windows-msvc")/,/^    }/c\' crates/readstat-sys/build.rs
-          cat build_rs_patch.txt >> crates/readstat-sys/build.rs
-          
-      - name: Build wheels
+      - name: Build wheels (Linux)
+        if: matrix.os == 'ubuntu-latest'
         uses: PyO3/maturin-action@v1
         with:
-          target: x86_64-unknown-linux-gnu
+          target: ${{ matrix.rust-target }}
           manylinux: auto
+          args: --release --strip --out dist
+          singlefile: true
+          
+      - name: Build wheels (macOS & Windows)
+        if: matrix.os != 'ubuntu-latest'
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.rust-target }}
           args: --release --strip --out dist
           singlefile: true
           
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-ubuntu-3.9
+          name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
           path: dist
