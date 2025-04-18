@@ -23,7 +23,7 @@ Pending tasks:
 - Unit tests on the data sets used by [pyreadstat](https://github.com/Roche/pyreadstat) to confirm that my output matches theirs
 
 
-Benchmark:
+## :Benchmark:
 This was run on my computer, with the following specs (and reading the data from an external SSD):<br>
 CPU: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics<br>
 Cores: 16<br>
@@ -36,7 +36,7 @@ For each file, I compared 4 different scenarios: 1) load the full file, 2) load 
 
 All reported times are in seconds using python's time.time() (I know...).
 
-Compared to Pyreadstat (using read_file_multiprocessing for parallel processing):
+### :Compared to Pyreadstat (using read_file_multiprocessing for parallel processing):
 * Stata
   * Subset: False, Filter: False
     * Polars: 2.245
@@ -76,7 +76,7 @@ Compared to Pyreadstat (using read_file_multiprocessing for parallel processing)
 
 
 
-Compared to Pandas:
+### :Compared to Pandas:
 * Stata
   * Subset: False, Filter: False
     * Polars: 2.312
