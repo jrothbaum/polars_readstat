@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch: 
+  workflow_dispatch:  # Allows manual triggering
 
 jobs:
   build:
@@ -14,7 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12"] 
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
         include:
           - os: ubuntu-latest
             rust-target: x86_64-unknown-linux-gnu
@@ -80,7 +80,7 @@ jobs:
         with:
           target: ${{ matrix.rust-target }}
           manylinux: auto
-          args: --release --strip --out dist --features="abi3-py39" 
+          args: --release --strip --out dist --features="abi3-py39"
           singlefile: true
 
       - name: Build wheels (macOS & Windows)
@@ -92,7 +92,7 @@ jobs:
           singlefile: true
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4  # Updated from v3 to v4
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
           path: dist
@@ -106,7 +106,7 @@ jobs:
 
   #   steps:
   #     - name: Download all wheels
-  #       uses: actions/download-artifact@v3
+  #       uses: actions/download-artifact@v4  # Updated from v3 to v4
   #       with:
   #         path: dist
 
@@ -120,5 +120,3 @@ jobs:
   #       with:
   #         packages-dir: dist/
   #         password: ${{ secrets.PYPI_API_TOKEN }}
-  #         # Uncomment for testing on Test PyPI first
-  #         # repository-url: https://test.pypi.org/legacy/
