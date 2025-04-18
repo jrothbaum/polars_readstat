@@ -1,5 +1,3 @@
-use lazy_static::lazy_static;
-use log::debug;
 use regex::Regex;
 
 use crate::rs_var::ReadStatVarFormatClass;
@@ -45,10 +43,10 @@ fn match_var_format_sas(
     let time_ms_regex = Regex::new(r"(?i)^(TIME|HHMM|TOD)[0-9]*\.3$").unwrap();
     
     // Time formats with microseconds (usually .6 precision)
-    let time_us_regex = Regex::new(r"(?i)^(TIME|HHMM|TOD)[0-9]*\.6$").unwrap();
+    //  let time_us_regex = Regex::new(r"(?i)^(TIME|HHMM|TOD)[0-9]*\.6$").unwrap();
     
     // Time formats with nanoseconds (usually .9 precision)
-    let time_ns_regex = Regex::new(r"(?i)^(TIME|HHMM|TOD)[0-9]*\.9$").unwrap();
+    //  let time_ns_regex = Regex::new(r"(?i)^(TIME|HHMM|TOD)[0-9]*\.9$").unwrap();
     
     // Basic datetime formats without fractional seconds
     let datetime_regex = Regex::new(r"(?i)^(DATETIME|E8601DT|B8601DT|MDYAMPM|DTDATE|DTMONYY)[0-9]*\.?[0-9]*$").unwrap();

@@ -1,9 +1,7 @@
-use log::debug;
 use num_derive::FromPrimitive;
 use serde::Serialize;
-use std::{collections::BTreeMap, os::raw::c_int};
 
-use crate::{common::ptr_to_string, rs_metadata::ReadStatVarMetadata};
+use crate::common::ptr_to_string;
 
 use crate::rs_data::Extensions;
 // Constants
@@ -15,7 +13,7 @@ const SEC_SHIFT_SPSS: i64 = 12219379200;
 
 pub const SEC_MILLISECOND: i64 = 1_000;
 pub const SEC_MICROSECOND: i64 = 1_000_000;
-pub const SEC_NANOSECOND: i64 = 1_000_000_000;
+//  pub const SEC_NANOSECOND: i64 = 1_000_000_000;
 
 
 
@@ -136,10 +134,10 @@ impl ReadStatVar {
         let value = match extension {
             Extensions::sas7bdat |
                 Extensions::dta => {
-                (value - SEC_SHIFT_SAS_STATA* SEC_MILLISECOND)
+                value - SEC_SHIFT_SAS_STATA* SEC_MILLISECOND
             },
             Extensions::sav => {
-                (value - SEC_SHIFT_SPSS* SEC_MILLISECOND)
+                value - SEC_SHIFT_SPSS* SEC_MILLISECOND
             },
             _ => {
                 value 
@@ -147,191 +145,6 @@ impl ReadStatVar {
         };
         value 
     }
-
-
-
-
-/* 
-    pub fn get_readstat_value(
-        value: readstat_sys::readstat_value_t,
-        value_type: readstat_sys::readstat_type_t,
-        is_missing: c_int,
-        vars: &BTreeMap<i32, ReadStatVarMetadata>,
-        var_index: i32,
-    ) -> Self {
-        match value_type {
-            readstat_sys::readstat_type_e_READSTAT_TYPE_STRING
-            | readstat_sys::readstat_type_e_READSTAT_TYPE_STRING_REF => {
-                if is_missing == 1 {
-                    // return
-                    Self::ReadStat_String(None)
-                } else {
-                    // get value
-                    let value =
-                        unsafe { ptr_to_string(readstat_sys::readstat_string_value(value)) };
-
-                    // debug
-                    debug!("value is {:#?}", &value);
-
-                    // return
-                    Self::ReadStat_String(Some(value))
-                }
-            }
-            readstat_sys::readstat_type_e_READSTAT_TYPE_INT8 => {
-                if is_missing == 1 {
-                    Self::ReadStat_i8(None)
-                } else {
-                    // get value
-                    let value = unsafe { readstat_sys::readstat_int8_value(value) };
-
-                    // debug
-                    debug!("value is {:#?}", value);
-
-                    // return
-                    Self::ReadStat_i8(Some(value))
-                }
-            }
-            readstat_sys::readstat_type_e_READSTAT_TYPE_INT16 => {
-                if is_missing == 1 {
-                    Self::ReadStat_i16(None)
-                } else {
-                    // get value
-                    let value = unsafe { readstat_sys::readstat_int16_value(value) };
-
-                    // debug
-                    debug!("value is {:#?}", value);
-
-                    // return
-                    Self::ReadStat_i16(Some(value))
-                }
-            }
-            readstat_sys::readstat_type_e_READSTAT_TYPE_INT32 => {
-                if is_missing == 1 {
-                    Self::ReadStat_i32(None)
-                } else {
-                    // get value
-                    let value = unsafe { readstat_sys::readstat_int32_value(value) };
-
-                    // debug
-                    debug!("value is {:#?}", value);
-
-                    // return
-                    Self::ReadStat_i32(Some(value))
-                }
-            }
-            readstat_sys::readstat_type_e_READSTAT_TYPE_FLOAT => {
-                if is_missing == 1 {
-                    Self::ReadStat_f32(None)
-                } else {
-                    // get value
-                    let value = unsafe { readstat_sys::readstat_float_value(value) };
-
-                    // debug
-                    debug!("value (before parsing) is {:#?}", value);
-
-                    let value: f32 = lexical::parse(format!("{1:.0$}", DIGITS, value)).unwrap();
-
-                    // debug
-                    debug!("value (after parsing) is {:#?}", value);
-
-                    // return
-                    Self::ReadStat_f32(Some(value))
-                }
-            }
-            readstat_sys::readstat_type_e_READSTAT_TYPE_DOUBLE => {
-                let var_format_class = match vars.get(&var_index) {
-                    Some(var_info) => var_info.var_format_class,
-                    None => None
-                };
-                //  let var_format_class = vars.get(&var_index).unwrap().var_format_class;
-
-                if is_missing == 1 {
-                    match var_format_class {
-                        None => Self::ReadStat_f64(None),
-                        Some(fc) => match fc {
-                            ReadStatVarFormatClass::Date => Self::ReadStat_Date(None),
-                            ReadStatVarFormatClass::DateTime => Self::ReadStat_DateTime(None),
-                            // ReadStatVarFormatClass::DateTimeWithMilliseconds => {
-                            //     Self::ReadStat_DateTimeWithMilliseconds(None)
-                            // }
-                            // ReadStatVarFormatClass::DateTimeWithMicroseconds => {
-                            //     Self::ReadStat_DateTimeWithMicroseconds(None)
-                            // }
-                            // ReadStatVarFormatClass::DateTimeWithNanoseconds => {
-                            //     Self::ReadStat_DateTimeWithNanoseconds(None)
-                            // }
-                            ReadStatVarFormatClass::Time => Self::ReadStat_Time(None),
-                            // ReadStatVarFormatClass::TimeWithMilliseconds => Self::ReadStat_TimeWithMilliseconds(None),
-                            // ReadStatVarFormatClass::TimeWithMicroseconds => Self::ReadStat_TimeWithMicroseconds(None),
-                            // ReadStatVarFormatClass::TimeWithNanoseconds => Self::ReadStat_TimeWithNanoseconds(None),
-                        },
-                    }
-                } else {
-                    // get value
-                    let value = unsafe { readstat_sys::readstat_double_value(value) };
-
-                    // debug
-                    debug!("value (before parsing) is {:#?}", value);
-
-                    let value: f64 = lexical::parse(format!("{1:.0$}", DIGITS, value)).unwrap();
-
-                    // debug
-                    debug!("value (after parsing) is {:#?}", value);
-
-                    // is double a value or is it really a date, time, or datetime?
-                    match var_format_class {
-                        None => Self::ReadStat_f64(Some(value)),
-                        Some(fc) => match fc {
-                            ReadStatVarFormatClass::Date => Self::ReadStat_Date(Some(
-                                (value as i32).checked_sub(DAY_SHIFT_SAS_STATA).unwrap(),
-                            )),
-                            ReadStatVarFormatClass::DateTime => Self::ReadStat_DateTime(Some(
-                                (value as i64).checked_sub(SEC_SHIFT_SAS_STATA).unwrap(),
-                            )),
-                            // ReadStatVarFormatClass::DateTimeWithMilliseconds => {
-                            //     Self::ReadStat_DateTime(Some(
-                            //         (value as i64).checked_sub(SEC_SHIFT*SEC_MILLISECOND).unwrap(),
-                            //     ))
-                            // }
-                            // ReadStatVarFormatClass::DateTimeWithMicroseconds => {
-                            //     Self::ReadStat_DateTime(Some(
-                            //         (value as i64).checked_sub(SEC_SHIFT*SEC_MICROSECOND).unwrap(),
-                            //     ))
-                            // }
-                            // ReadStatVarFormatClass::DateTimeWithNanoseconds => {
-                            //     Self::ReadStat_DateTime(Some(
-                            //         (value as i64).checked_sub(SEC_SHIFT*SEC_NANOSECOND).unwrap(),
-                            //     ))
-                            // }
-                            ReadStatVarFormatClass::Time => {
-                                Self::ReadStat_DateTime(Some(
-                                    (value as i64).checked_sub(SEC_SHIFT*SEC_MILLISECOND).unwrap(),
-                                ))
-                            }
-                            // ReadStatVarFormatClass::TimeWithMilliseconds => {
-                            //     Self::ReadStat_DateTime(Some(
-                            //         (value as i64).checked_sub(SEC_SHIFT*SEC_MILLISECOND).unwrap(),
-                            //     ))
-                            // }
-                            // ReadStatVarFormatClass::TimeWithMicroseconds => {
-                            //     Self::ReadStat_DateTime(Some(
-                            //         (value as i64).checked_sub(SEC_SHIFT*SEC_MICROSECOND).unwrap(),
-                            //     ))
-                            // }
-                            // ReadStatVarFormatClass::TimeWithNanoseconds => {
-                            //     Self::ReadStat_DateTime(Some(
-                            //         (value as i64).checked_sub(SEC_SHIFT*SEC_NANOSECOND).unwrap(),
-                            //     ))
-                            // }
-                        },
-                    }
-                }
-            }
-            // exhaustive
-            _ => unreachable!(),
-        }
-    }
-    */
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]

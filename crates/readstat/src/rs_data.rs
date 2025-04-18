@@ -1,20 +1,8 @@
-
-use chrono::DateTime;
-use polars_arrow::array::{Array,PrimitiveArray,Utf8Array,MutableUtf8Array};
 use polars::prelude::{
-    datatypes::{DataType, TimeUnit}, DataFrame, PlSmallStr, PolarsResult, Schema, Series};
-/*
-use arrow2::{
-    array::{Array, PrimitiveArray, Utf8Array},
-    chunk::Chunk,
-    datatypes::{DataType, Schema, TimeUnit},
+    datatypes::DataType, DataFrame, PolarsResult, Schema, Series
 };
- */
-use colored::Colorize;
-use indicatif::{ProgressBar, ProgressStyle};
 use log::debug;
 use num_traits::FromPrimitive;
-use path_abs::PathInfo;
 use std::{
     collections::BTreeMap,
     error::Error,
@@ -31,8 +19,7 @@ use crate::{
         schema_with_filter_pushdown
     },
     rs_parser::ReadStatParser,
-    rs_path::ReadStatPath,
-    rs_var::{ReadStatVar,SEC_MICROSECOND},
+    rs_path::ReadStatPath
 };
 
 pub enum Extensions  {
@@ -291,7 +278,7 @@ impl ReadStatData {
         let ctx = self as *mut ReadStatData as *mut c_void;
 
         // initialize error
-        let error: readstat_sys::readstat_error_t = readstat_sys::readstat_error_e_READSTAT_OK;
+        // let error: readstat_sys::readstat_error_t = readstat_sys::readstat_error_e_READSTAT_OK;
         // debug!("Initially, error ==> {:#?}", &error);
 
         
@@ -392,7 +379,7 @@ impl ReadStatData {
                     cols_index.push(None)
                 }
 
-                let idx = idx + 1;
+                // let idx = idx + 1;
             }
             
             Self {

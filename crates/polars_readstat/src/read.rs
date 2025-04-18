@@ -1,12 +1,11 @@
-use log::{debug, info, warn, error};
+//  use log::{debug, info, warn, error};
+use log::debug;
 use polars::frame::DataFrame;
-use polars::prelude::PlSmallStr;
 use polars_core::utils::concat_df;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::cmp::min;
-use std::io::Read;
-use std::{env, io::Write, path::PathBuf};
-use std::{error::Error, fmt, sync::Arc, thread};
+use std::{env, path::PathBuf};
+use std::{error::Error, thread};
 
 use path_abs::{PathAbs, PathInfo};
 
@@ -212,31 +211,3 @@ pub fn read_chunk(
         "Failed to read DataFrame"
     )) as Box<dyn Error + Send + Sync>)
 }
-/*
-pub fn read_chunk(
-    in_path:PathBuf,
-    md:&ReadStatMetadata
-) -> Result<Vec<Box<dyn Array>> ,Box<dyn Error + Send + Sync>> {
-
-
-
-    debug!("rows = {}", md.row_count);
-    let rsp = ReadStatPath::new(
-        in_path.clone(),
-        None,
-        None,
-        false,
-        true,
-        None,
-        None).unwrap();
-    let mut rsd = ReadStatData::new()
-            .init(md.clone(),0,2);
-    debug!("Read chunk 1");
-    let read_result = rsd.read_data(&rsp);
-
-    let arrays = rsd.chunk.unwrap().into_arrays();
-
-    Ok(arrays)
-}
-
- */

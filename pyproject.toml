@@ -34,4 +34,5 @@ module-name = "polars_readstat"
 dev = [
     "pandas>=2.2.3",
     "pyarrow>=19.0.1",
+    "pyreadstat>=1.2.8",
 ]

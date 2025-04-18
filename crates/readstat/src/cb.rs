@@ -230,8 +230,8 @@ pub extern "C" fn handle_value(
     }
 
 
-    let value_type: readstat_sys::readstat_type_t =
-        unsafe { readstat_sys::readstat_value_type(value) };
+    // let value_type: readstat_sys::readstat_type_t =
+    //     unsafe { readstat_sys::readstat_value_type(value) };
     let is_missing: bool = unsafe { readstat_sys::readstat_value_is_system_missing(value) } > 0;
 
     if is_missing {

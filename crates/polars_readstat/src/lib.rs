@@ -1,20 +1,15 @@
-use log::{debug, info, warn, error};
+//  use log::{debug, info, warn, error};
 
 mod read;
-use polars_lazy::frame::IntoLazy;
 use polars::prelude::*;
 use pyo3::prelude::*;
-use pyo3::types::PyList;
-use pyo3_polars::error::PyPolarsErr;
-use pyo3_polars::export::polars_plan::dsl::Expr;
-use pyo3_polars::{PyDataFrame, PySchema,PyExpr};
-use rayon::iter::empty;
+use pyo3_polars::{PyDataFrame, PySchema};
+
 use read::{
     read_metadata,
     read_chunks_parallel
 };
-use std::env;
-use std::thread;
+
 use std::cmp::min;
 
 use readstat::ReadStatMetadata;

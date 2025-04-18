@@ -321,6 +321,7 @@ dependencies = [
 dev = [
     { name = "pandas" },
     { name = "pyarrow" },
+    { name = "pyreadstat" },
 ]
 
 [package.metadata]
@@ -335,6 +336,7 @@ requires-dist = [
 dev = [
     { name = "pandas", specifier = ">=2.2.3" },
     { name = "pyarrow", specifier = ">=19.0.1" },
+    { name = "pyreadstat", specifier = ">=1.2.8" },
 ]
 
 [[package]]
@@ -393,6 +395,42 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1d/b2/31537cf4b1ca988837256c910a668b553fceb8f069bedc4b1c826024b52c/pycparser-2.22.tar.gz", hash = "sha256:491c8be9c040f5390f5bf44a5b07752bd07f56edf992381b05c701439eec10f6", size = 172736 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/13/a3/a812df4e2dd5696d1f351d58b8fe16a405b234ad2886a0dab9183fb78109/pycparser-2.22-py3-none-any.whl", hash = "sha256:c3702b6d3dd8c7abc1afa565d7e63d53a1d0bd86cdc24edd75470f4de499cfcc", size = 117552 },
+]
+
+[[package]]
+name = "pyreadstat"
+version = "1.2.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pandas" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0b/2b/55fc42110070c88eec4d34d0842c4beee15d6b46f6e49a679b2e9c9a92ea/pyreadstat-1.2.8.tar.gz", hash = "sha256:ced3f261659f10d23843e36ec3ad6699fcac9a863820e53c6fb4b6c1abcf9e94", size = 560144 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/77/7c/8ed213ae5aa232ed773a55beb7f0d6eea50750539d030c2dae95b9ac7aec/pyreadstat-1.2.8-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:33c9cd24f48845f5cc0d709ff940d0445b1046ee0f3ceee66996674760c5e773", size = 609298 },
+    { url = "https://files.pythonhosted.org/packages/4a/d1/97344054b579974c8918a076214f7acfc905143c4d465c7efe4453fab368/pyreadstat-1.2.8-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:ac7fb58ff865f8d1c35f8fb400a1082f8319fb98c3264170ffb013a1cb86b4ae", size = 560854 },
+    { url = "https://files.pythonhosted.org/packages/e9/68/004a899d12c382d79f3f56572b4378376e31529a447531be74b073d248ac/pyreadstat-1.2.8-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c9ded0866282a7433535d8b6d3fecdadfc7ad67b8563edab4a4eac77fdcfcea0", size = 2799292 },
+    { url = "https://files.pythonhosted.org/packages/a5/44/a2c8ae78af2e9abc2ee72b305b45114bb363dcf51b6d610f510ca76afc51/pyreadstat-1.2.8-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:559e4c3d08170ccd399505156f6c3b094018bba58967ec4ee565c1c08377f294", size = 2836994 },
+    { url = "https://files.pythonhosted.org/packages/83/31/19c7782d19184456383574871fe5cc921512acf3a6f940eac4a0258a3243/pyreadstat-1.2.8-cp310-cp310-win_amd64.whl", hash = "sha256:44bf5e4f28484693c212f7c461b4a246355b556631719a980c45b81db92f55fa", size = 2418349 },
+    { url = "https://files.pythonhosted.org/packages/9f/53/5b84ed3194e31cd6faa702e7638713a7887613f2a93890a315a3de6ed942/pyreadstat-1.2.8-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:5f5fc6277d6893ca658523fba9865bb9481b057eda33c3027bbc3d340c426f90", size = 609311 },
+    { url = "https://files.pythonhosted.org/packages/bd/77/481a2183dee918b7e89f22e2337f27de9b8ac8c40b8f3fab68d3b4e2ca25/pyreadstat-1.2.8-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:33917bc6af674cdf0c989004fcb551bf27e33712dc961d301650f7673ffffb56", size = 560977 },
+    { url = "https://files.pythonhosted.org/packages/35/40/67c5fb1a4fbc39dea7f6bb63954ee56c7a5381c900c848c828cbc7e7c1bb/pyreadstat-1.2.8-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:f968059e59fb23bf3545a399a454141bf34b3ae664209affa8f31dad47ca5791", size = 2934447 },
+    { url = "https://files.pythonhosted.org/packages/a8/30/de220f547fa5fb2319c9f0d3ce0852d57bd3aa88596a88784023159ef8eb/pyreadstat-1.2.8-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ea6548c286b3d1a9b2c5fd05682c40bfdac380bf0fdebda2f643571d4c0e2aff", size = 2947217 },
+    { url = "https://files.pythonhosted.org/packages/ea/26/f477b85c4b66b83567e7de6ab17de2766e1699f925d9f3e61bd7be218faf/pyreadstat-1.2.8-cp311-cp311-win_amd64.whl", hash = "sha256:b6b40b88b0d9468eee4204c390963b7df67869ebe3e5422f1e61445ef514668a", size = 2419868 },
+    { url = "https://files.pythonhosted.org/packages/1f/1b/3078060c869a547449293b42f132fbd6ef119f80fdc6a15035fd3d89aad5/pyreadstat-1.2.8-cp312-cp312-macosx_10_9_x86_64.whl", hash = "sha256:e461d9e58024ab2bf8d1cb34949f746c939c3ebc2c56da35d4fb9f02d78ed569", size = 593712 },
+    { url = "https://files.pythonhosted.org/packages/b0/6a/2a4c5deae5a89ba6231e7f028df63e26f40800e7834b11c58dd73caafc68/pyreadstat-1.2.8-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:7b4b91826bd1bfe217eeb1ab3df9a1b735e3b9abcd4f66a7c8078b0f67e25c64", size = 557999 },
+    { url = "https://files.pythonhosted.org/packages/05/b1/673f6b7003ce6cdab23022cbb897ef00f4236acc4f9fd54c5af86242a4c7/pyreadstat-1.2.8-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:dd724e7a1a84ba3eade252a2a88695dd53030b149b5a740578f21c1636e66ca7", size = 2939430 },
+    { url = "https://files.pythonhosted.org/packages/ec/45/1b82971fcf8dc878c0a5f0bad1123e6afd1a2f449802a3bf215bfea15b56/pyreadstat-1.2.8-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:f3b61637834ce8b0dcf6f79c97cd2e2067ff7faf2f5cf8bb321ce4b6d9541e9e", size = 2980988 },
+    { url = "https://files.pythonhosted.org/packages/ab/0e/b21f097c53c02b3fc256680ff5dc1b1497362f9ec4c62b4f32e1fed0fe36/pyreadstat-1.2.8-cp312-cp312-win_amd64.whl", hash = "sha256:8374290f1256c5c5759310f1c9b3d8b5428325be62b11937dc14c1968b53fa91", size = 2411193 },
+    { url = "https://files.pythonhosted.org/packages/ef/5d/2df4c474ce8a1a01c328a24e4e2690e52a115b625d90cf7c9562e823a4ff/pyreadstat-1.2.8-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:e9a31ec6ea94f8dc1dcbabc440419ea9cd908587f7e1b9658bfdc643551fb63f", size = 589507 },
+    { url = "https://files.pythonhosted.org/packages/42/15/c94e1175826935b0cc81c2ec3596c042834d8ae2828e3811237a28ae0f60/pyreadstat-1.2.8-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:4bcce81a16f48dd1264c8d3fedcab6d9ed05d128bed929731c397ca599dee885", size = 557226 },
+    { url = "https://files.pythonhosted.org/packages/35/b2/df1dd1ff099097af4bdb6fcbbe44b6836a7f573bb849974b7a006accf125/pyreadstat-1.2.8-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:d9d8fdedd74afdb40ed5eeb71aab20c5da3a35f896c4916c120c8d7ea3050d8e", size = 2929914 },
+    { url = "https://files.pythonhosted.org/packages/3c/59/aabc0f6c4b63d200e600ab782bb0d9b2013807013585dc9b8e1583e860dd/pyreadstat-1.2.8-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:36782510d5e54b253bb4115387070327bafe19e82bed4e4bdeb1c73ae4a92b1c", size = 2975453 },
+    { url = "https://files.pythonhosted.org/packages/45/90/af95ca4f6f285dc21738e51bf6571148ac0355ba202805f2f083be394bb1/pyreadstat-1.2.8-cp313-cp313-win_amd64.whl", hash = "sha256:6535d80b6d9eacecf86b7710a01e397706edc3ad33ac8d76aea4c429fc8a2eef", size = 2411736 },
+    { url = "https://files.pythonhosted.org/packages/ce/a6/101cbf504e5e71fd5ee8a5d54f42abeb09385af23a9047434fd95e1afe50/pyreadstat-1.2.8-cp39-cp39-macosx_10_9_x86_64.whl", hash = "sha256:5ad635ec05a44e8cdd3247ead877bf3b007962ed766d12c0947261f047e5dbca", size = 609964 },
+    { url = "https://files.pythonhosted.org/packages/6d/d0/b7237cd51d97b90c6a91f62e3eda71bf88006d54d471b89eda481bff4e62/pyreadstat-1.2.8-cp39-cp39-macosx_11_0_arm64.whl", hash = "sha256:a8623352416dc80cc4c7b89019dede89eec9198b92fe57e9d30284e520a2cb55", size = 561423 },
+    { url = "https://files.pythonhosted.org/packages/29/b4/92150767b4f3f1c30cbcc90a83a623b1ec313bae068241b2809841c55695/pyreadstat-1.2.8-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:eba39ac73d5282d35bde499815c66b86f5d79c37e177efb0c20799f7fd4f2422", size = 2799452 },
+    { url = "https://files.pythonhosted.org/packages/cd/e1/f01e6dec062d0cf71eb5fd8090def96a15935f946d7305dcc1ebb4dd1ed6/pyreadstat-1.2.8-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:6c54558eb2f16a3eaa997fe6579da3897c2cb92d0a04ce8a02121b3b14693094", size = 2834687 },
+    { url = "https://files.pythonhosted.org/packages/b9/a9/7be0ece5ccb2e0493cf17735076aa3b08c1551809d683019429b572a61da/pyreadstat-1.2.8-cp39-cp39-win_amd64.whl", hash = "sha256:c36fdecd14ef121126c87ffe62f132c65bf348ace837beecc2c36a97788b9ea5", size = 2418837 },
 ]
 
 [[package]]

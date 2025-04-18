@@ -1,6 +1,6 @@
-use log::{debug, info, warn, error};
+//  use log::{debug, info, warn, error};
+use log::debug;
 use env_logger::Builder;
-use polars::prelude::PlSmallStr;
 use std::{env, io::Write};
 
 
@@ -52,7 +52,7 @@ fn main() {
         .unwrap();
     */
 
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
     let start = Instant::now();
     let n_threads = 16 as usize;
     let df = read::read_chunks_parallel(

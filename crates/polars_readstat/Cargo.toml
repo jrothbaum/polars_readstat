@@ -16,18 +16,9 @@ pyo3 = { version = "0.23.0", features = ["extension-module", "abi3-py39"] }
 pyo3-polars = { version = "0.20.0", features = ["derive", "lazy"] }
 
 path_abs = "0.5"
-polars = { version = "0.46.0", default-features = true }
-polars-arrow = { version = "0.46.0", default-features = false }
+polars = { version = "0.46.0", default-features = false }
 polars-core = "0.46.0"
-polars-lazy = "0.46.0"
-readstat-sys = { path = "../readstat-sys" }
 readstat = { path = "../readstat" }
-iconv-sys = { path = "../iconv-sys" }
-chrono = { version = "0.4", features = ["serde"] } 
-libc = "0.2"
-thiserror = "2.0.12"
 rayon = "1.8"
-lazy_static = "1.4"
-regex = "1.10"
 log = "0.4"
 env_logger = "0.11.8"
