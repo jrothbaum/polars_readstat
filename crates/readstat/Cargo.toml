@@ -10,6 +10,7 @@ repository = "https://github.com/jrothbaum/polars_readstat"
 [dependencies]
 polars = { version = "0.46.0", default-features = true }
 polars-arrow = { version = "0.46.0", default-features = true }
+polars-lazy = "0.46.0"
 clap = { version = "4", features = ["derive", "unicode", "wrap_help"] }
 crossbeam = "0.8"
 csv = "1.3"

@@ -3,6 +3,7 @@ use polars::frame::DataFrame;
 use polars::prelude::PlSmallStr;
 use polars_core::utils::concat_df;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use std::cmp::min;
 use std::io::Read;
 use std::{env, io::Write, path::PathBuf};
 use std::{error::Error, fmt, sync::Arc, thread};
@@ -70,7 +71,7 @@ pub fn read_chunks_parallel(
     let n_rows = if n_rows.is_none() || n_rows == Some(0) {
         Some(md_ref.row_count as u32)
     } else {
-        n_rows
+        Some(min(n_rows.unwrap(),md_ref.row_count as u32))
     };
 
     let skip_rows = if skip_rows.is_none() {

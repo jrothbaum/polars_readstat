@@ -35,14 +35,41 @@ use crate::{
     rs_var::{ReadStatVar,SEC_MICROSECOND},
 };
 
+pub enum Extensions  {
+    sas7bdat,
+    dta,
+    sav,
+    NotSet
+}
+impl Default for Extensions {
+    fn default() -> Self {
+        // Choose which variant should be the default
+        Extensions::NotSet
+    }
+}
+
+pub enum TypedColumn {
+    StringColumn(Vec<Option<String>>),
+    I8Column(Vec<Option<i32>>),
+    I16Column(Vec<Option<i32>>),
+    I32Column(Vec<Option<i32>>),
+    I64Column(Vec<Option<i64>>),
+    F32Column(Vec<Option<f32>>),
+    F64Column(Vec<Option<f64>>),
+    DateColumn(Vec<Option<i32>>),
+    TimeColumn(Vec<Option<i64>>),
+    DateTimeColumn(Vec<Option<i64>>),
+}
+
 #[derive(Default)]
 pub struct ReadStatData {
     // metadata
     pub var_count: i32,
     pub vars: BTreeMap<i32, ReadStatVarMetadata>,
     // data
-    pub cols: Vec<Vec<ReadStatVar>>,
+    pub cols: Vec<TypedColumn>,
     pub schema: Schema,
+    pub extension: Extensions,
     // chunk
     pub df: Option<DataFrame>,
     pub chunk_rows_to_process: usize, // min(stream_rows, row_limit, row_count)
@@ -52,9 +79,6 @@ pub struct ReadStatData {
     // total rows
     pub total_rows_to_process: usize,
     pub total_rows_processed: Option<Arc<AtomicUsize>>,
-    // progress
-    pub pb: Option<ProgressBar>,
-    pub no_progress: bool,
     // errors
     pub errors: Vec<String>,
     pub columns_to_read: Option<Vec<usize>>,
@@ -70,6 +94,7 @@ impl ReadStatData {
             // data
             cols: Vec::new(),
             schema: Schema::default(),
+            extension: Extensions::NotSet,
             // df/chunk
             df: None,
             chunk_rows_to_process: 0,
@@ -79,9 +104,6 @@ impl ReadStatData {
             // total rows
             total_rows_to_process: 0,
             total_rows_processed: None,
-            // progress
-            pb: None,
-            no_progress: false,
             // errors
             errors: Vec::new(),
             columns_to_read: columns_to_read,
@@ -97,9 +119,49 @@ impl ReadStatData {
         };
         
         // Initialize the columns
+        let sub_schema = schema_with_filter_pushdown(
+            &self.schema,
+            self.columns_to_read.clone()
+        );
         let mut cols = Vec::with_capacity(column_count);
-        for _ in 0..column_count {
-            cols.push(Vec::with_capacity(self.chunk_rows_to_process));
+        for (_, dt) in sub_schema.iter() {
+            // Create appropriate typed column
+            let column = match &dt {
+                DataType::String => {
+                    TypedColumn::StringColumn(vec![None; self.chunk_rows_to_process])
+                },
+                DataType::Float64 => {
+                    TypedColumn::F64Column(vec![None; self.chunk_rows_to_process])
+                },
+                DataType::Float32 => {
+                    TypedColumn::F32Column(vec![None; self.chunk_rows_to_process])
+                },
+                DataType::Int8 => {
+                    TypedColumn::I8Column(vec![None; self.chunk_rows_to_process])
+                },
+                DataType::Int16 => {
+                    TypedColumn::I16Column(vec![None; self.chunk_rows_to_process])
+                },
+                DataType::Int32 => {
+                    TypedColumn::I32Column(vec![None; self.chunk_rows_to_process])
+                },
+                DataType::Int64 => {
+                    TypedColumn::I64Column(vec![None; self.chunk_rows_to_process])
+                },
+                DataType::Date => {
+                    TypedColumn::DateColumn(vec![None; self.chunk_rows_to_process])
+                },
+                DataType::Time => {
+                    TypedColumn::TimeColumn(vec![None; self.chunk_rows_to_process])
+                },
+                DataType::Datetime(_, _) => {
+                    TypedColumn::DateTimeColumn(vec![None; self.chunk_rows_to_process])
+                },
+                // Default case
+                _ => TypedColumn::StringColumn(vec![None; self.chunk_rows_to_process])
+            };
+
+            cols.push(column);
         }
 
         Self { cols, ..self }
@@ -117,179 +179,98 @@ impl ReadStatData {
 
         let series_vec: Vec<Series> = self
             .cols
-            .iter()
+            .iter_mut()
             .zip(sub_schema.iter())
             .map(|(col, (name, _field))| {
-                let series = match &col[0] {
-                    ReadStatVar::ReadStat_String(_) => {
-                        let values = col.iter().map(|v| {
-                            if let ReadStatVar::ReadStat_String(s) = v {
-                                s.clone()
-                            } else {
-                                unreachable!()
-                            }
-                        }).collect::<Vec<Option<String>>>();
+            // Create Series directly from the typed column
+            match col {
+                TypedColumn::StringColumn(vec) => {
+                    // Use mem::take to avoid cloning when possible
+                    let values = std::mem::take(vec);
+                    Series::new(name.clone(), values)
+                },
+                TypedColumn::I64Column(vec) => {
+                    let values = std::mem::take(vec);
+                    Series::new(name.clone(), values)
+                },
+                TypedColumn::I32Column(vec) => {
+                    let values = std::mem::take(vec);
+                    Series::new(name.clone(), values)
+                },
+                TypedColumn::I16Column(vec) => {
+                    let values = std::mem::take(vec);
+                    Series::new(name.clone(), values)
+                    // Series::new(name.clone(), values)
+                    //     .cast(&DataType::Int16)
+                    //     .unwrap()
+                    // let series = Series::new(name.clone(), values);
+                    // cast_series(series, &DataType::Int8).unwrap()
+                },
+                TypedColumn::I8Column(vec) => {
+                    let values = std::mem::take(vec);
+                    Series::new(name.clone(), values)
+                    // Series::new(name.clone(), values)
+                    //     .cast(&DataType::Int8)
+                    //     .unwrap()
+                    //  let series = Series::new(name.clone(), values);
+                    //  cast_series(series, &DataType::Int16).unwrap()
+                },
+                TypedColumn::F64Column(vec) => {
+                    let values = std::mem::take(vec);
+                    Series::new(name.clone(), values)
+                },
+                TypedColumn::F32Column(vec) => {
+                    let values = std::mem::take(vec);
+                    Series::new(name.clone(), values)
+                },
+                TypedColumn::DateColumn(vec) => {
+                    let values = std::mem::take(vec);
+                    let series = Series::new(name.clone(), values);
+                    cast_series(series, &DataType::Date).unwrap()
+                },
+                TypedColumn::TimeColumn(vec) => {
+                    let values = std::mem::take(vec);
+                    let series = Series::new(name.clone(), values);
+                    cast_series(series, &DataType::Time).unwrap()
+                },
+                TypedColumn::DateTimeColumn(vec) => {
+                    let values = std::mem::take(vec);
+                    let series = Series::new(name.clone(), values);
+                    cast_series(series, &DataType::Datetime(TimeUnit::Milliseconds, None)).unwrap()
+                },
+                // TypedColumn::DateTimeWithMillisecondsColumn(vec) => {
+                //     let values = std::mem::take(vec);
+                //     let series = Series::new(name.clone(), values);
+                //     cast_series(series, &DataType::Datetime(TimeUnit::Milliseconds, None)).unwrap()
+                // },
+                // TypedColumn::DateTimeWithMicrosecondsColumn(vec) => {
+                //     let values = std::mem::take(vec);
+                //     let series = Series::new(name, values);
+                //     cast_series(series, &DataType::Datetime(TimeUnit::Microseconds, None)).unwrap()
+                // },
+                // TypedColumn::DateTimeWithNanosecondsColumn(vec) => {
+                //     let values = std::mem::take(vec);
+                //     let series = Series::new(name, values);
+                //     cast_series(series, &DataType::Datetime(TimeUnit::Nanoseconds, None)).unwrap()
+                // },
+                // TypedColumn::TimeWithMillisecondsColumn(vec) => {
+                //     let values = std::mem::take(vec);
+                //     let series = Series::new(name, values);
+                //     cast_series(series, &DataType::Time).unwrap()
+                // },
+                // Add any other types your code might use
+            }
+        })
+        .collect();
 
-                        Series::new(name.clone(),values)
-                    }
-                    ReadStatVar::ReadStat_i8(_) => {
-                        let values = col.iter().map(|v| {
-                            if let ReadStatVar::ReadStat_i8(i) = v {
-                                i.map(|x| x as i32)
-                            } else {
-                                unreachable!()
-                            }
-                        }).collect::<Vec<Option<i32>>>();
-
-                        Series::new(name.clone(), values)
-                    }
-                    ReadStatVar::ReadStat_i16(_) => {
-                        let values = col.iter().map(|v| {
-                            if let ReadStatVar::ReadStat_i16(i) = v {
-                                i.map(|x| x as i32)
-                            } else {
-                                unreachable!()
-                            }
-                        }).collect::<Vec<Option<i32>>>();
-
-                        Series::new(name.clone(), values)
-                    }
-                    ReadStatVar::ReadStat_i32(_) => {
-                        let values = col.iter().map(|v| {
-                            if let ReadStatVar::ReadStat_i32(i) = v {
-                                *i
-                            } else {
-                                unreachable!()
-                            }
-                        }).collect::<Vec<Option<i32>>>();
-
-                        Series::new(name.clone(), values)
-                    }
-                    ReadStatVar::ReadStat_f32(_) => {
-                        let values = col.iter().map(|v| {
-                            if let ReadStatVar::ReadStat_f32(f) = v {
-                                *f
-                            } else {
-                                unreachable!()
-                            }
-                        }).collect::<Vec<Option<f32>>>();
-
-                        Series::new(name.clone(), values)
-                    }
-                    ReadStatVar::ReadStat_f64(_) => {
-                        let values = col.iter().map(|v| {
-                            if let ReadStatVar::ReadStat_f64(f) = v {
-                                *f
-                            } else {
-                                unreachable!()
-                            }
-                        }).collect::<Vec<Option<f64>>>();
-
-                        Series::new(name.clone(), values)
-                    }
-                    ReadStatVar::ReadStat_Date(_) => {
-                        let values = col.iter().map(|v| {
-                            if let ReadStatVar::ReadStat_Date(i) = v {
-                                *i
-                            } else {
-                                unreachable!()
-                            }
-                        }).collect::<Vec<Option<i32>>>();
-
-                        cast_series(Series::new(name.clone(), values),&DataType::Date).unwrap()
-                    }
-                    ReadStatVar::ReadStat_Time(_) => {
-                        
-                        let values = col.iter().map(|v| {
-                            if let ReadStatVar::ReadStat_Time(i) = v {
-                                i.map(|val| (val as i64*SEC_MICROSECOND)) //  Convert to milliseconds
-                            } else {
-                                None
-                            }
-                        }).collect::<Vec<Option<i64>>>();
-                        cast_series(Series::new(name.clone(), values),&DataType::Time).unwrap()
-                    }
-                    ReadStatVar::ReadStat_DateTime(_) => {
-                        let values = col.iter().map(|v| {
-                            if let ReadStatVar::ReadStat_DateTime(i) = v {
-                                *i
-                            } else {
-                                None
-                            }
-                        }).collect::<Vec<Option<i64>>>();
-                        cast_series(Series::new(name.clone(), values),&DataType::Datetime(TimeUnit::Milliseconds,None)).unwrap()
-                    }
-                    ReadStatVar::ReadStat_DateTimeWithMilliseconds(_) => {
-                        let values = col.iter().map(|v| {
-                            if let ReadStatVar::ReadStat_DateTime(i) = v {
-                                *i
-                            } else {
-                                None
-                            }
-                        }).collect::<Vec<Option<i64>>>();
-                        cast_series(Series::new(name.clone(), values),&DataType::Datetime(TimeUnit::Milliseconds,None)).unwrap()
-                    }
-                    ReadStatVar::ReadStat_DateTimeWithMicroseconds(_) => {
-                        let values = col.iter().map(|v| {
-                            if let ReadStatVar::ReadStat_DateTime(i) = v {
-                                *i
-                            } else {
-                                None
-                            }
-                        }).collect::<Vec<Option<i64>>>();
-                        cast_series(Series::new(name.clone(), values),&DataType::Datetime(TimeUnit::Microseconds,None)).unwrap()
-                    }
-                    ReadStatVar::ReadStat_DateTimeWithNanoseconds(_) => {
-                        let values = col.iter().map(|v| {
-                            if let ReadStatVar::ReadStat_DateTime(i) = v {
-                                *i
-                            } else {
-                                None
-                            }
-                        }).collect::<Vec<Option<i64>>>();
-                        cast_series(Series::new(name.clone(), values),&DataType::Datetime(TimeUnit::Nanoseconds,None)).unwrap()
-                    }
-                    ReadStatVar::ReadStat_TimeWithMilliseconds(_) => {
-                        let values = col.iter().map(|v| {
-                            if let ReadStatVar::ReadStat_DateTime(i) = v {
-                                *i
-                            } else {
-                                None
-                            }
-                        }).collect::<Vec<Option<i64>>>();
-                        cast_series(Series::new(name.clone(), values),&DataType::Time).unwrap()
-                    }
-                    // ReadStatVar::ReadStat_TimeWithMicroseconds(_) => {
-                        
-                    //     let values = col.iter().map(|v| {
-                    //         if let ReadStatVar::ReadStat_TimeWithMicroseconds(i) = v {
-                    //             *i
-                    //         } else {
-                    //             None
-                    //         }
-                    //     }).collect::<Vec<Option<i64>>>();
-                    //     cast_series(Series::new(name.clone(), values),&DataType::Time).unwrap()
-                    // }
-                    // | ReadStatVar::ReadStat_TimeWithNanoseconds(_) => {
-                    //     //  TODO - check and fix if needed...
-                    //     let values = col.iter().map(|v| {
-                    //         if let ReadStatVar::ReadStat_TimeWithNanoseconds(i) = v {
-                    //             i.map(|val| (val as i64)) //  Convert to milliseconds
-                    //         } else {
-                    //             None
-                    //         }
-                    //     }).collect::<Vec<Option<i64>>>();
-                    //     cast_series(Series::new(name.clone(), values),&DataType::Time).unwrap()
-                    // }
-                };
-
-                series
-            })
-            .collect();
 
         // Create a DataFrame from the Series collection
         let df = DataFrame::from_iter(series_vec);
+
+        
         self.df = Some(df);
+        
+        
         Ok(())
     }
 
@@ -305,40 +286,32 @@ impl ReadStatData {
         debug!("Path as C string is {:?}", &rsp.cstring_path);
         let ppath = rsp.cstring_path.as_ptr();
 
-        // spinner
-        // TODO - uncomment when ready to reimplement progress bar
-        /*
-        if !self.no_progress {
-            self.pb = Some(ProgressBar::new(!0));
-        }
-        */
-
-        if let Some(pb) = &self.pb {
-            pb.set_style(
-                ProgressStyle::default_spinner()
-                    .template("[{spinner:.green} {elapsed_precise}] {msg}")?,
-            );
-            let msg = format!(
-                "Parsing sas7bdat data from file {}",
-                &rsp.path.to_string_lossy().bright_red()
-            );
-            pb.set_message(msg);
-            pb.enable_steady_tick(std::time::Duration::new(120, 0));
-        }
-
+        
         // initialize context
         let ctx = self as *mut ReadStatData as *mut c_void;
 
         // initialize error
         let error: readstat_sys::readstat_error_t = readstat_sys::readstat_error_e_READSTAT_OK;
-        debug!("Initially, error ==> {:#?}", &error);
-
-        // setup parser
-        // once call parse_sas7bdat, iteration begins
+        // debug!("Initially, error ==> {:#?}", &error);
 
         
+        
+        self.extension = match rsp.extension.as_ref() {
+            "sas7bdat" => {
+                Extensions::sas7bdat
+            },
+            "dta" => {
+                Extensions::dta
+            },
+            "sav" => {
+                Extensions::sav
+            },
+            _ => {
+                Extensions::NotSet
+            }
+        };
 
-        let error = match rsp.extension.as_str() {
+        let error = match rsp.extension.as_ref() {
             "sas7bdat" => {
                 ReadStatParser::new()
                     // do not set metadata handler nor variable handler as already processed
@@ -355,6 +328,12 @@ impl ReadStatData {
                     .set_row_limit(Some(self.chunk_rows_to_process.try_into().unwrap()))?
                     .set_row_offset(Some(self.chunk_row_start.try_into().unwrap()))?
                     .parse_dta(ppath, ctx)
+            },
+            "sav" => {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("sav file support not yet implemented")
+                )))
             }
             _ => {
                 return Err(Box::new(std::io::Error::new(
@@ -469,12 +448,6 @@ impl ReadStatData {
         }
     }
 
-    pub fn set_no_progress(self, no_progress: bool) -> Self {
-        Self {
-            no_progress,
-            ..self
-        }
-    }
 
     pub fn set_total_rows_to_process(self, total_rows_to_process: usize) -> Self {
         Self {

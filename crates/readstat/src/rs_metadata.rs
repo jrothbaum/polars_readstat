@@ -63,50 +63,53 @@ impl ReadStatMetadata {
         let mut schema = Schema::with_capacity(field_count);
         
         for vm in self.vars.values() {
-                let var_dt = match &vm.var_type {
-                    ReadStatVarType::String
-                    | ReadStatVarType::StringRef
-                    | ReadStatVarType::Unknown => DataType::String,
-                    ReadStatVarType::Int8 | ReadStatVarType::Int16 => DataType::Int16,
-                    ReadStatVarType::Int32 => DataType::Int32,
-                    ReadStatVarType::Float => DataType::Float32,
-                    ReadStatVarType::Double => match &vm.var_format_class {
-                        Some(ReadStatVarFormatClass::Date) => DataType::Date,
-                        Some(ReadStatVarFormatClass::DateTime) => {
-                            DataType::Datetime(TimeUnit::Milliseconds,None)
-                        }
-                        Some(ReadStatVarFormatClass::DateTimeWithMilliseconds) => {
-                            // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
-                            DataType::Datetime(TimeUnit::Milliseconds, None)
-                        }
-                        Some(ReadStatVarFormatClass::DateTimeWithMicroseconds) => {
-                            // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
-                            DataType::Datetime(TimeUnit::Microseconds, None)
-                        }
-                        Some(ReadStatVarFormatClass::DateTimeWithNanoseconds) => {
-                            // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
-                            DataType::Datetime(TimeUnit::Nanoseconds, None)
-                        }
-                        Some(ReadStatVarFormatClass::Time) => DataType::Time,
-                        Some(ReadStatVarFormatClass::TimeWithMilliseconds) => {
-                            // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
-                            DataType::Time
-                        }
-                        // Some(ReadStatVarFormatClass::TimeWithMicroseconds) => {
-                        //     // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
-                        //     DataType::Timestamp(TimeUnit::Microsecond, None)
-                        // }
-                        // Some(ReadStatVarFormatClass::TimeWithNanoseconds) => {
-                        //     // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
-                        //     DataType::Timestamp(TimeUnit::Nanosecond, None)
-                        // }
-                        None => DataType::Float64,
-                    },
-                };
-                
-                schema.insert(PlSmallStr::from_str(&vm.var_name), var_dt);
-                
-            }
+            // println!("name: {:?}", &vm.var_name);
+            // println!("type: {:?}", &vm.var_type);
+            let var_dt = match &vm.var_type {
+                ReadStatVarType::String
+                | ReadStatVarType::StringRef
+                | ReadStatVarType::Unknown => DataType::String,
+                ReadStatVarType::Int8  => DataType::Int8, 
+                ReadStatVarType::Int16 => DataType::Int16,
+                ReadStatVarType::Int32 => DataType::Int32,
+                ReadStatVarType::Float => DataType::Float32,
+                ReadStatVarType::Double => match &vm.var_format_class {
+                    Some(ReadStatVarFormatClass::Date) => DataType::Date,
+                    Some(ReadStatVarFormatClass::DateTime) => {
+                        DataType::Datetime(TimeUnit::Milliseconds,None)
+                    }
+                    // Some(ReadStatVarFormatClass::DateTimeWithMilliseconds) => {
+                    //     // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
+                    //     DataType::Datetime(TimeUnit::Milliseconds, None)
+                    // }
+                    // Some(ReadStatVarFormatClass::DateTimeWithMicroseconds) => {
+                    //     // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
+                    //     DataType::Datetime(TimeUnit::Microseconds, None)
+                    // }
+                    // Some(ReadStatVarFormatClass::DateTimeWithNanoseconds) => {
+                    //     // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
+                    //     DataType::Datetime(TimeUnit::Nanoseconds, None)
+                    // }
+                    Some(ReadStatVarFormatClass::Time) => DataType::Time,
+                    // Some(ReadStatVarFormatClass::TimeWithMilliseconds) => {
+                    //     // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
+                    //     DataType::Time
+                    // }
+                    // Some(ReadStatVarFormatClass::TimeWithMicroseconds) => {
+                    //     // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
+                    //     DataType::Timestamp(TimeUnit::Microsecond, None)
+                    // }
+                    // Some(ReadStatVarFormatClass::TimeWithNanoseconds) => {
+                    //     // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
+                    //     DataType::Timestamp(TimeUnit::Nanosecond, None)
+                    // }
+                    None => DataType::Float64,
+                },
+            };
+            
+            schema.insert(PlSmallStr::from_str(&vm.var_name), var_dt);
+            
+        }
         //  dbg!(&schema);
         schema
 

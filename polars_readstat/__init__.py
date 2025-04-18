@@ -27,28 +27,26 @@ def scan_readstat(path:str) -> pl.LazyFrame:
                             n_rows,
                             threads=pl.thread_pool_size())
         
+        schema = src.schema()
 
         if with_columns is not None:
             src.set_with_columns(with_columns)
-        # else:
-        #     src.set_with_columns(list(schema().keys()))
-
-
-        # Set the predicate.
-        # predicate_set = True
-        # if predicate is not None:
-        #     try:
-        #         src.try_set_predicate(predicate)
-        #     except pl.exceptions.ComputeError:
-        #         predicate_set = False
-
+        
         while (out := src.next()) is not None:
-            # If the source could not apply the predicate
-            # (because it wasn't able to deserialize it), we do it here.
-            # if not predicate_set and predicate is not None:
             if predicate is not None:
                 out = out.filter(predicate)
 
+
+            #   Cast to int8 and int16 when needed.  This is not ideal...
+            with_intcast = []
+            cols_int8_cast = src.cast_int8()
+            if len(cols_int8_cast):
+                with_intcast.append(pl.col(cols_int8_cast).cast(pl.Int8))
+            cols_int16_cast = src.cast_int16()
+            if len(cols_int16_cast):
+                with_intcast.append(pl.col(cols_int16_cast).cast(pl.Int16))
+            if len(with_intcast):
+                out = out.with_columns(with_intcast)
             yield out
 
 
@@ -98,6 +96,7 @@ if __name__ == "__main__":
             
         df = df.collect()
         elapsed_pl = time.time() - start_pl
+        print(df.schema)
         # print(df)
         
         import pandas as pd
@@ -155,6 +154,7 @@ if __name__ == "__main__":
             
         df = df.collect()
         elapsed_pl = time.time() - start_pl
+        print(df.schema)
         # print(df)
         
         import pandas as pd
@@ -190,4 +190,5 @@ if __name__ == "__main__":
                                          filter_rows=True)
 
     # sas7bdat_test()
-    dta_test()
+    # dta_test()
+    read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.dta")

@@ -71,25 +71,32 @@ fn match_var_format_sas(
     // Start with the most specific patterns first
     if datetime_ns_implied_regex.is_match(format_str) {
         // DATETIME25 and DATETIME26 are always nanosecond precision
-        Some(ReadStatVarFormatClass::DateTimeWithNanoseconds)
+        //  Some(ReadStatVarFormatClass::DateTimeWithNanoseconds)
+        Some(ReadStatVarFormatClass::DateTime)
     } else if datetime_us_implied_regex.is_match(format_str) {
         // DATETIME23 and DATETIME24 are always microsecond precision
-        Some(ReadStatVarFormatClass::DateTimeWithMicroseconds)
+        //  Some(ReadStatVarFormatClass::DateTimeWithMicroseconds)
+        Some(ReadStatVarFormatClass::DateTime)
     } else if datetime_ms_implied_regex.is_match(format_str) {
         // DATETIME21 and DATETIME22 are always millisecond precision
-        Some(ReadStatVarFormatClass::DateTimeWithMilliseconds)
+        //  Some(ReadStatVarFormatClass::DateTimeWithMilliseconds)
+        Some(ReadStatVarFormatClass::DateTime)
     } else if datetime_ns_regex.is_match(format_str) {
-        Some(ReadStatVarFormatClass::DateTimeWithNanoseconds)
+        //  Some(ReadStatVarFormatClass::DateTimeWithNanoseconds)
+        Some(ReadStatVarFormatClass::DateTime)
     } else if datetime_us_regex.is_match(format_str) {
-        Some(ReadStatVarFormatClass::DateTimeWithMicroseconds)
+        //  Some(ReadStatVarFormatClass::DateTimeWithMicroseconds)
+        Some(ReadStatVarFormatClass::DateTime)
     } else if datetime_ms_regex.is_match(format_str) {
-        Some(ReadStatVarFormatClass::DateTimeWithMilliseconds)
+        //  Some(ReadStatVarFormatClass::DateTimeWithMilliseconds)
+        Some(ReadStatVarFormatClass::DateTime)
     // } else if time_ns_regex.is_match(format_str) {
     //     Some(ReadStatVarFormatClass::TimeWithNanoseconds)
     // } else if time_us_regex.is_match(format_str) {
     //     Some(ReadStatVarFormatClass::TimeWithMicroseconds)
     } else if time_ms_regex.is_match(format_str) {
-        Some(ReadStatVarFormatClass::TimeWithMilliseconds)
+        //  Some(ReadStatVarFormatClass::TimeWithMilliseconds)
+        Some(ReadStatVarFormatClass::DateTime)
     } else if datetime_regex.is_match(format_str) {
         Some(ReadStatVarFormatClass::DateTime)
     } else if date_regex.is_match(format_str) {
@@ -151,14 +158,17 @@ fn match_var_format_stata(format_str: &str) -> Option<ReadStatVarFormatClass> {
     }
     // 2. Then High Precision DateTime
     else if datetime_ns_regex.is_match(format_str) {
-        Some(ReadStatVarFormatClass::DateTimeWithNanoseconds)
+        //  Some(ReadStatVarFormatClass::DateTimeWithNanoseconds)
+        Some(ReadStatVarFormatClass::DateTime)
     } else if datetime_us_regex.is_match(format_str) {
-        Some(ReadStatVarFormatClass::DateTimeWithMicroseconds)
+        //  Some(ReadStatVarFormatClass::DateTimeWithMicroseconds)
+        Some(ReadStatVarFormatClass::DateTime)
     }
     // 3. Then Millisecond DateTime (%tC)
     else if datetime_milli_base_regex.is_match(format_str) || datetime_milli_display_regex.is_match(format_str) {
         // Time-only versions were already caught by the first check
-        Some(ReadStatVarFormatClass::DateTimeWithMilliseconds)
+        //  Some(ReadStatVarFormatClass::DateTimeWithMilliseconds)
+        Some(ReadStatVarFormatClass::DateTime)
     }
     // 4. Then Standard DateTime (%tc)
     else if datetime_base_regex.is_match(format_str) || datetime_display_regex.is_match(format_str) {

@@ -4,6 +4,7 @@ mod read;
 use polars_lazy::frame::IntoLazy;
 use polars::prelude::*;
 use pyo3::prelude::*;
+use pyo3::types::PyList;
 use pyo3_polars::error::PyPolarsErr;
 use pyo3_polars::export::polars_plan::dsl::Expr;
 use pyo3_polars::{PyDataFrame, PySchema,PyExpr};
@@ -66,6 +67,39 @@ impl read_readstat {
         )))
     }
 
+    
+    fn cast_int8(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+            let sub_schema = self.md.clone().schema_with_filter_pushdown(
+            self.with_columns.clone()
+        );
+
+        let mut int8_columns: Vec<String> = Vec::new();
+
+        for (name, dtype) in sub_schema.iter() {
+
+            if matches!(dtype, &DataType::Int8) {
+                int8_columns.push(name.to_string());            }
+        }
+
+        Ok(int8_columns.to_object(py))
+    }
+
+
+    fn cast_int16(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+        let sub_schema = self.md.clone().schema_with_filter_pushdown(
+        self.with_columns.clone()
+    );
+
+    let mut int16_columns: Vec<String> = Vec::new();
+
+    for (name, dtype) in sub_schema.iter() {
+
+        if matches!(dtype, &DataType::Int16) {
+            int16_columns.push(name.to_string());            }
+    }
+
+    Ok(int16_columns.to_object(py))
+}
     // fn try_set_predicate(&mut self, predicate: PyExpr) {
     //     self.predicate = Some(predicate.0);
     // }

@@ -6,7 +6,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use crate::{
     common::ptr_to_string,
     formats,
-    rs_data::ReadStatData,
+    rs_data::{TypedColumn,ReadStatData},
     rs_metadata::{ReadStatCompress, ReadStatEndian, ReadStatMetadata, ReadStatVarMetadata},
     rs_var::{ReadStatVar, ReadStatVarType, ReadStatVarTypeClass},
 };
@@ -232,8 +232,12 @@ pub extern "C" fn handle_value(
 
     let value_type: readstat_sys::readstat_type_t =
         unsafe { readstat_sys::readstat_value_type(value) };
-    let is_missing: c_int = unsafe { readstat_sys::readstat_value_is_system_missing(value) };
+    let is_missing: bool = unsafe { readstat_sys::readstat_value_is_system_missing(value) } > 0;
 
+    if is_missing {
+        //  Already set to missing, we're good
+        return ReadStatHandler::READSTAT_HANDLER_OK as c_int;
+    }
     // debug!("chunk_rows_to_process is {}", d.chunk_rows_to_process);
     // debug!("chunk_row_start is {}", d.chunk_row_start);
     // debug!("chunk_row_end is {}", d.chunk_row_end);
@@ -244,13 +248,49 @@ pub extern "C" fn handle_value(
     // debug!("value_type is {:#?}", &value_type);
     // debug!("is_missing is {}", is_missing);
 
-    // get value and push into arrays
-    let value = ReadStatVar::get_readstat_value(value, value_type, is_missing, &d.vars, var_index);
-
-    // push into cols
-    //  dbg!("var_index_assign = {}", var_index_assign.unwrap());
-    d.cols[var_index_assign.unwrap()].push(value);
-
+    // get value and assign to
+    match &mut d.cols[var_index_assign.unwrap()] {
+        TypedColumn::StringColumn(vec) => {
+            vec[obs_index as usize] = Some(ReadStatVar::get_value_string(value));
+        },
+        TypedColumn::I8Column(vec) => {
+            vec[obs_index as usize] = Some(ReadStatVar::get_value_i8(value));
+        },
+        TypedColumn::I16Column(vec) => {
+            vec[obs_index as usize] = Some(ReadStatVar::get_value_i16(value));
+        },
+        TypedColumn::I32Column(vec) => {
+            vec[obs_index as usize] = Some(ReadStatVar::get_value_i32(value));
+        },
+        TypedColumn::I64Column(vec) => {
+            vec[obs_index as usize] = Some(ReadStatVar::get_value_i64(value));
+        },
+        TypedColumn::F32Column(vec) => {
+            vec[obs_index as usize] = Some(ReadStatVar::get_value_f32(value));
+        },
+        TypedColumn::F64Column(vec) => {
+            vec[obs_index as usize] = Some(ReadStatVar::get_value_f64(value));
+        },
+        TypedColumn::DateColumn(vec) => {
+            vec[obs_index as usize] = Some(ReadStatVar::get_value_date32(
+                value,
+                &d.extension
+            ));
+        },
+        TypedColumn::TimeColumn(vec) => {
+            vec[obs_index as usize] = Some(ReadStatVar::get_value_time64(
+                value,
+                &d.extension
+            ));
+        },
+        TypedColumn::DateTimeColumn(vec) => {
+            vec[obs_index as usize] = Some(ReadStatVar::get_value_datetime64(
+                value,
+                &d.extension
+            ));
+        },
+    }
+    
     // if row is complete
     if var_index == (d.var_count - 1) {
         d.chunk_rows_processed += 1;
