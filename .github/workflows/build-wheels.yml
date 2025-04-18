@@ -74,8 +74,8 @@ jobs:
           # ---> Set LIBCLANG_PATH directly for the maturin-action step <---
           # Try the standard library path for x86_64 Linux systems first.
           echo "--- Libclang path search ---" &&
-            find /usr/lib/ -name 'libclang.so*' -exec dirname {} \; | sort -u &&
-            echo "--- End search ---"
+          find /usr/lib/ -name 'libclang.so*' -exec dirname {} \; | sort -u &&
+          echo "--- End search ---"
           LIBCLANG_PATH: /usr/lib/x86_64-linux-gnu
         uses: PyO3/maturin-action@v1
         with:
