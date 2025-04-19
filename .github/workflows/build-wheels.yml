@@ -63,42 +63,27 @@ jobs:
         run: |
           uv pip install --system maturin
         shell: bash
-
-      - name: Install LLVM and libclang (Linux)
+      - name: Install LLVM & Clang
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y wget gnupg lsb-release
           sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)" 14
           sudo apt-get install -y libclang-14-dev llvm-14-dev clang-14
-
-          # This is where libclang.so usually lives when using llvm-14
-          echo "LIBCLANG_PATH=/usr/lib/llvm-14/lib" >> $GITHUB_ENV
-
-      - name: Debug libclang
-        if: matrix.os == 'ubuntu-latest'
-        run: |
           ls -l /usr/lib/llvm-14/lib/libclang.so*
-          echo "LIBCLANG_PATH=$LIBCLANG_PATH"
+
       - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
         uses: PyO3/maturin-action@v1
+        env:
+          LIBCLANG_PATH: /usr/lib/llvm-14/lib
+          CLANG_PATH: /usr/bin/clang-14
         with:
           target: ${{ matrix.rust-target }}
           manylinux: auto
           args: --release --strip --out dist -vv
-      # - name: Build wheels (Linux)
-      #   if: matrix.os == 'ubuntu-latest'
-      #   run: |
-      #     sudo apt-get update
-      #     sudo apt-get install -y llvm-dev libclang-dev clang
-      #     echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> $GITHUB_ENV
-      #   uses: PyO3/maturin-action@v1
-      #   with:
-      #     target: ${{ matrix.rust-target }}
-      #     manylinux: auto # Or you could specify a specific image like 'manylinux2014'
-      #     # Keep verbose flags for now, remove them once it works
-      #     args: --release --strip --out dist -vv
+      
+      
       - name: Build wheels (macOS & Windows)
         if: matrix.os != 'ubuntu-latest'
         
