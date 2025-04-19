@@ -89,13 +89,51 @@ jobs:
           target: ${{ matrix.rust-target }}
           manylinux: 'manylinux_2_28'
           args: --release --strip --out dist -vv
-          # before-script-linux: |
-          #   yum install -y llvm-devel clang-devel
-          #   # Find where libclang.so is located
-          #   find / -name "libclang.so*" 2>/dev/null || true
-          #   # Set LIBCLANG_PATH to the directory containing libclang.so
-          #   export LIBCLANG_PATH=$(dirname $(find / -name "libclang.so*" 2>/dev/null | head -1))
-          #   echo "Found LIBCLANG_PATH: $LIBCLANG_PATH"
+          before-script-linux: |
+            # Install apt dependencies
+            apt-get update
+            apt-get install -y wget apt-utils
+
+            # Add LLVM repository for newer versions
+            wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add -
+            echo "deb http://apt.llvm.org/focal/ llvm-toolchain-focal-15 main" > /etc/apt/sources.list.d/llvm.list
+            apt-get update
+
+            # Install specific LLVM/Clang version (15 should be recent enough)
+            apt-get install -y clang-15 libclang-15-dev
+
+            # Find and set the libclang path
+            export LIBCLANG_PATH=$(find /usr/lib -name "libclang.so*" | head -n 1 | xargs dirname)
+            if [ -z "$LIBCLANG_PATH" ]; then 
+              # If libclang.so is not found, look for versioned libraries and create symlink
+              VERSIONED_LIBCLANG=$(find /usr/lib -name "libclang-*.so*" | head -n 1)
+              if [ -n "$VERSIONED_LIBCLANG" ]; then
+                LIBCLANG_PATH=$(dirname $VERSIONED_LIBCLANG)
+                ln -s $VERSIONED_LIBCLANG $LIBCLANG_PATH/libclang.so
+                echo "Created symlink from $VERSIONED_LIBCLANG to $LIBCLANG_PATH/libclang.so"
+              fi
+            fi
+
+            # If still not found, try with apt-file
+            if [ -z "$LIBCLANG_PATH" ]; then
+              apt-get install -y apt-file
+              apt-file update
+              LIBCLANG_PATH=$(apt-file search libclang | grep "\.so" | head -n 1 | awk '{print $1}' | xargs dirname)
+            fi
+
+            echo "Found LIBCLANG_PATH: $LIBCLANG_PATH"
+            
+            # Export variables for the build
+            export LIBCLANG_PATH
+            echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> $GITHUB_ENV
+            
+            # Make sure clang is in PATH
+            export PATH="/usr/lib/llvm-15/bin:$PATH"
+            echo "PATH=$PATH" >> $GITHUB_ENV
+            
+            # Verify installation
+            ls -la $LIBCLANG_PATH
+            clang-15 --version
       - name: Build wheels (macOS & Windows)
         if: matrix.os != 'ubuntu-latest'
         
