@@ -131,6 +131,11 @@ fn main() {
                 println!("cargo:warning=Found LLVM version {} at {}", i, path);
             }
         }
+
+        let path:String = "/usr/lib64/llvm/lib".to_owned();
+        if std::path::Path::new(&path).exists() {
+            println!("cargo:warning=Found LLVM version at {}", path);
+        }
     } else {
         // Other Unix-like systems
         println!("cargo:rustc-link-lib=z");
