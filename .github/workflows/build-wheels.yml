@@ -94,6 +94,8 @@ jobs:
         
         uses: PyO3/maturin-action@v1
         with:
+          env:
+            LIBCLANG_PATH=/usr/local/llvm18/lib cargo build
           target: ${{ matrix.rust-target }}
           args: --release --strip --out dist
           singlefile: true 
