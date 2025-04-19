@@ -68,14 +68,11 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         env:
           # Install dependencies inside the container
-          CIBW_BEFORE_BUILD_LINUX: >
-            apt-get update &&
-            apt-get install -y --no-install-recommends autoconf automake libtool zlib1g-dev build-essential pkg-config libclang-dev clang llvm-dev &&
-            echo "--- Libclang path search ---" &&
-            find /usr/lib/ -name 'libclang.so*' -exec dirname {} \; | sort -u &&
-            echo "--- End search ---"
-          # Keep the (likely incorrect) LIBCLANG_PATH for now.
-          # We expect this run to fail again, but it will print the correct path(s).
+          before-script-linux: |
+            sudo apt-get update
+            sudo apt-get install -y libclang-dev
+
+            
           LIBCLANG_PATH: /usr/lib/x86_64-linux-gnu
         uses: PyO3/maturin-action@v1
         with:
