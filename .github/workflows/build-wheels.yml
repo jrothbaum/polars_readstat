@@ -13,7 +13,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        # python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.12"]
         include:
           - os: ubuntu-latest
             rust-target: x86_64-unknown-linux-gnu
@@ -63,77 +64,32 @@ jobs:
         run: |
           uv pip install --system maturin
         shell: bash
-      - name: Install LLVM & Clang (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libclang-dev llvm-dev clang
-          # Check which LLVM version is installed
-          ls -la /usr/lib/ | grep llvm
-          # Print clang location
-          which clang
-          # Print llvm-config output
-          llvm-config --version
-          llvm-config --libdir
-          llvm-config --includedir
-          # Set correct paths based on actual installation
-          echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> $GITHUB_ENV
-          echo "BINDGEN_EXTRA_CLANG_ARGS=-I$(llvm-config --includedir)" >> $GITHUB_ENV    
       - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
         uses: PyO3/maturin-action@v1
         env:
-          # These will now use the values set by the previous step
           RUST_BACKTRACE: full
+          # Tell bindgen where to find libclang headers (adjust if needed)
+          BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/include/clang" 
         with:
           target: ${{ matrix.rust-target }}
-          manylinux: 'manylinux_2_28'
+          # Use manylinux_2_28 (AlmaLinux 8 based)
+          manylinux: "2_28" 
           args: --release --strip --out dist -vv
           before-script-linux: |
-            # Install apt dependencies
-            apt-get update
-            apt-get install -y wget apt-utils
-
-            # Add LLVM repository for newer versions
-            wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add -
-            echo "deb http://apt.llvm.org/focal/ llvm-toolchain-focal-15 main" > /etc/apt/sources.list.d/llvm.list
-            apt-get update
-
-            # Install specific LLVM/Clang version (15 should be recent enough)
-            apt-get install -y clang-15 libclang-15-dev
-
-            # Find and set the libclang path
-            export LIBCLANG_PATH=$(find /usr/lib -name "libclang.so*" | head -n 1 | xargs dirname)
-            if [ -z "$LIBCLANG_PATH" ]; then 
-              # If libclang.so is not found, look for versioned libraries and create symlink
-              VERSIONED_LIBCLANG=$(find /usr/lib -name "libclang-*.so*" | head -n 1)
-              if [ -n "$VERSIONED_LIBCLANG" ]; then
-                LIBCLANG_PATH=$(dirname $VERSIONED_LIBCLANG)
-                ln -s $VERSIONED_LIBCLANG $LIBCLANG_PATH/libclang.so
-                echo "Created symlink from $VERSIONED_LIBCLANG to $LIBCLANG_PATH/libclang.so"
-              fi
-            fi
-
-            # If still not found, try with apt-file
-            if [ -z "$LIBCLANG_PATH" ]; then
-              apt-get install -y apt-file
-              apt-file update
-              LIBCLANG_PATH=$(apt-file search libclang | grep "\.so" | head -n 1 | awk '{print $1}' | xargs dirname)
-            fi
-
-            echo "Found LIBCLANG_PATH: $LIBCLANG_PATH"
-            
-            # Export variables for the build
-            export LIBCLANG_PATH
-            echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> $GITHUB_ENV
-            
-            # Make sure clang is in PATH
-            export PATH="/usr/lib/llvm-15/bin:$PATH"
-            echo "PATH=$PATH" >> $GITHUB_ENV
-            
-            # Verify installation
-            ls -la $LIBCLANG_PATH
-            clang-15 --version
+            set -ex # Fail fast and print commands
+            # Use dnf (package manager for AlmaLinux 8 / CentOS 8+)
+            # Install clang and its development libraries. 
+            # Check exact package names, might be llvm-devel, libclang-devel, etc.
+            dnf install -y clang-devel llvm-devel 
+            # Verify version (optional)
+            clang --version
+            # Setting LIBCLANG_PATH might still be needed depending on the crate
+            # Find the libclang.so path. Common locations:
+            export LIBCLANG_PATH=$(find /usr/lib64 /usr/lib -name "libclang.so.*" | head -n 1 | xargs dirname || echo "/usr/lib64/llvm") # Adjust find paths if needed
+            echo "LIBCLANG_PATH=${LIBCLANG_PATH}"
+            # Ensure the linker can find llvm libs if needed directly
+            export LD_LIBRARY_PATH=${LIBCLANG_PATH}:${LD_LIBRARY_PATH}
       - name: Build wheels (macOS & Windows)
         if: matrix.os != 'ubuntu-latest'
         
