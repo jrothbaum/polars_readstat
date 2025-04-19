@@ -64,18 +64,32 @@ jobs:
           uv pip install --system maturin
         shell: bash
 
-      - name: Build wheels (Linux)
+      - name: Install LLVM and libclang (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y llvm-dev libclang-dev clang
           echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> $GITHUB_ENV
+
+      - name: Build wheels (Linux)
+        if: matrix.os == 'ubuntu-latest'
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.rust-target }}
-          manylinux: auto # Or you could specify a specific image like 'manylinux2014'
-          # Keep verbose flags for now, remove them once it works
+          manylinux: auto
           args: --release --strip --out dist -vv
+      # - name: Build wheels (Linux)
+      #   if: matrix.os == 'ubuntu-latest'
+      #   run: |
+      #     sudo apt-get update
+      #     sudo apt-get install -y llvm-dev libclang-dev clang
+      #     echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> $GITHUB_ENV
+      #   uses: PyO3/maturin-action@v1
+      #   with:
+      #     target: ${{ matrix.rust-target }}
+      #     manylinux: auto # Or you could specify a specific image like 'manylinux2014'
+      #     # Keep verbose flags for now, remove them once it works
+      #     args: --release --strip --out dist -vv
       - name: Build wheels (macOS & Windows)
         if: matrix.os != 'ubuntu-latest'
         
