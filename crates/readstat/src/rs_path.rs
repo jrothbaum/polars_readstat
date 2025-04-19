@@ -13,7 +13,10 @@ const IN_EXTENSIONS: &[&str] = &[
     "sas7bdat", 
     "sas7bcat",
     "dta",
-    "sav"];
+    "sav",
+    //  Pending reading of zipped files
+    //  "zsav"
+    ];
 
 #[derive(Debug, Clone)]
 pub struct ReadStatPath {

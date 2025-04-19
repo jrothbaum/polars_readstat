@@ -59,6 +59,11 @@ fn main() {
         .file(spss.join("readstat_sav_parse_timestamp.c"))
         .file(spss.join("readstat_sav_read.c"))
         .file(spss.join("readstat_sav_write.c"))
+        
+        .file(spss.join("readstat_zsav_compress.c"))
+        .file(spss.join("readstat_zsav_read.c"))
+        .file(spss.join("readstat_zsav_write.c"))
+        
         .file(spss.join("readstat_spss.c"))
         .file(spss.join("readstat_spss_parse.c"))
         .file(stata.join("readstat_dta.c"))

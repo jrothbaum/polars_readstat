@@ -8,7 +8,9 @@ use crate::rs_data::Extensions;
 const DIGITS: usize = 14;
 const DAY_SHIFT_SAS_STATA: i32 = 3653;
 const SEC_SHIFT_SAS_STATA: i64 = 315619200;
-const DAY_SHIFT_SPSS: i32 = 141428;
+
+//  Not needed - dates are stored as datetimes in SPSS, it seems
+//  const DAY_SHIFT_SPSS: i32 = 141428;
 const SEC_SHIFT_SPSS: i64 = 12219379200;
 
 pub const SEC_MILLISECOND: i64 = 1_000;
@@ -89,17 +91,21 @@ impl ReadStatVar {
         value: readstat_sys::readstat_value_t,
         extension:&Extensions
     ) -> i32 {
-        let value = unsafe { readstat_sys::readstat_int32_value(value) };
+
         let value = match extension {
             Extensions::sas7bdat |
                 Extensions::dta => {
+                let value = unsafe { readstat_sys::readstat_int32_value(value) };
                 value - DAY_SHIFT_SAS_STATA
             },
             Extensions::sav => {
-                value - DAY_SHIFT_SPSS
+                let value = unsafe { readstat_sys::readstat_double_value(value) as i64};
+                //  Convert to date from datetime
+                ((value - SEC_SHIFT_SPSS as i64)/(60*60*24 as i64)) as i32
             },
             _ => {
-                value
+                unsafe { readstat_sys::readstat_int32_value(value) }
+                
             }
         };
         value
