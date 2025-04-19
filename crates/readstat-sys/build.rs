@@ -107,7 +107,30 @@ fn main() {
         println!("cargo:rustc-link-lib=iconv");
         println!("cargo:rustc-link-lib=z");
     } else if target.contains("linux") {
-        cc.flag("-fPIC");
+            // Print debug info
+        println!("cargo:warning=Checking for libclang...");
+        
+        // Check if /usr/lib/llvm-14/lib exists
+        if std::path::Path::new("/usr/lib/llvm-14/lib").exists() {
+            println!("cargo:warning=Path /usr/lib/llvm-14/lib exists");
+        } else {
+            println!("cargo:warning=Path /usr/lib/llvm-14/lib DOES NOT exist");
+        }
+        
+        // Print all environment variables related to clang
+        if let Ok(path) = env::var("LIBCLANG_PATH") {
+            println!("cargo:warning=LIBCLANG_PATH is set to: {}", path);
+        } else {
+            println!("cargo:warning=LIBCLANG_PATH is NOT set");
+        }
+        
+        // Check for available LLVM versions
+        for i in 6..15 {
+            let path = format!("/usr/lib/llvm-{}/lib", i);
+            if std::path::Path::new(&path).exists() {
+                println!("cargo:warning=Found LLVM version {} at {}", i, path);
+            }
+        }
     } else {
         // Other Unix-like systems
         println!("cargo:rustc-link-lib=z");

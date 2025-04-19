@@ -67,13 +67,23 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libclang-dev llvm-dev clang    
+          sudo apt-get install -y libclang-dev llvm-dev clang
+          # Check which LLVM version is installed
+          ls -la /usr/lib/ | grep llvm
+          # Print clang location
+          which clang
+          # Print llvm-config output
+          llvm-config --version
+          llvm-config --libdir
+          llvm-config --includedir
+          # Set correct paths based on actual installation
+          echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> $GITHUB_ENV
+          echo "BINDGEN_EXTRA_CLANG_ARGS=-I$(llvm-config --includedir)" >> $GITHUB_ENV    
       - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
         uses: PyO3/maturin-action@v1
         env:
-          LIBCLANG_PATH: /usr/lib/llvm-14/lib
-          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/lib/llvm-14/include
+          # These will now use the values set by the previous step
           RUST_BACKTRACE: full
         with:
           target: ${{ matrix.rust-target }}
