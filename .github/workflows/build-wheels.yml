@@ -89,6 +89,9 @@ jobs:
           target: ${{ matrix.rust-target }}
           manylinux: auto
           args: --release --strip --out dist -vv
+          before-script-linux: |
+            yum install -y llvm-devel
+            export LIBCLANG_PATH=/usr/lib64/llvm
       - name: Build wheels (macOS & Windows)
         if: matrix.os != 'ubuntu-latest'
         
@@ -96,11 +99,7 @@ jobs:
         with:
           target: ${{ matrix.rust-target }}
           args: --release --strip --out dist
-          singlefile: true
-          manylinux: '2014'
-          before-script-linux: |
-            yum install -y llvm-devel
-            export LIBCLANG_PATH=/usr/lib64/llvm 
+          singlefile: true 
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
