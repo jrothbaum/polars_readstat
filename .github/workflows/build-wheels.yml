@@ -66,12 +66,10 @@ jobs:
 
       - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
-        env:
+        run: |
           sudo apt-get update
           sudo apt-get install -y llvm-dev libclang-dev clang
           echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> $GITHUB_ENV
-
-            
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.rust-target }}
