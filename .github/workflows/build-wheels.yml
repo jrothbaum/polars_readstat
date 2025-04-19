@@ -68,9 +68,18 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm-dev libclang-dev clang
-          echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> $GITHUB_ENV
+          sudo apt-get install -y wget gnupg lsb-release
+          sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)" 14
+          sudo apt-get install -y libclang-14-dev llvm-14-dev clang-14
 
+          # This is where libclang.so usually lives when using llvm-14
+          echo "LIBCLANG_PATH=/usr/lib/llvm-14/lib" >> $GITHUB_ENV
+
+      - name: Debug libclang
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          ls -l /usr/lib/llvm-14/lib/libclang.so*
+          echo "LIBCLANG_PATH=$LIBCLANG_PATH"
       - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
         uses: PyO3/maturin-action@v1
