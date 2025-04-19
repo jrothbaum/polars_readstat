@@ -3,7 +3,18 @@ extern crate bindgen;
 use std::env;
 use std::path::PathBuf;
 
+
+fn find_and_print_libclang_path() {
+    if let Ok(path) = env::var("LIBCLANG_PATH") {
+        println!("Found LIBCLANG_PATH in environment: {}", path);
+    } else {
+        println!("LIBCLANG_PATH is not set in environment");
+    }
+}
+
 fn main() {
+    find_and_print_libclang_path();
+
     let target = env::var("TARGET").unwrap();
 
     let project_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -98,6 +109,25 @@ fn main() {
     } else if target.contains("linux") {
         // On Linux, iconv is part of glibc, so we don't need to link separately
         println!("cargo:rustc-link-lib=z");
+
+        // Help bindgen find libclang on Linux if not explicitly set
+        if env::var_os("LIBCLANG_PATH").is_none() {
+            // Try common locations for libclang
+            for path in &[
+                "/usr/lib/llvm-14/lib",
+                "/usr/lib/llvm-13/lib",
+                "/usr/lib/llvm-12/lib",
+                "/usr/lib/llvm-11/lib",
+                "/usr/lib/llvm-10/lib",
+                "/usr/lib/x86_64-linux-gnu",
+            ] {
+                if std::path::Path::new(&format!("{}/libclang.so", path)).exists() {
+                    println!("cargo:rustc-env=LIBCLANG_PATH={}", path);
+                    break;
+                }
+            }
+        }
+
     } else {
         // Other Unix-like systems
         println!("cargo:rustc-link-lib=z");
