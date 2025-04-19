@@ -87,24 +87,15 @@ jobs:
           RUST_BACKTRACE: full
         with:
           target: ${{ matrix.rust-target }}
-          manylinux: auto
+          manylinux: 'manylinux_2_28'
           args: --release --strip --out dist -vv
-          before-script-linux: |
-            # Install Python pip
-            yum install -y python3-pip
-
-            # Install the libclang Python package which bundles newer libclang shared libraries
-            pip3 install libclang
-
-            # Find the installed libclang path
-            LIBCLANG_PYTHON_PATH=$(python3 -c "import os; from clang.cindex import Config; print(os.path.dirname(Config.library_file))")
-            
-            # Set LIBCLANG_PATH to the directory containing the bundled libclang
-            export LIBCLANG_PATH=$LIBCLANG_PYTHON_PATH
-            echo "Using bundled libclang at: $LIBCLANG_PATH"
-            
-            # List the files to verify
-            ls -la $LIBCLANG_PATH
+          # before-script-linux: |
+          #   yum install -y llvm-devel clang-devel
+          #   # Find where libclang.so is located
+          #   find / -name "libclang.so*" 2>/dev/null || true
+          #   # Set LIBCLANG_PATH to the directory containing libclang.so
+          #   export LIBCLANG_PATH=$(dirname $(find / -name "libclang.so*" 2>/dev/null | head -1))
+          #   echo "Found LIBCLANG_PATH: $LIBCLANG_PATH"
       - name: Build wheels (macOS & Windows)
         if: matrix.os != 'ubuntu-latest'
         
