@@ -112,28 +112,26 @@ fn main() {
         // Print debugging information
         println!("cargo:warning=Target is Linux, attempting to find libclang");
         
-        // If LIBCLANG_PATH is already set, use it
-        if let Ok(path) = env::var("LIBCLANG_PATH") {
-            println!("cargo:warning=LIBCLANG_PATH from env: {}", path);
-        } else {
-            // Try to find libclang and set it explicitly for bindgen
-            for path in [
-                "/usr/lib/llvm-16/lib",
-                "/usr/lib/llvm-15/lib",
-                "/usr/lib/llvm-14/lib",
-                "/usr/lib/llvm-13/lib",
-                "/usr/lib/llvm-12/lib",
-                "/usr/lib/x86_64-linux-gnu",
-                "/usr/lib",
-                "/usr/lib64",
-            ] {
-                println!("cargo:warning=Checking path: {}", path);
-                if std::path::Path::new(path).exists() {
-                    // Set the LIBCLANG_PATH for bindgen directly
-                    println!("cargo:warning=Path exists, setting LIBCLANG_PATH to {}", path);
-                    println!("cargo:rustc-env=LIBCLANG_PATH={}", path);
-                    break;
-                }
+        // Try to find the actual libclang.so file
+        let possible_paths = [
+            "/usr/lib/llvm-16/lib/libclang.so",
+            "/usr/lib/llvm-15/lib/libclang.so",
+            "/usr/lib/llvm-14/lib/libclang.so",
+            "/usr/lib/llvm-13/lib/libclang.so",
+            "/usr/lib/x86_64-linux-gnu/libclang.so",
+            "/usr/lib/x86_64-linux-gnu/libclang-16.so",
+            "/usr/lib/x86_64-linux-gnu/libclang-15.so",
+            "/usr/lib/x86_64-linux-gnu/libclang-14.so",
+            "/usr/lib/libclang.so",
+        ];
+        
+        for path in possible_paths {
+            println!("cargo:warning=Checking file: {}", path);
+            if std::path::Path::new(path).exists() {
+                let dir = std::path::Path::new(path).parent().unwrap();
+                println!("cargo:warning=Found libclang at {}, setting LIBCLANG_PATH to {}", path, dir.display());
+                println!("cargo:rustc-env=LIBCLANG_PATH={}", dir.display());
+                break;
             }
         }
     } else {
