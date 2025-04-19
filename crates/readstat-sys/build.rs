@@ -210,6 +210,7 @@ fn main() {
         .allowlist_function("readstat_parse_sas7bdat")
         .allowlist_function("readstat_parse_sas7bcat")
         .allowlist_function("readstat_parse_dta")
+        .allowlist_function("readstat_parse_sav")
         .allowlist_function("readstat_parse_xport")
         .allowlist_function("readstat_parser_free")
         // Parsing - Format

@@ -19,6 +19,12 @@ pub fn match_var_format(
             None => None
         }
     }
+    else if extension == "sav" || extension == "zsav" {
+        match match_var_format_sav(&v) {
+            Some(result) => Some(result),
+            None => None
+        }
+    }
     else {
         None
     }
@@ -186,6 +192,24 @@ fn match_var_format_stata(format_str: &str) -> Option<ReadStatVarFormatClass> {
     }
     // --- NO MATCH ---
     else {
+        None // Format not recognized as a known date/time type
+    }
+}
+
+
+fn match_var_format_sav(format_str: &str) -> Option<ReadStatVarFormatClass> {
+    
+    let spss_datetime_formats = ["DATETIME", "DATETIME8", "DATETIME17", "DATETIME20", "DATETIME23.2","YMDHMS16","YMDHMS19","YMDHMS19.2", "YMDHMS20"];
+    let spss_date_formats = ["DATE","DATE8","DATE11", "DATE12", "ADATE","ADATE8", "ADATE10", "EDATE", "EDATE8","EDATE10", "JDATE", "JDATE5", "JDATE7", "SDATE", "SDATE8", "SDATE10"];
+    let spss_time_formats = ["TIME", "DTIME", "TIME8", "TIME5", "TIME11.2"];
+
+    if spss_date_formats.contains(&format_str) {
+        Some(ReadStatVarFormatClass::Date)
+    } else if spss_time_formats.contains(&format_str) {
+        Some(ReadStatVarFormatClass::Time)
+    } else if spss_datetime_formats.contains(&format_str) {
+        Some(ReadStatVarFormatClass::DateTime)
+    } else {
         None // Format not recognized as a known date/time type
     }
 }

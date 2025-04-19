@@ -21,8 +21,10 @@ fn main() {
 
     //  let path_metadata:PathBuf = std::path::PathBuf::from("/home/jrothbaum/python/readstat-rs/crates/readstat-tests/tests/data/all_types.sas7bdat");
     //  let path = std::path::PathBuf::from("/home/jrothbaum/Downloads/usa_00008.dta");
-    let path = std::path::PathBuf::from("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.dta");
+    //  let path = std::path::PathBuf::from("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.sav");
+    let path = std::path::PathBuf::from("/home/jrothbaum/Downloads/pyreadstat_container/pyreadstat-master/test_data/basic/sample_large.sav");
 
+    println!("path = {:?}", &path);
     
     let md = read::read_metadata(
         path.clone(),

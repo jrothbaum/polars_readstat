@@ -290,7 +290,7 @@ impl ReadStatData {
             "dta" => {
                 Extensions::dta
             },
-            "sav" => {
+            "sav" | "zsav" => {
                 Extensions::sav
             },
             _ => {
@@ -316,11 +316,14 @@ impl ReadStatData {
                     .set_row_offset(Some(self.chunk_row_start.try_into().unwrap()))?
                     .parse_dta(ppath, ctx)
             },
-            "sav" => {
-                return Err(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("sav file support not yet implemented")
-                )))
+            "sav" | "zsav" => {
+                ReadStatParser::new()
+                    // do not set metadata handler nor variable handler as already processed
+                    .set_variable_handler(Some(cb::handle_variable_noop))?
+                    .set_value_handler(Some(cb::handle_value))?
+                    .set_row_limit(Some(self.chunk_rows_to_process.try_into().unwrap()))?
+                    .set_row_offset(Some(self.chunk_row_start.try_into().unwrap()))?
+                    .parse_sav(ppath, ctx)
             }
             _ => {
                 return Err(Box::new(std::io::Error::new(

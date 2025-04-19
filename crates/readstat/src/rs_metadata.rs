@@ -170,6 +170,13 @@ impl ReadStatMetadata {
                     .set_row_limit(row_limit)?
                     .parse_dta(ppath, ctx)
             },
+            "sav" | "zsav" => {
+                ReadStatParser::new()
+                    .set_metadata_handler(Some(handle_metadata))?
+                    .set_variable_handler(Some(handle_variable))?
+                    .set_row_limit(row_limit)?
+                    .parse_sav(ppath, ctx)
+            },
             _ => {
                 return Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
