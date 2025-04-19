@@ -90,8 +90,12 @@ jobs:
           manylinux: auto
           args: --release --strip --out dist -vv
           before-script-linux: |
-            yum install -y llvm-devel
-            export LIBCLANG_PATH=/usr/lib64/llvm
+            yum install -y llvm-devel clang-devel
+            # Find where libclang.so is located
+            find / -name "libclang.so*" 2>/dev/null || true
+            # Set LIBCLANG_PATH to the directory containing libclang.so
+            export LIBCLANG_PATH=$(dirname $(find / -name "libclang.so*" 2>/dev/null | head -1))
+            echo "Found LIBCLANG_PATH: $LIBCLANG_PATH"
       - name: Build wheels (macOS & Windows)
         if: matrix.os != 'ubuntu-latest'
         
