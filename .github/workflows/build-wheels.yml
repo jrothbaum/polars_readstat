@@ -68,26 +68,23 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libclang-dev llvm-dev clang
-          
+          # Find and print libclang.so files
+          find /usr -name "libclang*.so*" | sort    
       - name: Set LIBCLANG_PATH
         if: matrix.os == 'ubuntu-latest'
         run: |
-          # More reliable way to find libclang.so
-          export LIBCLANG_PATH=$(dirname $(find /usr/lib -name "libclang-*.so*" | head -n 1))
-          echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> $GITHUB_ENV
-          # Print for debugging
-          echo "Setting LIBCLANG_PATH to: $LIBCLANG_PATH"
-          ls -la $LIBCLANG_PATH
-      - name: Build wheels (many linux/Ubunty)
+          # Hard-code the path based on Ubuntu's standard LLVM structure
+          echo "LIBCLANG_PATH=/usr/lib/llvm-16/lib" >> $GITHUB_ENV
+      - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
         uses: PyO3/maturin-action@v1
         env:
-          LIBCLANG_PATH: ${{ env.LIBCLANG_PATH }}
+          LIBCLANG_PATH: /usr/lib/llvm-16/lib
+          RUST_BACKTRACE: 1
         with:
           target: ${{ matrix.rust-target }}
           manylinux: auto
           args: --release --strip --out dist -vv
-      
       - name: Build wheels (macOS & Windows)
         if: matrix.os != 'ubuntu-latest'
         

@@ -107,27 +107,35 @@ fn main() {
         println!("cargo:rustc-link-lib=iconv");
         println!("cargo:rustc-link-lib=z");
     } else if target.contains("linux") {
-        // On Linux, iconv is part of glibc, so we don't need to link separately
         println!("cargo:rustc-link-lib=z");
-
-        // Help bindgen find libclang on Linux if not explicitly set
-        if env::var_os("LIBCLANG_PATH").is_none() {
-            // Try common locations for libclang
-            for path in &[
+        
+        // Print debugging information
+        println!("cargo:warning=Target is Linux, attempting to find libclang");
+        
+        // If LIBCLANG_PATH is already set, use it
+        if let Ok(path) = env::var("LIBCLANG_PATH") {
+            println!("cargo:warning=LIBCLANG_PATH from env: {}", path);
+        } else {
+            // Try to find libclang and set it explicitly for bindgen
+            for path in [
+                "/usr/lib/llvm-16/lib",
+                "/usr/lib/llvm-15/lib",
                 "/usr/lib/llvm-14/lib",
                 "/usr/lib/llvm-13/lib",
                 "/usr/lib/llvm-12/lib",
-                "/usr/lib/llvm-11/lib",
-                "/usr/lib/llvm-10/lib",
                 "/usr/lib/x86_64-linux-gnu",
+                "/usr/lib",
+                "/usr/lib64",
             ] {
-                if std::path::Path::new(&format!("{}/libclang.so", path)).exists() {
+                println!("cargo:warning=Checking path: {}", path);
+                if std::path::Path::new(path).exists() {
+                    // Set the LIBCLANG_PATH for bindgen directly
+                    println!("cargo:warning=Path exists, setting LIBCLANG_PATH to {}", path);
                     println!("cargo:rustc-env=LIBCLANG_PATH={}", path);
                     break;
                 }
             }
         }
-
     } else {
         // Other Unix-like systems
         println!("cargo:rustc-link-lib=z");
