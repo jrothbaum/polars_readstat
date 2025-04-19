@@ -54,6 +54,32 @@ jobs:
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
         shell: powershell
 
+      - name: Install LLVM, Clang & ReadStat dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -y
+          # Install clang, llvm, libclang-dev (for bindgen), and build tools
+          sudo apt-get install -y clang llvm libclang-dev build-essential autoconf automake libtool pkg-config zlib1g-dev
+          # Find the libclang library directory more robustly
+          # dpkg -L libclang-dev lists files, grep for libclang.so, get dirname, take first line
+          LIBCLANG_DIR=$(dpkg -L libclang-dev | grep '/libclang\.so$' | xargs -n 1 dirname | head -n 1)
+          if [ -z "$LIBCLANG_DIR" ]; then
+            echo "::error::Could not find libclang.so directory after installing libclang-dev"
+            # Fallback attempt with find, though less reliable
+            LIBCLANG_DIR=$(find /usr/lib /usr/lib64 -name libclang.so | head -n 1 | xargs dirname)
+            if [ -z "$LIBCLANG_DIR" ]; then
+              echo "::error::Fallback find command also failed to locate libclang.so directory"
+              exit 1
+            fi
+            echo "::warning::Found libclang.so using find: $LIBCLANG_DIR"
+          else
+            echo "Found libclang.so directory using dpkg: $LIBCLANG_DIR"
+          fi
+          echo "LIBCLANG_PATH=$LIBCLANG_DIR" >> $GITHUB_ENV
+          echo "Setting LIBCLANG_PATH=$LIBCLANG_DIR" # For logging
+          ls -l "$LIBCLANG_DIR/libclang.so"* # Verify file exists
+        shell: bash
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -77,13 +103,12 @@ jobs:
       - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
         uses: PyO3/maturin-action@v1
-        env:
-          LIBCLANG_PATH: ${{ env.LIBCLANG_PATH }}
+        # LIBCLANG_PATH should be inherited from the environment set in the previous step via GITHUB_ENV
+        # No explicit 'env:' block needed here unless the previous step failed
         with:
           target: ${{ matrix.rust-target }}
-          manylinux: auto
-          args: --release --strip --out dist -vv
-      
+          manylinux: auto # Use manylinux for broader compatibility
+          args: --release --strip --out dist -vv # Added verbosity
       - name: Build wheels (macOS & Windows)
         if: matrix.os != 'ubuntu-latest'
         
