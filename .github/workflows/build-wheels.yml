@@ -94,11 +94,13 @@ jobs:
         
         uses: PyO3/maturin-action@v1
         with:
-          env:
-            LIBCLANG_PATH=/usr/local/llvm18/lib cargo build
           target: ${{ matrix.rust-target }}
           args: --release --strip --out dist
-          singlefile: true 
+          singlefile: true
+          manylinux: '2014'
+          before-script-linux: |
+            yum install -y llvm-devel
+            export LIBCLANG_PATH=/usr/lib64/llvm 
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
