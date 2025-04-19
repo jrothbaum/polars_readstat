@@ -66,12 +66,8 @@ jobs:
       - name: Install LLVM & Clang (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          wget https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 14 all
-          echo "LIBCLANG_PATH=/usr/lib/llvm-14/lib" >> $GITHUB_ENV
-          # Verify installation
-          ls -la /usr/lib/llvm-14/lib/    
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev llvm-dev clang    
       - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
         uses: PyO3/maturin-action@v1

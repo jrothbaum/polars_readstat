@@ -107,21 +107,7 @@ fn main() {
         println!("cargo:rustc-link-lib=iconv");
         println!("cargo:rustc-link-lib=z");
     } else if target.contains("linux") {
-        // Print information about what's happening
-        println!("cargo:warning=Linux target detected");
-        
-        if let Ok(path) = env::var("LIBCLANG_PATH") {
-            println!("cargo:warning=LIBCLANG_PATH from environment: {}", path);
-        } else {
-            println!("cargo:warning=LIBCLANG_PATH not set in environment");
-        }
-        
-        // Set a very specific fallback for GitHub Actions Ubuntu
-        println!("cargo:rustc-env=BINDGEN_EXTRA_CLANG_ARGS=-I/usr/lib/llvm-14/include");
-        println!("cargo:rustc-env=LIBCLANG_PATH=/usr/lib/llvm-14/lib");
-        
-        // Regular linking
-        println!("cargo:rustc-link-lib=z");
+        cc.flag("-fPIC");
     } else {
         // Other Unix-like systems
         println!("cargo:rustc-link-lib=z");
@@ -224,13 +210,19 @@ fn main() {
         .allowlist_type("readstat_value_t")
         // Parsing
         .allowlist_type("readstat_parser_t")
+
+
+        .clang_arg("-I/usr/include/clang")
+        .clang_arg("-I/usr/include")
         // Tell cargo to invalidate the built crate whenever any of the
         // included header files changed
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+        
         // Finish the builder and generate the bindings
         .generate()
         // Unwrap the Result and panic on failure
-        .expect("Unable to generate bindings");
+        .expect("Unable to generate bindings")
+        ;
 
     // Write the bindings to the $OUT_DIR/bindings.rs file.
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
