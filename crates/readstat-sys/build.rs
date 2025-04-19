@@ -107,33 +107,21 @@ fn main() {
         println!("cargo:rustc-link-lib=iconv");
         println!("cargo:rustc-link-lib=z");
     } else if target.contains("linux") {
-        println!("cargo:rustc-link-lib=z");
+        // Print information about what's happening
+        println!("cargo:warning=Linux target detected");
         
-        // Print debugging information
-        println!("cargo:warning=Target is Linux, attempting to find libclang");
-        
-        // Try to find the actual libclang.so file
-        let possible_paths = [
-            "/usr/lib/llvm-16/lib/libclang.so",
-            "/usr/lib/llvm-15/lib/libclang.so",
-            "/usr/lib/llvm-14/lib/libclang.so",
-            "/usr/lib/llvm-13/lib/libclang.so",
-            "/usr/lib/x86_64-linux-gnu/libclang.so",
-            "/usr/lib/x86_64-linux-gnu/libclang-16.so",
-            "/usr/lib/x86_64-linux-gnu/libclang-15.so",
-            "/usr/lib/x86_64-linux-gnu/libclang-14.so",
-            "/usr/lib/libclang.so",
-        ];
-        
-        for path in possible_paths {
-            println!("cargo:warning=Checking file: {}", path);
-            if std::path::Path::new(path).exists() {
-                let dir = std::path::Path::new(path).parent().unwrap();
-                println!("cargo:warning=Found libclang at {}, setting LIBCLANG_PATH to {}", path, dir.display());
-                println!("cargo:rustc-env=LIBCLANG_PATH={}", dir.display());
-                break;
-            }
+        if let Ok(path) = env::var("LIBCLANG_PATH") {
+            println!("cargo:warning=LIBCLANG_PATH from environment: {}", path);
+        } else {
+            println!("cargo:warning=LIBCLANG_PATH not set in environment");
         }
+        
+        // Set a very specific fallback for GitHub Actions Ubuntu
+        println!("cargo:rustc-env=BINDGEN_EXTRA_CLANG_ARGS=-I/usr/lib/llvm-14/include");
+        println!("cargo:rustc-env=LIBCLANG_PATH=/usr/lib/llvm-14/lib");
+        
+        // Regular linking
+        println!("cargo:rustc-link-lib=z");
     } else {
         // Other Unix-like systems
         println!("cargo:rustc-link-lib=z");

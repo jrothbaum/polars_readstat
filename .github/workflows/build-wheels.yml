@@ -63,23 +63,21 @@ jobs:
         run: |
           uv pip install --system maturin
         shell: bash
-      - name: Install LLVM & Clang
+      - name: Install LLVM & Clang (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libclang-dev llvm-dev clang    
-      - name: Set LIBCLANG_PATH
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          # Hard-code the path based on Ubuntu's standard LLVM structure
-          echo "LIBCLANG_PATH=/usr/lib/llvm-16/lib" >> $GITHUB_ENV
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 14 all
+          echo "LIBCLANG_PATH=/usr/lib/llvm-14/lib" >> $GITHUB_ENV
+          # Verify installation
+          ls -la /usr/lib/llvm-14/lib/    
       - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
         uses: PyO3/maturin-action@v1
         env:
-          LIBCLANG_PATH: ${{ env.LIBCLANG_PATH }}
-          # Try this alternate variable as well
-          BINDGEN_LIBCLANG_PATH: ${{ env.LIBCLANG_PATH }}
+          LIBCLANG_PATH: /usr/lib/llvm-14/lib
+          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/lib/llvm-14/include
           RUST_BACKTRACE: full
         with:
           target: ${{ matrix.rust-target }}
