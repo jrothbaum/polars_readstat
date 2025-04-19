@@ -1,12 +1,12 @@
 //  use log::{debug, info, warn, error};
 use log::debug;
-use env_logger::Builder;
+use env_logger::Builder; 
 use std::{env, io::Write};
 
 
 mod read;
 
-
+ 
 
 fn main() {
     //  env_logger::init();
@@ -22,7 +22,7 @@ fn main() {
     //  let path_metadata:PathBuf = std::path::PathBuf::from("/home/jrothbaum/python/readstat-rs/crates/readstat-tests/tests/data/all_types.sas7bdat");
     //  let path = std::path::PathBuf::from("/home/jrothbaum/Downloads/usa_00008.dta");
     //  let path = std::path::PathBuf::from("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.sav");
-    let path = std::path::PathBuf::from("/home/jrothbaum/Downloads/pyreadstat_container/pyreadstat-master/test_data/basic/sample.zsav");
+    let path = std::path::PathBuf::from("/home/jrothbaum/Downloads/pyreadstat_container/pyreadstat-master/test_data/basic/sample.sav");
 
     println!("path = {:?}", &path);
     

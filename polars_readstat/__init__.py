@@ -231,6 +231,6 @@ if __name__ == "__main__":
                                          filter_rows=True,
                                          use_pyreadstat=use_pyreadstat)
 
-    sas7bdat_test(use_pyreadstat=False)
+    # sas7bdat_test(use_pyreadstat=False)
     # dta_test(use_pyreadstat=False)
-    # read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.dta")
+    read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.sav")

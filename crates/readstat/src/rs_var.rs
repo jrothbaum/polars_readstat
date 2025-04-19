@@ -15,7 +15,7 @@ const SEC_SHIFT_SPSS: i64 = 12219379200;
 
 pub const SEC_MILLISECOND: i64 = 1_000;
 pub const SEC_MICROSECOND: i64 = 1_000_000;
-//  pub const SEC_NANOSECOND: i64 = 1_000_000_000;
+pub const SEC_NANOSECOND: i64 = 1_000_000_000;
 
 
 
@@ -123,7 +123,7 @@ impl ReadStatVar {
                 value * SEC_MICROSECOND //- SEC_SHIFT_SAS_STATA 
             },
             Extensions::sav => {
-                value * SEC_MICROSECOND //- SEC_SHIFT_SPSS 
+                value * SEC_NANOSECOND //- SEC_SHIFT_SPSS 
             },
             _ => {
                 value
@@ -143,7 +143,7 @@ impl ReadStatVar {
                 value - SEC_SHIFT_SAS_STATA* SEC_MILLISECOND
             },
             Extensions::sav => {
-                value - SEC_SHIFT_SPSS* SEC_MILLISECOND
+                (value - SEC_SHIFT_SPSS)* SEC_MILLISECOND
             },
             _ => {
                 value 
