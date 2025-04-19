@@ -10,7 +10,7 @@ links = "readstat"
 build = "build.rs"
 
 [build-dependencies]
-bindgen = "0.71.1"
+bindgen = { version = "0.71.1", features = ["runtime"] }
 cc = "1.0"
 pkg-config = "0.3"
 

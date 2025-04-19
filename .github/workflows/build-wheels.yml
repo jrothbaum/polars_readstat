@@ -67,18 +67,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libclang-dev llvm-dev clang
-          # Find all libclang*.so files
-          echo "Looking for libclang*.so files:"
-          find /usr -name "libclang*.so*" | sort
-          # Find the exact path to set
-          LIBCLANG_SO=$(find /usr -name "libclang.so" -o -name "libclang-*.so" | head -n 1)
-          LIBCLANG_DIR=$(dirname $LIBCLANG_SO)
-          echo "Found libclang at: $LIBCLANG_SO"
-          echo "Setting LIBCLANG_PATH to: $LIBCLANG_DIR"
-          echo "LIBCLANG_PATH=$LIBCLANG_DIR" >> $GITHUB_ENV
-          # Additional diagnostic info
-          ls -la $LIBCLANG_DIR    
+          sudo apt-get install -y libclang-dev llvm-dev clang    
       - name: Set LIBCLANG_PATH
         if: matrix.os == 'ubuntu-latest'
         run: |
