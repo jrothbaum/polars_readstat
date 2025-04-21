@@ -71,6 +71,7 @@ jobs:
           # Tell bindgen where to find libclang headers (adjust if needed)
           BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/include/clang" 
         with:
+          interpreter: ${{ steps.setup-python.outputs.python-path }} # Pass interpreter path
           target: ${{ matrix.rust-target }}
           # Use manylinux_2_28 (AlmaLinux 8 based)
           manylinux: "2_28" 
@@ -94,6 +95,7 @@ jobs:
         
         uses: PyO3/maturin-action@v1
         with:
+          interpreter: ${{ steps.setup-python.outputs.python-path }} # Pass interpreter path
           target: ${{ matrix.rust-target }}
           args: --release --strip --out dist
           singlefile: true 
