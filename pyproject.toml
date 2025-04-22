@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "polars-readstat"
 version = "0.2.0"
-description = "Read SAS (sas7bdat) and Stata (dta) files with polars"
+description = "Read SAS (sas7bdat), Stata (dta), and SPSS (sav) files with polars"
 readme = "README.md"
 authors = [{name = "Jon Rothbaum", email = "jlrothbaum@gmail.com"}]
 requires-python = ">=3.9"
