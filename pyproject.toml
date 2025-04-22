@@ -26,7 +26,10 @@ dependencies = [
 [tool.maturin]
 manifest-path = "crates/polars_readstat_rs/Cargo.toml"
 module-name = "polars_readstat_rs"
+python-source = "polars_readstat"
+python-packages = ["polars_readstat"]
 features = ["pyo3/extension-module"]
+include = ["**/*"]
 
 [dependency-groups]
 dev = [

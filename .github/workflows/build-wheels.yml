@@ -77,7 +77,6 @@ jobs:
           
           manylinux: "2_28" 
           args: --release --strip --out dist
-          python-packages: polars_readstat
           before-script-linux: |
             set -ex # Fail fast and print commands
             # Use dnf (package manager for AlmaLinux 8 / CentOS 8+)
@@ -100,7 +99,6 @@ jobs:
           interpreter: ${{ steps.setup-python.outputs.python-path }} # Pass interpreter path
           target: ${{ matrix.rust-target }}
           args: --release --strip --out dist
-          python-packages: polars_readstat
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
