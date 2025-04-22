@@ -74,9 +74,9 @@ jobs:
         with:
           interpreter: ${{ steps.setup-python.outputs.python-path }} # Pass interpreter path
           target: ${{ matrix.rust-target }}
-          # Use manylinux_2_28 (AlmaLinux 8 based)
+          
           manylinux: "2_28" 
-          args: --release --strip --out dist --manifest-path crates/polars_readstat_rs/Cargo.toml
+          args: --release --strip --out dist
           python-packages: polars_readstat
           before-script-linux: |
             set -ex # Fail fast and print commands
@@ -99,9 +99,8 @@ jobs:
         with:
           interpreter: ${{ steps.setup-python.outputs.python-path }} # Pass interpreter path
           target: ${{ matrix.rust-target }}
-          args: --release --strip --out dist --manifest-path crates/polars_readstat_rs/Cargo.toml
+          args: --release --strip --out dist
           python-packages: polars_readstat
-          singlefile: true 
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
