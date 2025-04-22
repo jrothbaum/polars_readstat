@@ -76,7 +76,8 @@ jobs:
           target: ${{ matrix.rust-target }}
           # Use manylinux_2_28 (AlmaLinux 8 based)
           manylinux: "2_28" 
-          args: --release --strip --out dist -vv
+          args: --release --strip --out dist --manifest-path crates/polars_readstat_rs/Cargo.toml
+          python-packages: polars_readstat
           before-script-linux: |
             set -ex # Fail fast and print commands
             # Use dnf (package manager for AlmaLinux 8 / CentOS 8+)
@@ -98,7 +99,8 @@ jobs:
         with:
           interpreter: ${{ steps.setup-python.outputs.python-path }} # Pass interpreter path
           target: ${{ matrix.rust-target }}
-          args: --release --strip --out dist
+          args: --release --strip --out dist --manifest-path crates/polars_readstat_rs/Cargo.toml
+          python-packages: polars_readstat
           singlefile: true 
 
       - name: Upload wheels
