@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/polars_readstat",
+    "crates/polars_readstat_rs",
     "crates/readstat-sys",
     "crates/iconv-sys",
 ]

@@ -4,7 +4,7 @@ from polars.io.plugins import register_io_source
 import polars as pl
 
 
-from polars_readstat import read_readstat 
+from polars_readstat_rs import read_readstat 
 
 def scan_readstat(path:str) -> pl.LazyFrame:
     
@@ -233,4 +233,4 @@ if __name__ == "__main__":
 
     # sas7bdat_test(use_pyreadstat=False)
     # dta_test(use_pyreadstat=False)
-    read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.sav")
+    read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat_rs/tests/data/sample.sav")

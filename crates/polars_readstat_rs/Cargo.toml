@@ -1,14 +1,14 @@
 [package]
-name = "polars_readstat"
+name = "polars_readstat_rs"
 version = "0.1.0"
 authors = ["Jon Rothbaum <jlrothbaum@gmail.com>"]
 edition = "2021"
 description = "Rust program to read files from readstat->arrow and from arrow->write with readstat"
 license = "MIT"
-default-run = "polars_readstat"
+default-run = "polars_readstat_rs"
 #   repository = "https://github.com/curtisalexander/readstat-rs"
 [lib]
-name = "polars_readstat"
+name = "polars_readstat_rs"
 crate-type= ["cdylib"]
 
 [dependencies]

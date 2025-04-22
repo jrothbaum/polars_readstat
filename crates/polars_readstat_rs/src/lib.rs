@@ -170,7 +170,7 @@ impl read_readstat {
 
 
 #[pymodule]
-fn polars_readstat(m: &Bound<PyModule>) -> PyResult<()> {
+fn polars_readstat_rs(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<read_readstat>().unwrap();
     Ok(())
 }

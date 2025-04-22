@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "polars-readstat"
-version = "0.1.0"
+version = "0.2.0"
 description = "Read SAS (sas7bdat) and Stata (dta) files with polars"
 readme = "README.md"
 authors = [{name = "Jon Rothbaum", email = "jlrothbaum@gmail.com"}]
@@ -17,21 +17,21 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dependencies = [
-    "maturin>=1.8.3",
-    "polars==1.25.2",
-    "cffi>=1.17.1",
-    "patchelf>=0.17.2.2",
+    "polars>=1.25.2",
 ]
 
 
 
 
 [tool.maturin]
-manifest-path = "crates/polars_readstat/Cargo.toml"
-module-name = "polars_readstat"
+manifest-path = "crates/polars_readstat_rs/Cargo.toml"
+module-name = "polars_readstat_rs"
 
 [dependency-groups]
 dev = [
+    "maturin>=1.8.3",
+    "cffi>=1.17.1",
+    "patchelf>=0.17.2.2",
     "pandas>=2.2.3",
     "pyarrow>=19.0.1",
     "pyreadstat>=1.2.8",
