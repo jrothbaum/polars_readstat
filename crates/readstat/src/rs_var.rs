@@ -118,8 +118,10 @@ impl ReadStatVar {
     ) -> i64 {
         let value = unsafe { readstat_sys::readstat_int32_value(value) as i64};
         let value = match &extension {
-            Extensions::sas7bdat |
-                Extensions::dta => {
+            Extensions::sas7bdat => {
+                value * SEC_NANOSECOND //- SEC_SHIFT_SAS_STATA
+            },
+            Extensions::dta => {
                 value * SEC_MICROSECOND //- SEC_SHIFT_SAS_STATA 
             },
             Extensions::sav => {
@@ -138,8 +140,10 @@ impl ReadStatVar {
     ) -> i64 {
         let value = unsafe { readstat_sys::readstat_double_value(value) as i64};
         let value = match extension {
-            Extensions::sas7bdat |
-                Extensions::dta => {
+            Extensions::sas7bdat => {
+                (value - SEC_SHIFT_SAS_STATA)* SEC_MILLISECOND
+            },
+            Extensions::dta => {
                 value - SEC_SHIFT_SAS_STATA* SEC_MILLISECOND
             },
             Extensions::sav => {
