@@ -1,5 +1,5 @@
-
-from typing import Any, Iterator
+from __future__ import annotations
+from typing import Any, Iterator, Optional
 from polars.io.plugins import register_io_source
 import polars as pl
 
