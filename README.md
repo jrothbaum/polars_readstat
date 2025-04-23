@@ -1,5 +1,5 @@
 # polars_readstat
-Polars IO plugin to read SAS (sas7bdat) and Stata (dta) files
+Polars IO plugin to read SAS (sas7bdat), Stata (dta), and SPSS (sav) files
 
 ## :key: Dependencies
 This plugin calls rust bindings to load files in chunks, it  is only possible due to the following _**excellent**_ projects:
