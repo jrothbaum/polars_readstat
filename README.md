@@ -1,6 +1,31 @@
 # polars_readstat
 Polars IO plugin to read SAS (sas7bdat), Stata (dta), and SPSS (sav) files
 
+## Basic usage
+```
+from polars_readstat import scan_readstat
+df_stata = scan_readstat("/path/file.dta")
+df_sas = scan_readstat("/path/file.sas7bdat")
+df_spss = scan_readstat("/path/file.sav")
+
+
+# Then do any normal thing you'd do in polars
+df_stata = (df_stata.head(1000)
+                    .select(["a","b"])
+                    .filter(pl.col("a") > 0.5))
+...
+df_stata = df_stata.collect()
+# That's it
+
+
+
+# ***IMPORTANT NOTE: YOU CANNOT YET FILTER ON A COLUMN YOU DO NOT LOAD***
+#   This would throw an error
+#   It's a pending task to fix this
+df_stata = (df_stata.select("b")
+                    .filter(pl.col("a") > 0.5))
+```
+
 ## :key: Dependencies
 This plugin calls rust bindings to load files in chunks, it  is only possible due to the following _**excellent**_ projects:
 - The [ReadStat](https://github.com/WizardMac/ReadStat) C library developed by [Evan Miller](https://www.evanmiller.org)
@@ -21,6 +46,7 @@ Other notable features
 Pending tasks:
 - Write support for Stata (dta) and SPSS (sav) files.  Readstat itself cannot write SAS (sas7bdat) files that SAS can read, and I'm not fool enough to try to figure that out.  Also, any workflow that involves SAS should be one-way (SAS->something else) so you should only read SAS files, never write them.
 - Unit tests on the data sets used by [pyreadstat](https://github.com/Roche/pyreadstat) to confirm that my output matches theirs
+- Fix it so that if you filter on a column you do not select in the final dataset at collect, load the columns from the filter expression, apply the filter, and then drop them from the final data
 
 
 ## Benchmark
