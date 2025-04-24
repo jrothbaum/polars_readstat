@@ -3,6 +3,7 @@ Polars IO plugin to read SAS (sas7bdat), Stata (dta), and SPSS (sav) files
 
 ## Basic usage
 ```
+import polars as pl
 from polars_readstat import scan_readstat
 df_stata = scan_readstat("/path/file.dta")
 df_sas = scan_readstat("/path/file.sas7bdat")
@@ -19,11 +20,14 @@ df_stata = df_stata.collect()
 
 
 
-# ***IMPORTANT NOTE: YOU CANNOT YET FILTER ON A COLUMN YOU DO NOT LOAD***
-#   This would throw an error
+# ***IMPORTANT NOTE: YOU CANNOT YET FILTER ON A COLUMN YOU DO NOT LOAD BEFORE YOU COLLECT ***
+#   This would throw an error and the ordering of select/filter doesn't matter if df_stata is a lazyframe
 #   It's a pending task to fix this
+df_stata = scan_readstat("/path/file.dta")
 df_stata = (df_stata.select("b")
                     .filter(pl.col("a") > 0.5))
+#   Error (Rust panic) will happen here
+df_stata = df_stata.collect()
 ```
 
 ## :key: Dependencies
