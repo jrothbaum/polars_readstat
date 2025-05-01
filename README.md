@@ -12,22 +12,11 @@ df_spss = scan_readstat("/path/file.sav")
 
 # Then do any normal thing you'd do in polars
 df_stata = (df_stata.head(1000)
-                    .select(["a","b"])
-                    .filter(pl.col("a") > 0.5))
+                    .filter(pl.col("a") > 0.5)
+                    .select(["b","c"]))
 ...
 df_stata = df_stata.collect()
 # That's it
-
-
-
-# ***IMPORTANT NOTE: YOU CANNOT YET FILTER ON A COLUMN YOU DO NOT LOAD BEFORE YOU COLLECT ***
-#   This would throw an error and the ordering of select/filter doesn't matter if df_stata is a lazyframe
-#   It's a pending task to fix this
-df_stata = scan_readstat("/path/file.dta")
-df_stata = (df_stata.select("b")
-                    .filter(pl.col("a") > 0.5))
-#   Error (Rust panic) will happen here
-df_stata = df_stata.collect()
 ```
 
 ## :key: Dependencies
