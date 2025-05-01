@@ -29,24 +29,10 @@ def scan_readstat(path:str) -> pl.LazyFrame:
         
         schema = src.schema()
 
-        if with_columns is not None:
+        if with_columns is not None: 
             src.set_with_columns(with_columns)
         
         while (out := src.next()) is not None:
-            if predicate is not None:
-                out = out.filter(predicate)
-
-
-            #   Cast to int8 and int16 when needed.  This is not ideal...
-            with_intcast = []
-            cols_int8_cast = src.cast_int8()
-            if len(cols_int8_cast):
-                with_intcast.append(pl.col(cols_int8_cast).cast(pl.Int8))
-            cols_int16_cast = src.cast_int16()
-            if len(cols_int16_cast):
-                with_intcast.append(pl.col(cols_int16_cast).cast(pl.Int16))
-            if len(with_intcast):
-                out = out.with_columns(with_intcast)
             yield out
 
 
@@ -62,13 +48,17 @@ if __name__ == "__main__":
         print(df.collect_schema())
         print(df.collect())
         df = df.head(2)
-        print(df.collect())
+        #   print(df.collect())
         
-        df = df.select("mychar",
-                    "mynum",
-                    "myord")
         
         print(df.collect_schema())
+
+        df = df.filter(pl.col("mylabl") > 1.5)
+
+        
+        df = df.select("mychar",
+                        "mynum",
+                        "myord")        
         df = df.collect()
         print(df)
         print("\n\n\n")

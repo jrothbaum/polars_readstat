@@ -47,14 +47,14 @@ impl ReadStatVar {
 
     pub fn get_value_i8(
         value: readstat_sys::readstat_value_t
-    ) -> i32 {
-        unsafe { readstat_sys::readstat_int8_value(value) as i32 }
+    ) -> i8 {
+        unsafe { readstat_sys::readstat_int8_value(value) }
     }
 
     pub fn get_value_i16(
         value: readstat_sys::readstat_value_t
-    ) -> i32 {
-        unsafe { readstat_sys::readstat_int16_value(value) as i32 }
+    ) -> i16 {
+        unsafe { readstat_sys::readstat_int16_value(value) }
     }
 
     pub fn get_value_i32(

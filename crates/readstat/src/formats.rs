@@ -33,167 +33,99 @@ pub fn match_var_format(
 
 
 
-fn match_var_format_sas(
-    format_str: &str
-) -> Option<ReadStatVarFormatClass> {
-
-    // Compile regex patterns for different format types
+fn match_var_format_sas(format_str: &str) -> Option<ReadStatVarFormatClass> {
+    // Convert to uppercase for matching
+    let format_upper = format_str.to_uppercase();
     
-    // Date formats: DATE, MMDDYY, DDMMYY, YYMMDD, etc.
-    let date_regex = Regex::new(r"(?i)^(DATE|MMDDYY|DDMMYY|YYMMDD|MONYY|MONNAME|WEEKDATE|WEEKDATX|WORDDATE|WORDDATX|JULDAY|JULIAN|QTR|QTRR|YEAR|EURDFDE|NENGO)[0-9]*\.?[0-9]*$").unwrap();
+    // Define the format lists like pyreadstat
+    let sas_date_formats = [
+        "WEEKDATE", "MMDDYY", "DDMMYY", "YYMMDD", "DATE", "DATE9", "YYMMDD10", 
+        "DDMMYYB", "DDMMYYB10", "DDMMYYC", "DDMMYYC10", "DDMMYYD", "DDMMYYD10",
+        "DDMMYYN6", "DDMMYYN8", "DDMMYYP", "DDMMYYP10", "DDMMYYS", "DDMMYYS10",
+        "MMDDYYB", "MMDDYYB10", "MMDDYYC", "MMDDYYC10", "MMDDYYD", "MMDDYYD10",
+        "MMDDYYN6", "MMDDYYN8", "MMDDYYP", "MMDDYYP10", "MMDDYYS", "MMDDYYS10",
+        "WEEKDATX", "DTDATE", "WORDDATE", "WORDDATX", "JULDAY", "JULIAN",
+        "IS8601DA", "E8601DA", "B8601DA", "EURDFDE", "NENGO", "MONYY", "QTR", "QTRR", "YEAR",
+        "YYMMDDB", "YYMMDDD", "YYMMDDN", "YYMMDDP", "YYMMDDS"
+    ];
     
-    // Basic time formats without fractional seconds
-    let time_regex = Regex::new(r"(?i)^(TIME|HHMM|HOUR|MMSS|TOD)[0-9]*\.?[0-9]*$").unwrap();
+    let sas_datetime_formats = [
+        "DATETIME", "DATETIME18", "DATETIME19", "DATETIME20", "DATETIME21", "DATETIME22",
+        "DATETIME23", "DATETIME24", "DATETIME25", "DATETIME26",
+        "E8601DT", "DATEAMPM", "MDYAMPM", "DTMONYY", "IS8601DT", "B8601DT", "B8601DN"
+    ];
     
-    // Time formats with milliseconds (usually .3 precision)
-    let time_ms_regex = Regex::new(r"(?i)^(TIME|HHMM|TOD)[0-9]*\.3$").unwrap();
+    let sas_time_formats = [
+        "TIME", "HHMM", "TIME20.3", "TIME20", "TIME5", "TOD", "HOUR", "MMSS",
+        "TIMEAMPM", "IS8601TM", "E8601TM", "B8601TM"
+    ];
     
-    // Time formats with microseconds (usually .6 precision)
-    //  let time_us_regex = Regex::new(r"(?i)^(TIME|HHMM|TOD)[0-9]*\.6$").unwrap();
+    // Strip any width and precision specs (numbers and decimal points)
+    // This creates a base format name for matching
+    let base_format = format_upper
+        .chars()
+        .take_while(|&c| c.is_alphabetic() || c == '8' || c == '6' || c == '0' || c == '1')
+        .collect::<String>();
     
-    // Time formats with nanoseconds (usually .9 precision)
-    //  let time_ns_regex = Regex::new(r"(?i)^(TIME|HHMM|TOD)[0-9]*\.9$").unwrap();
-    
-    // Basic datetime formats without fractional seconds
-    let datetime_regex = Regex::new(r"(?i)^(DATETIME|E8601DT|B8601DT|MDYAMPM|DTDATE|DTMONYY)[0-9]*\.?[0-9]*$").unwrap();
-    
-    // Datetime formats with milliseconds (usually .3 precision)
-    let datetime_ms_regex = Regex::new(r"(?i)^(DATETIME|E8601DT|B8601DT)[0-9]*\.3$").unwrap();
-    
-    // Datetime formats with microseconds (usually .6 precision)
-    let datetime_us_regex = Regex::new(r"(?i)^(DATETIME|E8601DT|B8601DT)[0-9]*\.6$").unwrap();
-    
-    // Datetime formats with nanoseconds (usually .9 precision)
-    let datetime_ns_regex = Regex::new(r"(?i)^(DATETIME|E8601DT|B8601DT)[0-9]*\.9$").unwrap();
-    
-    // Special cases for DATETIMExx formats with implied precision
-    let datetime_ms_implied_regex = Regex::new(r"(?i)^DATETIME(21|22)[0-9]*\.?[0-9]*$").unwrap();
-    let datetime_us_implied_regex = Regex::new(r"(?i)^DATETIME(23|24)[0-9]*\.?[0-9]*$").unwrap();
-    let datetime_ns_implied_regex = Regex::new(r"(?i)^DATETIME(25|26)[0-9]*\.?[0-9]*$").unwrap();
-
-    // Check the format string against each regex pattern - order is important
-    // Start with the most specific patterns first
-    if datetime_ns_implied_regex.is_match(format_str) {
-        // DATETIME25 and DATETIME26 are always nanosecond precision
-        //  Some(ReadStatVarFormatClass::DateTimeWithNanoseconds)
-        Some(ReadStatVarFormatClass::DateTime)
-    } else if datetime_us_implied_regex.is_match(format_str) {
-        // DATETIME23 and DATETIME24 are always microsecond precision
-        //  Some(ReadStatVarFormatClass::DateTimeWithMicroseconds)
-        Some(ReadStatVarFormatClass::DateTime)
-    } else if datetime_ms_implied_regex.is_match(format_str) {
-        // DATETIME21 and DATETIME22 are always millisecond precision
-        //  Some(ReadStatVarFormatClass::DateTimeWithMilliseconds)
-        Some(ReadStatVarFormatClass::DateTime)
-    } else if datetime_ns_regex.is_match(format_str) {
-        //  Some(ReadStatVarFormatClass::DateTimeWithNanoseconds)
-        Some(ReadStatVarFormatClass::DateTime)
-    } else if datetime_us_regex.is_match(format_str) {
-        //  Some(ReadStatVarFormatClass::DateTimeWithMicroseconds)
-        Some(ReadStatVarFormatClass::DateTime)
-    } else if datetime_ms_regex.is_match(format_str) {
-        //  Some(ReadStatVarFormatClass::DateTimeWithMilliseconds)
-        Some(ReadStatVarFormatClass::DateTime)
-    // } else if time_ns_regex.is_match(format_str) {
-    //     Some(ReadStatVarFormatClass::TimeWithNanoseconds)
-    // } else if time_us_regex.is_match(format_str) {
-    //     Some(ReadStatVarFormatClass::TimeWithMicroseconds)
-    } else if time_ms_regex.is_match(format_str) {
-        //  Some(ReadStatVarFormatClass::TimeWithMilliseconds)
-        Some(ReadStatVarFormatClass::DateTime)
-    } else if datetime_regex.is_match(format_str) {
-        Some(ReadStatVarFormatClass::DateTime)
-    } else if date_regex.is_match(format_str) {
-        Some(ReadStatVarFormatClass::Date)
-    } else if time_regex.is_match(format_str) {
-        Some(ReadStatVarFormatClass::Time)
-    } else {
-        None // Format not recognized
+    // Try to match the base format to our lists
+    for fmt in &sas_time_formats {
+        if base_format == *fmt || format_upper.starts_with(fmt) {
+            return Some(ReadStatVarFormatClass::Time);
+        }
     }
+    
+    for fmt in &sas_datetime_formats {
+        if base_format == *fmt || format_upper.starts_with(fmt) {
+            return Some(ReadStatVarFormatClass::DateTime);
+        }
+    }
+    
+    for fmt in &sas_date_formats {
+        if base_format == *fmt || format_upper.starts_with(fmt) {
+            return Some(ReadStatVarFormatClass::Date);
+        }
+    }
+    
+    // Special case for precision handling (if needed)
+    if format_upper.contains(".3") && (
+        format_upper.starts_with("TIME") || 
+        format_upper.starts_with("HHMM") || 
+        format_upper.starts_with("TOD")
+    ) {
+        return Some(ReadStatVarFormatClass::Time);
+    }
+    
+    // No match found
+    None
 }
 
-
 fn match_var_format_stata(format_str: &str) -> Option<ReadStatVarFormatClass> {
-    // --- Regex Definitions (inside function scope as requested) ---
-    // WARNING: Compiling Regexes on every call is inefficient. Consider using once_cell or lazy_static.
-
-    // 1. Specific Time-Only Display Formats (Check FIRST!)
-    let time_hms_sub_regex = Regex::new(r"(?i)^%t[ch]\s*[Hh][Hh]:[Mm][Mm]:[Ss][Ss](?:\.[Ss]{1,9})?$").unwrap();
-    let time_hms_regex = Regex::new(r"(?i)^%t[ch]\s*[Hh][Hh]:[Mm][Mm]:[Ss][Ss]$").unwrap();
-    let time_hm_regex = Regex::new(r"(?i)^%t[ch]\s*[Hh][Hh]:[Mm][Mm]$").unwrap();
-
-    // 2. High Precision DateTime (Potentially less standard)
-    let datetime_ns_regex = Regex::new(r"(?i)^%t?N").unwrap(); // e.g., %tN...
-    let datetime_us_regex = Regex::new(r"(?i)^%t?u").unwrap(); // e.g., %tU...
-
-    // 3. DateTime with Milliseconds (%tC base type)
-    let datetime_milli_base_regex = Regex::new(r"(?i)^%t?C$").unwrap(); // Exact %tC or %C
-    // Matches %tC... or %C... *with display specifiers* (that are not time-only)
-    let datetime_milli_display_regex = Regex::new(r"(?i)^%t?C.").unwrap();
-
-    // 4. Standard DateTime (%tc base type)
-    let datetime_base_regex = Regex::new(r"(?i)^%t?c$").unwrap(); // Exact %tc or %c
-     // Matches %tc... or %c... *with display specifiers* (that are not time-only)
-    let datetime_display_regex = Regex::new(r"(?i)^%t?c.").unwrap();
-
-    // 5. Date Formats (includes %td, %d, and periods)
-    let date_td_base_regex = Regex::new(r"(?i)^%t?d$").unwrap(); // Exact %td or %d
-    // Matches %td... or %d... *with display specifiers*
-    let date_td_display_regex = Regex::new(r"(?i)^%t?d.").unwrap();
-    // Matches period formats like %tw, %tm, %tq, %th, %ty, %tb (with or without display specifiers)
-    let date_periods_regex = Regex::new(r"(?i)^%t[wmtqhyb]").unwrap();
-    // Specific examples from pyreadstat/original code
-    let date_format_regex = Regex::new(r"(?i)^%tdD_m_Y$").unwrap();
-    let date_iso_regex = Regex::new(r"(?i)^%tdCCYY-NN-DD$").unwrap();
-
-    // Add other date formats from your original code if needed, e.g.:
-    // let dmy_regex = Regex::new(r"(?i)^%(?:dmy|dmys)(?:[a-z0-9:._\s-]*)$").unwrap();
-    // let mdy_regex = Regex::new(r"(?i)^%(?:mdy|mdys)(?:[a-z0-9:._\s-]*)$").unwrap();
-    // Be careful they don't incorrectly match other types.
-
-    // --- Check the format string against each regex pattern (ORDER MATTERS!) ---
-
-    // 1. Check for TIME FIRST
-    if time_hms_sub_regex.is_match(format_str)
-        || time_hms_regex.is_match(format_str)
-        || time_hm_regex.is_match(format_str)
-    {
-        Some(ReadStatVarFormatClass::Time)
+    // Convert to lowercase for case-insensitive matching
+    let format_lower = format_str.to_lowercase();
+    
+    // 1. Check for TIME formats first (most specific)
+    if format_lower.contains("hh:mm:ss") || format_lower.contains("hh:mm") {
+        return Some(ReadStatVarFormatClass::Time);
     }
-    // 2. Then High Precision DateTime
-    else if datetime_ns_regex.is_match(format_str) {
-        //  Some(ReadStatVarFormatClass::DateTimeWithNanoseconds)
-        Some(ReadStatVarFormatClass::DateTime)
-    } else if datetime_us_regex.is_match(format_str) {
-        //  Some(ReadStatVarFormatClass::DateTimeWithMicroseconds)
-        Some(ReadStatVarFormatClass::DateTime)
+    
+    // 2. Check for DATETIME formats
+    if format_lower.starts_with("%tc") || format_lower.starts_with("%c") ||
+       format_lower.starts_with("%tn") || format_lower.starts_with("%n") ||
+       format_lower.starts_with("%tu") || format_lower.starts_with("%u") {
+        return Some(ReadStatVarFormatClass::DateTime);
     }
-    // 3. Then Millisecond DateTime (%tC)
-    else if datetime_milli_base_regex.is_match(format_str) || datetime_milli_display_regex.is_match(format_str) {
-        // Time-only versions were already caught by the first check
-        //  Some(ReadStatVarFormatClass::DateTimeWithMilliseconds)
-        Some(ReadStatVarFormatClass::DateTime)
+    
+    // 3. Check for DATE formats
+    if format_lower.starts_with("%td") || format_lower.starts_with("%d") ||
+       format_lower.starts_with("%tw") || format_lower.starts_with("%tm") || 
+       format_lower.starts_with("%tq") || format_lower.starts_with("%th") || 
+       format_lower.starts_with("%ty") || format_lower.starts_with("%tb") ||
+       format_lower == "%tdd_m_y" || format_lower == "%tdccyy-nn-dd" {
+        return Some(ReadStatVarFormatClass::Date);
     }
-    // 4. Then Standard DateTime (%tc)
-    else if datetime_base_regex.is_match(format_str) || datetime_display_regex.is_match(format_str) {
-         // Time-only versions were already caught by the first check
-        Some(ReadStatVarFormatClass::DateTime)
-    }
-    // 5. Then Date formats
-    else if date_td_base_regex.is_match(format_str)
-        || date_td_display_regex.is_match(format_str)
-        || date_periods_regex.is_match(format_str)
-        || date_format_regex.is_match(format_str) // pyreadstat specific example
-        || date_iso_regex.is_match(format_str)   // pyreadstat specific example
-        // || dmy_regex.is_match(format_str) // Add others here if needed
-        // || mdy_regex.is_match(format_str)
-    {
-        Some(ReadStatVarFormatClass::Date)
-    }
-    // --- NO MATCH ---
-    else {
-        None // Format not recognized as a known date/time type
-    }
+    
+    // No match found
+    None
 }
 
 

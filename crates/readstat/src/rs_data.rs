@@ -37,8 +37,8 @@ impl Default for Extensions {
 
 pub enum TypedColumn {
     StringColumn(Vec<Option<String>>),
-    I8Column(Vec<Option<i32>>),
-    I16Column(Vec<Option<i32>>),
+    I8Column(Vec<Option<i8>>),
+    I16Column(Vec<Option<i16>>),
     I32Column(Vec<Option<i32>>),
     I64Column(Vec<Option<i64>>),
     F32Column(Vec<Option<f32>>),
@@ -73,7 +73,11 @@ pub struct ReadStatData {
 }
 
 impl ReadStatData {
-    pub fn new(columns_to_read: Option<Vec<usize>>) -> Self {
+    pub fn new(
+        columns_to_read: Option<Vec<usize>>,
+    ) -> Self {
+
+
         Self {
             // metadata
             var_count: 0,
@@ -99,7 +103,9 @@ impl ReadStatData {
     }
 
     fn allocate_cols(self) -> Self {
-        let column_count = if self.columns_to_read.is_some() {
+
+        
+        let column_count = if !self.columns_to_read.is_none() {
             self.columns_to_read.as_ref().unwrap().len()
         } else {
             self.var_count as usize
@@ -187,20 +193,10 @@ impl ReadStatData {
                 TypedColumn::I16Column(vec) => {
                     let values = std::mem::take(vec);
                     Series::new(name.clone(), values)
-                    // Series::new(name.clone(), values)
-                    //     .cast(&DataType::Int16)
-                    //     .unwrap()
-                    // let series = Series::new(name.clone(), values);
-                    // cast_series(series, &DataType::Int8).unwrap()
                 },
                 TypedColumn::I8Column(vec) => {
                     let values = std::mem::take(vec);
                     Series::new(name.clone(), values)
-                    // Series::new(name.clone(), values)
-                    //     .cast(&DataType::Int8)
-                    //     .unwrap()
-                    //  let series = Series::new(name.clone(), values);
-                    //  cast_series(series, &DataType::Int16).unwrap()
                 },
                 TypedColumn::F64Column(vec) => {
                     let values = std::mem::take(vec);
@@ -365,9 +361,7 @@ impl ReadStatData {
     */
 
     fn map_cols_to_lookup_indices(self) -> Self {
-       
         if !self.columns_to_read.is_none() {
-            
             let n_cols: usize = self.schema.len();
             let mut cols_index:Vec<Option<usize>> = Vec::with_capacity(n_cols);
 
@@ -452,6 +446,9 @@ impl ReadStatData {
             ..self
         }
     }
+
+
+    
 }
 
 

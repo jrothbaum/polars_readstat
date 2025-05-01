@@ -81,8 +81,9 @@ fn main() {
         Some(skip_rows),
         Some(n_rows),
         // None,
-        //Some(columns)
-        None,
+        Some(columns),
+        //  None,
+//        None,
         Some(1 as usize)
     )
         .unwrap();
