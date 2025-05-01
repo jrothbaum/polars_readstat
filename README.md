@@ -39,8 +39,6 @@ Other notable features
 Pending tasks:
 - Write support for Stata (dta) and SPSS (sav) files.  Readstat itself cannot write SAS (sas7bdat) files that SAS can read, and I'm not fool enough to try to figure that out.  Also, any workflow that involves SAS should be one-way (SAS->something else) so you should only read SAS files, never write them.
 - Unit tests on the data sets used by [pyreadstat](https://github.com/Roche/pyreadstat) to confirm that my output matches theirs
-- Fix it so that if you filter on a column you do not select in the final dataset at collect, load the columns from the filter expression, apply the filter, and then drop them from the final data
-
 
 ## Benchmark
 This was run on my computer, with the following specs (and reading the data from an external SSD):<br>
