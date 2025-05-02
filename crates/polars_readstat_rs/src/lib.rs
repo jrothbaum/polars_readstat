@@ -44,6 +44,7 @@ impl read_readstat {
         let md = read_metadata(std::path::PathBuf::from(path.clone()), false).unwrap();
         //  dbg!("n_rows = {}",n_rows);
         let n_rows = n_rows.unwrap_or(md.row_count as usize);
+        let n_rows = min(n_rows, md.row_count as usize);
         //  dbg!("n_rows = {}",n_rows);
         Self {
             path,

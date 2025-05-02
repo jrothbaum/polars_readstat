@@ -55,8 +55,8 @@ impl ReadStatMetadata {
         }
     }
 
-    fn initialize_schema(&self) -> Schema {
 
+    fn initialize_schema(&self) -> Schema {
         let field_count = self.vars.len();
     
         // Create a schema with pre-allocated capacity
@@ -71,40 +71,18 @@ impl ReadStatMetadata {
                 | ReadStatVarType::Unknown => DataType::String,
                 ReadStatVarType::Int8  => DataType::Int8, 
                 ReadStatVarType::Int16 => DataType::Int16,
-                ReadStatVarType::Int32 => DataType::Int32,
-                ReadStatVarType::Float => DataType::Float32,
-                ReadStatVarType::Double => match &vm.var_format_class {
-                    Some(ReadStatVarFormatClass::Date) => DataType::Date,
-                    Some(ReadStatVarFormatClass::DateTime) => {
-                        DataType::Datetime(TimeUnit::Milliseconds,None)
-                    }
-                    // Some(ReadStatVarFormatClass::DateTimeWithMilliseconds) => {
-                    //     // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
-                    //     DataType::Datetime(TimeUnit::Milliseconds, None)
-                    // }
-                    // Some(ReadStatVarFormatClass::DateTimeWithMicroseconds) => {
-                    //     // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
-                    //     DataType::Datetime(TimeUnit::Microseconds, None)
-                    // }
-                    // Some(ReadStatVarFormatClass::DateTimeWithNanoseconds) => {
-                    //     // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
-                    //     DataType::Datetime(TimeUnit::Nanoseconds, None)
-                    // }
-                    Some(ReadStatVarFormatClass::Time) => DataType::Time,
-                    // Some(ReadStatVarFormatClass::TimeWithMilliseconds) => {
-                    //     // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
-                    //     DataType::Time
-                    // }
-                    // Some(ReadStatVarFormatClass::TimeWithMicroseconds) => {
-                    //     // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
-                    //     DataType::Timestamp(TimeUnit::Microsecond, None)
-                    // }
-                    // Some(ReadStatVarFormatClass::TimeWithNanoseconds) => {
-                    //     // DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None)
-                    //     DataType::Timestamp(TimeUnit::Nanosecond, None)
-                    // }
-                    None => DataType::Float64,
-                },
+                ReadStatVarType::Int32 => check_date_type(
+                    DataType::Int32,
+                    &vm.var_format_class
+                ),
+                ReadStatVarType::Float => check_date_type(
+                    DataType::Float32,
+                    &vm.var_format_class
+                ),
+                ReadStatVarType::Double => check_date_type(
+                    DataType::Float64,
+                    &vm.var_format_class
+                ),
             };
             
             schema.insert(PlSmallStr::from_str(&vm.var_name), var_dt);
@@ -115,6 +93,7 @@ impl ReadStatMetadata {
 
     }
 
+    
     pub fn read_metadata(
         &mut self,
         rsp: &ReadStatPath,
@@ -290,4 +269,19 @@ impl ReadStatVarMetadata {
             var_format_class,
         }
     }
+}
+
+fn check_date_type(
+    dt: polars::prelude::DataType,
+    format: &Option<ReadStatVarFormatClass>
+) -> DataType {
+    let var_dt = match format {
+        Some(ReadStatVarFormatClass::Date) => DataType::Date,
+        Some(ReadStatVarFormatClass::DateTime) => {
+            DataType::Datetime(TimeUnit::Milliseconds, None)
+        },
+        Some(ReadStatVarFormatClass::Time) => DataType::Time,
+        None => dt.clone()
+    };
+    var_dt
 }

@@ -19,7 +19,7 @@ pub fn match_var_format(
             None => None
         }
     }
-    else if extension == "sav" || extension == "zsav" {
+    else if extension == "sav" {
         match match_var_format_sav(&v) {
             Some(result) => Some(result),
             None => None
@@ -120,7 +120,8 @@ fn match_var_format_stata(format_str: &str) -> Option<ReadStatVarFormatClass> {
        format_lower.starts_with("%tw") || format_lower.starts_with("%tm") || 
        format_lower.starts_with("%tq") || format_lower.starts_with("%th") || 
        format_lower.starts_with("%ty") || format_lower.starts_with("%tb") ||
-       format_lower == "%tdd_m_y" || format_lower == "%tdccyy-nn-dd" {
+       format_lower == "%tdd_m_y" || format_lower == "%tdccyy-nn-dd" ||
+       format_lower == "%d"{
         return Some(ReadStatVarFormatClass::Date);
     }
     
