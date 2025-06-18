@@ -1,0 +1,65 @@
+@startuml
+!theme reddress-lightblue
+
+hide empty attributes
+hide empty members
+
+package "C++ application code" {
+	object DataSource
+  object DataSink
+  object ColumnFilter
+}
+
+package "cppsas7bdat" {
+class Reader {
+	+ properties()
+	+ read_all()
+	+ read_row()
+	+ read_rows()
+}
+package "INTERNAL::FORMATTER" {
+	object Formatter
+}
+
+class Properties {
+  ...
+	columns
+}
+
+class Column {
+	+ name
+	+ label
+	+ type
+	+ format
+	--
+	- pimpl
+}
+
+}
+
+
+DataSource : read_bytes()
+DataSource : eof()
+DataSink : set_properties()
+DataSink : push_row()
+DataSink : end_of_data()
+ColumnFilter : accept()
+Formatter : get_string()
+Formatter : get_number()
+Formatter : get_integer()
+Formatter : get_datetime()
+Formatter : get_date()
+Formatter : get_time()
+Formatter : to_string()
+
+
+DataSource -[hidden]> DataSink
+DataSink -[hidden]> ColumnFilter
+DataSource --> Reader
+ColumnFilter --> Reader
+DataSink --> Reader
+Reader::properties .right.> Properties
+Properties::columns .right.> Column
+Column::pimpl .down.> Formatter
+
+@enduml

@@ -1,0 +1,37 @@
+@startuml
+!theme reddress-lightblue
+
+hide empty attributes
+
+package Foo {
+  class FooCode as "Foo" {
+    Foo<X>(X)
+    PIMPL x
+	}
+
+	interface ConceptX {
+		+{abstract} foo(...) = 0
+	}
+
+
+	class ModelX <<T>> {
+		+ foo(...) { return model.foo(...); }
+		- T model
+	}
+}
+
+package "MyFoo" {
+  component MyFooCode as "Foo(MyConcreteX(...))" {    
+  }
+
+	object MyConcreteX {
+		+ foo(...)
+	}
+}
+
+FooCode::PIMPL *.d. ConceptX : std::unique_ptr<ConceptX>
+ConceptX <|.r. ModelX
+MyConcreteX .r.> ModelX::model
+MyFooCode *.l. FooCode
+MyFooCode <-d- MyConcreteX
+@enduml

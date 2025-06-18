@@ -5,7 +5,7 @@ use std::{env, io::Write};
 
 
 mod read;
-
+mod read_cppsas;
  
 
 fn main() {
@@ -19,10 +19,49 @@ fn main() {
         })
         .init();
 
+    test_cppsas();
+
+    test_readstat();
+}
+
+fn test_cppsas() {
+    use polars::prelude::*;
+    let path = std::path::PathBuf::from("/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/sample.sas7bdat");
+
+    let schema = read_cppsas::read_schema(path.clone());
+
+    dbg!(schema);
+    let mut sas_iter = cpp_sas7bdat::SasBatchIterator::new(
+        path.to_str().unwrap(), 
+        Some(20_000)
+    ).unwrap();
+
+    let mut i_rows = 0;
+    for (i, batch_result) in sas_iter.enumerate() {
+        // Call the method on the iterator
+        let df = match batch_result {
+            Ok(df) => {
+                //  println!("DataFrame shape:  {:?}", df.shape());
+                //  println!("          size:   {:?}", df.estimated_size());
+                
+                println!("{:?}", df);
+                i_rows = i_rows + df.height();
+                df
+            },
+            Err(e) => {
+                print!("Polars error: {}",e);
+                DataFrame::empty()
+            }
+        };
+    }
+    
+}
+
+fn test_readstat() {
     //  let path_metadata:PathBuf = std::path::PathBuf::from("/home/jrothbaum/python/readstat-rs/crates/readstat-tests/tests/data/all_types.sas7bdat");
     //  let path = std::path::PathBuf::from("/home/jrothbaum/Downloads/usa_00008.dta");
     //  let path = std::path::PathBuf::from("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.sav");
-    let path = std::path::PathBuf::from("/home/jrothbaum/Downloads/pyreadstat_container/pyreadstat-master/test_data/basic/sample.sas7bdat");
+    let path = std::path::PathBuf::from("/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/sample.sas7bdat");
 
     println!("path = {:?}", &path);
     

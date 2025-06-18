@@ -8,7 +8,7 @@ license = "MIT"
 repository = "https://github.com/jrothbaum/polars_readstat"
 
 [dependencies]
-polars = { version = "0.46.0", default-features = false }
+polars = { version = "0.48.1", default-features = false }
 chrono = { version = "0.4", features = ["serde"] }
 colored = "2.0"
 lexical = "7.0"

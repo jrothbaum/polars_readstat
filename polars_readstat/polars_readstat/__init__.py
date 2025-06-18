@@ -225,13 +225,13 @@ if __name__ == "__main__":
     # dta_test(use_pyreadstat=False)
 
     # read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat_rs/tests/data/sample.sav")
-    # read_test("/home/jrothbaum/Downloads/pyreadstat_container/pyreadstat-master/test_data/ínternátionál/sample.sas7bdat")
+    # read_test("/home/jrothbaum/Downloads/pyreadstat-master/test_data/ínternátionál/sample.sas7bdat")
 
     for filei in [
-                    "/home/jrothbaum/Downloads/pyreadstat_container/pyreadstat-master/test_data/missing_data/missing_test.dta",
-                    "/home/jrothbaum/Downloads/pyreadstat_container/pyreadstat-master/test_data/multiple_response/simple_alltypes.sav",
-                    "/home/jrothbaum/Downloads/pyreadstat_container/pyreadstat-master/test_data/basic/hebrews.sav",
-                    "/home/jrothbaum/Downloads/pyreadstat_container/pyreadstat-master/test_data/basic/ordered_category.sav",
+                    "/home/jrothbaum/Downloads/pyreadstat-master/test_data/missing_data/missing_test.dta",
+                    "/home/jrothbaum/Downloads/pyreadstat-master/test_data/multiple_response/simple_alltypes.sav",
+                    "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/hebrews.sav",
+                    "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/ordered_category.sav",
                   "/home/jrothbaum/Downloads/haven-main/tests/testthat/stata/datetime-d.dta"
                   ]:
         

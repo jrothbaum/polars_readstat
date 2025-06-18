@@ -4,7 +4,7 @@ from polars_readstat import scan_readstat
 import pandas as pd
 
 if __name__ == "__main__":
-    path_test_root = "/home/jrothbaum/Downloads/pyreadstat_container/pyreadstat-master/test_data/basic"
+    path_test_root = "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic"
 
     paths = [
                 f"{path_test_root}/sample.sas7bdat",

@@ -31,6 +31,11 @@ python-packages = ["polars_readstat"]
 features = ["pyo3/extension-module"]
 include = [{ path = "polars_readstat/**/*", format = "wheel" }]
 
+[tool.uv.workspace]
+members = [
+    "crates/cpp-sas7bdat",
+]
+
 [dependency-groups]
 dev = [
     "maturin>=1.8.3",

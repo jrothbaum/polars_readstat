@@ -3,6 +3,7 @@ members = [
     "crates/polars_readstat_rs",
     "crates/readstat-sys",
     "crates/iconv-sys",
+    "crates/cpp-sas7bdat",
 ]
 resolver = "2"
 
