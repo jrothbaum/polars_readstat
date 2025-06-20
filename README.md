@@ -33,7 +33,7 @@ This takes a modified version of the readstat-rs bindings to readstat's C functi
 - Removed some intermediate steps that resulted in processing full vectors of data repeatedly before creating polars dataframe
 - Modified the parsing of SAS and Stata data formats (particularly dates and datetimes) to provide a better (?... hopefully) mapping to polars data types
 
-Because of concerns about the performance of readstat reading large SAS files, I have also modified the cpp-sas7bdat library, as follows:
+Because of concerns about the performance of readstat reading large SAS files, I have also started integrating a different engine from the cpp-sas7bdat library.  To do so, I have modified it as follows:
 - Added an Arrow sink to read the sas7bdat file to Arrow arrays using the [c++ Arrow library](https://arrow.apache.org/docs/cpp/index.html)
 - Updated the package build to use [UV](https://github.com/astral-sh/uv) instead of pip for loading [conan](https://conan.io/) to manage the C++ packages
 - Added rust ffi bindings to the C++ code to zero-copy pass the Arrow array to rust and polars 
