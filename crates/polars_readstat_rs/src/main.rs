@@ -21,20 +21,33 @@ fn main() {
 
     test_cppsas();
 
-    test_readstat();
+    //  test_readstat();
 }
 
 fn test_cppsas() {
     use polars::prelude::*;
+    //  let path = std::path::PathBuf::from("/home/jrothbaum/Downloads/sas_pil/psam_p17.sas7bdat");
+
     let path = std::path::PathBuf::from("/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/sample.sas7bdat");
 
     let schema = read_cppsas::read_schema(path.clone());
 
     dbg!(schema);
+
+    let columns = vec![
+        "mychar".to_string(),
+        "mynum".to_string(),
+        "mytime".to_string()
+     ];
+
     let mut sas_iter = cpp_sas7bdat::SasBatchIterator::new(
         path.to_str().unwrap(), 
-        Some(20_000)
+        Some(20_000),
+         None,//    Some(columns),
+        Some(2 as u64),
+        Some(3 as u64),
     ).unwrap();
+
 
     let mut i_rows = 0;
     for (i, batch_result) in sas_iter.enumerate() {
@@ -55,6 +68,7 @@ fn test_cppsas() {
         };
     }
     
+    println!("rows = {}",i_rows);
 }
 
 fn test_readstat() {

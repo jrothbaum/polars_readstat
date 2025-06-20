@@ -16,6 +16,7 @@ pub enum SasArrowErrorCode {
     SasArrowErrorEndOfData = 5,
     SasArrowErrorInvalidBatchIndex = 6,
     SasArrowErrorNullPointer = 7,
+    SasArrowErrorInvalidColumnName = 8,
 }
 
 // Reader info structure matching your C++ header
@@ -109,6 +110,7 @@ extern "C" {
     fn sas_arrow_reader(
         file_path: *const c_char,
         chunk_size: u32,
+        include_columns: *const *const c_char,
         reader_out: *mut *mut SasArrowReader,
     ) -> SasArrowErrorCode;
 
@@ -133,6 +135,12 @@ extern "C" {
         array_out: *mut CArrowArray,
     ) -> SasArrowErrorCode;
 
+    fn sas_arrow_reader_set_row_filter(
+        reader: *mut SasArrowReader,
+        start_row: u64,  // 0 = no start filter
+        end_row: u64,    // 0 = no end filter
+    ) -> SasArrowErrorCode;
+
     fn sas_arrow_reader_reset(reader: *mut SasArrowReader) -> SasArrowErrorCode;
 
     fn sas_arrow_reader_destroy(reader: *mut SasArrowReader);
@@ -153,15 +161,48 @@ pub struct SasReader {
 
 impl SasReader {
     /// Create a new SAS reader
-    pub fn new(file_path: &str, chunk_size: Option<u32>) -> PolarsResult<Self> {
+    pub fn new(
+        file_path: &str,
+        chunk_size: Option<u32>,
+        columns:Option<Vec<String>>,
+    ) -> PolarsResult<Self> {
         let c_path = CString::new(file_path)
             .map_err(|e| PolarsError::ComputeError(format!("Invalid file path: {}", e).into()))?;
         
         let mut reader: *mut SasArrowReader = ptr::null_mut();
         let chunk_size = chunk_size.unwrap_or(0); // 0 = default (65536)
         
+        // Handle column selection
+        let (c_columns, c_column_ptrs) = if let Some(cols) = columns {
+            // Convert Vec<String> to CString vector
+            let c_strings: Vec<CString> = cols
+                .iter()
+                .map(|s| CString::new(s.as_str()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| PolarsError::ComputeError(format!("Invalid column name: {}", e).into()))?;
+            
+            // Create NULL-terminated array of pointers
+            let mut c_ptrs: Vec<*const c_char> = c_strings
+                .iter()
+                .map(|cs| cs.as_ptr())
+                .collect();
+            c_ptrs.push(ptr::null()); // NULL terminator
+            
+            (Some(c_strings), c_ptrs)
+        } else {
+            (None, vec![ptr::null()]) // Just NULL pointer for all columns
+        };
         let result = unsafe {
-            sas_arrow_reader(c_path.as_ptr(), chunk_size, &mut reader)
+            sas_arrow_reader(
+                c_path.as_ptr(),
+                chunk_size,
+                if c_column_ptrs[0].is_null() { 
+                    ptr::null() 
+                } else { 
+                    c_column_ptrs.as_ptr() 
+                },
+                &mut reader
+            )
         };
         
         if result != SasArrowErrorCode::SasArrowOk {
@@ -192,6 +233,22 @@ impl SasReader {
         })
     }
     
+    /// Set row filtering range
+    pub fn set_row_filter(&mut self, start_row: Option<u64>, end_row: Option<u64>) -> PolarsResult<()> {
+        let start = start_row.unwrap_or(0);
+        let end = end_row.unwrap_or(0);
+        
+        let result = unsafe {
+            sas_arrow_reader_set_row_filter(self.reader, start, end)
+        };
+        
+        if result != SasArrowErrorCode::SasArrowOk {
+            return Err(Self::error_from_code(result));
+        }
+        
+        Ok(())
+    }
+
     /// Get schema information
     pub fn get_schema(&mut self) -> PolarsResult<&Schema> {
         if self.cached_schema.is_none() {
@@ -453,8 +510,22 @@ pub struct SasBatchIterator {
 
 impl SasBatchIterator {
     /// Create a new streaming iterator
-    pub fn new(file_path: &str, chunk_size: Option<u32>) -> PolarsResult<Self> {
-        let reader = SasReader::new(file_path, chunk_size)?;
+    pub fn new(
+        file_path: &str, 
+        chunk_size: Option<u32>,
+        columns: Option<Vec<String>>,
+        start_row:Option<u64>,
+        end_row:Option<u64>,
+    ) -> PolarsResult<Self> {
+        let mut reader = SasReader::new(
+            file_path, 
+            chunk_size,columns)?;
+        
+        reader.set_row_filter(
+            start_row, 
+            end_row
+        )?;
+        
         Ok(SasBatchIterator {
             reader,
             finished: false,
@@ -499,7 +570,11 @@ impl Iterator for SasBatchIterator {
 impl SasReader {
     /// Create a reader and get just the schema
     pub fn read_sas_schema(file_path: &str) -> PolarsResult<Schema> {
-        let mut reader = Self::new(file_path, Some(1))?;
+        let mut reader = Self::new(
+            file_path, 
+            Some(1),
+            None,
+    )?;
         Ok(reader.get_schema()?.clone())
     }
 }

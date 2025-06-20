@@ -23,7 +23,10 @@ fn main() {
     
     let mut sas_iter = SasBatchIterator::new(
         path, 
-        Some(20_000)
+        Some(20_000),
+        None,
+        Some(0 as u64),
+        Some(0 as u64),
     ).unwrap();
     
     let start_read = Instant::now();
