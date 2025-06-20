@@ -23,6 +23,7 @@ df_stata = df_stata.collect()
 This plugin calls rust bindings to load files in chunks, it  is only possible due to the following _**excellent**_ projects:
 - The [ReadStat](https://github.com/WizardMac/ReadStat) C library developed by [Evan Miller](https://www.evanmiller.org)
 - The [readstat-rs](https://github.com/curtisalexander/readstat-rs) rust bindings to that [ReadStat](https://github.com/WizardMac/ReadStat) C library developed by [Curtis Alexander](https://github.com/curtisalexander)
+- The [cpp-sas7bdat](https://github.com/olivia76/cpp-sas7bdat/tree/main/src) C++ library by [Olivia Quinet](https://github.com/olivia76)
 - [Polars](https://github.com/pola-rs/polars) (obviously) developed by [Ritchie Vink](https://www.ritchievink.com/) and many others
 
 This takes a modified version of the readstat-rs bindings to readstat's C functions.  My modifications:
@@ -32,9 +33,15 @@ This takes a modified version of the readstat-rs bindings to readstat's C functi
 - Removed some intermediate steps that resulted in processing full vectors of data repeatedly before creating polars dataframe
 - Modified the parsing of SAS and Stata data formats (particularly dates and datetimes) to provide a better (?... hopefully) mapping to polars data types
 
+Because of concerns about the performance of readstat reading large SAS files, I have also modified the cpp-sas7bdat library, as follows:
+- Added an Arrow sink to read the sas7bdat file to Arrow arrays using the [c++ Arrow library](https://arrow.apache.org/docs/cpp/index.html)
+- Updated the package build to use [UV](https://github.com/astral-sh/uv) instead of pip for loading [conan](https://conan.io/) to manage the C++ packages
+- Added rust ffi bindings to the C++ code to zero-copy pass the Arrow array to rust and polars 
+
 Other notable features
-- Multithreaded using the number of pl.thread_pool_size
+- Multithreaded using the number of pl.thread_pool_size (readstat serialization to Arrow only)
 - Currently comparable to pandas (see benchmarks below) on full reads and faster when reading subsets of columns
+- I haven't done the equivalent benchmarks for the cpp-sas7bdat-based read, but the rust-only version is at least 2x faster than the readstat version in the test ACS sas test file
 
 Pending tasks:
 - Write support for Stata (dta) and SPSS (sav) files.  Readstat itself cannot write SAS (sas7bdat) files that SAS can read, and I'm not fool enough to try to figure that out.  Also, any workflow that involves SAS should be one-way (SAS->something else) so you should only read SAS files, never write them.
