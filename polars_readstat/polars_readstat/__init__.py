@@ -2,18 +2,27 @@ from __future__ import annotations
 from typing import Any, Iterator, Optional
 from polars.io.plugins import register_io_source
 import polars as pl
+from polars_readstat_rs import (read_readstat,
+                                read_cppsas_py)
 
 
-from polars_readstat.polars_readstat_rs import read_readstat 
-
-def scan_readstat(path:str) -> pl.LazyFrame:
-    
+def scan_readstat(path:str,
+                  engine:str="cpp") -> pl.LazyFrame:
     def schema() -> pl.Schema:
-        src = read_readstat(path,
-                            0, 
-                            0,
-                            1)
-        return src.schema()
+        if path.endswith(".sas7bdat") and engine == "cpp":
+            print("CPP")
+            src = read_cppsas_py(path,
+                                 1, 
+                                 1, 
+                                 None)
+            return src.schema()
+        else:
+            print("READSTAT")
+            src = read_readstat(path,
+                                0, 
+                                0,
+                                1)
+            return src.schema()
     
     def source_generator(
         with_columns: list[str] | None,
@@ -21,19 +30,35 @@ def scan_readstat(path:str) -> pl.LazyFrame:
         n_rows: int | None,
         batch_size: int | None=1_000_000,
     ) -> Iterator[pl.DataFrame]:
-        
-        src = read_readstat(path,
-                            batch_size,
-                            n_rows,
-                            threads=pl.thread_pool_size())
-        
-        schema = src.schema()
+        if path.endswith(".sas7bdat") and engine == "cpp":
+            print("CPP - READ")
 
-        if with_columns is not None: 
-            src.set_with_columns(with_columns)
-        
-        while (out := src.next()) is not None:
-            yield out
+            if with_columns is not None: 
+                print(with_columns)
+            src = read_cppsas_py(path,
+                                 batch_size, 
+                                 n_rows, 
+                                 None)
+            schema = src.schema()
+
+            
+            
+            while (out := src.next()) is not None:
+                yield out
+        else:
+            print("READSTAT - READ")
+            src = read_readstat(path,
+                                batch_size,
+                                n_rows,
+                                threads=pl.thread_pool_size())
+            
+            schema = src.schema()
+
+            if with_columns is not None: 
+                src.set_with_columns(with_columns)
+            
+            while (out := src.next()) is not None:
+                yield out
 
 
 
@@ -225,16 +250,16 @@ if __name__ == "__main__":
     # dta_test(use_pyreadstat=False)
 
     # read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat_rs/tests/data/sample.sav")
-    # read_test("/home/jrothbaum/Downloads/pyreadstat-master/test_data/ínternátionál/sample.sas7bdat")
+    read_test("/home/jrothbaum/Downloads/pyreadstat-master/test_data/ínternátionál/sample.sas7bdat")
 
-    for filei in [
-                    "/home/jrothbaum/Downloads/pyreadstat-master/test_data/missing_data/missing_test.dta",
-                    "/home/jrothbaum/Downloads/pyreadstat-master/test_data/multiple_response/simple_alltypes.sav",
-                    "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/hebrews.sav",
-                    "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/ordered_category.sav",
-                  "/home/jrothbaum/Downloads/haven-main/tests/testthat/stata/datetime-d.dta"
-                  ]:
+    # for filei in [
+    #                 "/home/jrothbaum/Downloads/pyreadstat-master/test_data/missing_data/missing_test.dta",
+    #                 "/home/jrothbaum/Downloads/pyreadstat-master/test_data/multiple_response/simple_alltypes.sav",
+    #                 "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/hebrews.sav",
+    #                 "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/ordered_category.sav",
+    #               "/home/jrothbaum/Downloads/haven-main/tests/testthat/stata/datetime-d.dta"
+    #               ]:
         
-        df = scan_readstat(filei)
-        # df = df.head(2)
-        print(df.collect())
+    #     df = scan_readstat(filei)
+    #     # df = df.head(2)
+    #     print(df.collect())
