@@ -25,7 +25,7 @@ impl read_cppsas_py {
         path:String,
         batch_size: Option<u32>,
         n_rows:Option<u64>,
-        with_columns: Option<Vec<usize>>,
+        with_columns: Option<Vec<String>>,
     ) -> Self {
         let mut schema_reader = SasReader::new(&path, None, None)
             .expect("Failed to create SAS reader");
@@ -34,26 +34,19 @@ impl read_cppsas_py {
             .expect("Failed to get schema from sas file");
 
 
-        let selected_columns: Option<Vec<String>> = with_columns.as_ref().map(|indices| {
-            indices.iter()
-                .filter_map(|&idx| {
-                    schema.get_at_index(idx).map(|(name, _dtype)| name.to_string())
-                })
-                .collect()
-        });
         let reader = read_cppsas::CppSasScan::new(
             std::path::PathBuf::from(path.clone()),
             batch_size,
             Some(0),
             Some(n_rows.unwrap_or(0)),
-            selected_columns.clone(),
+            with_columns.clone(),
         ).expect("Cannot get sas batch scanner");
 
 
         Self {
             sas_reader:reader,
             schema:schema.clone(),
-            columns:selected_columns,
+            columns:with_columns,
         }
     }
 
