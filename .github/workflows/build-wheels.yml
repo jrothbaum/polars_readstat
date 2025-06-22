@@ -62,7 +62,8 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          uv pip install --system maturin
+          uv sync --group dev
+          echo "$(pwd)/.venv/bin" >> $GITHUB_PATH
         shell: bash
       - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
