@@ -81,19 +81,23 @@ All reported times are in seconds using python's time.time() (I know...).
 
 * SAS
   * Subset: False, Filter: False
-    * Polars: 5.262
+    * Polars (readstat engine): 5.262
+    * Polars (cpp engine): 4.042
     * Pyreadstat: 13.693
     * Are identical: True
   * Subset: True, Filter: False
-    * Polars: 2.575
+    * Polars (readstat engine): 2.575
+    * Polars (cpp engine): 0.098
     * Pyreadstat: 0.855
     * Are identical: True
   * Subset: False, Filter: True
-    * Polars: 3.912
+    * Polars (readstat engine): 3.912
+    * Polars (cpp engine): 3.552
     * Pyreadstat: 13.485
     * Are identical: True
   * Subset: True, Filter: True
-    * Polars: 1.0439
+    * Polars (readstat engine): 1.0439
+    * Polars (cpp engine): 0.097
     * Pyreadstat: 1.445
     * Are identical: True
 
