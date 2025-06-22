@@ -17,7 +17,7 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dependencies = [
-    "polars>=1.25.2",
+    "polars==1.31.0",
 ]
 
 
@@ -40,7 +40,7 @@ members = [
 dev = [
     "maturin>=1.8.3",
     "cffi>=1.17.1",
-    "patchelf>=0.17.2.2",
+    "patchelf>=0.17.2.2; sys_platform == 'linux'",
     "pandas>=2.2.3",
     "pyarrow>=19.0.1",
     "pyreadstat>=1.2.8",
