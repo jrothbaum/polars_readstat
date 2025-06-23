@@ -37,9 +37,21 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
         shell: bash
 
-      - name: Add uv to PATH
+      - name: Add uv to PATH (Unix)
+        if: matrix.os != 'windows-latest'
         run: |
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        shell: bash
+
+      - name: Add uv to PATH (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        shell: powershell
+
+      - name: Verify uv installation
+        run: |
+          uv --version
         shell: bash
 
       - name: Install ReadStat dependencies (macOS)
@@ -63,9 +75,22 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          uv sync --group dev
+          uv sync --group build
           echo "$(pwd)/.venv/bin" >> $GITHUB_PATH
         shell: bash
+
+      - name: Add venv to PATH (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          echo "$(pwd)/.venv/bin" >> $GITHUB_PATH
+        shell: bash
+
+      - name: Add venv to PATH (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          echo "$(Get-Location)\.venv\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        shell: powershell
+
       - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
         uses: PyO3/maturin-action@v1
@@ -93,6 +118,7 @@ jobs:
             echo "LIBCLANG_PATH=${LIBCLANG_PATH}"
             # Ensure the linker can find llvm libs if needed directly
             export LD_LIBRARY_PATH=${LIBCLANG_PATH}:${LD_LIBRARY_PATH}
+      
       - name: Build wheels (macOS & Windows)
         if: matrix.os != 'ubuntu-latest'
         

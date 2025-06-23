@@ -37,11 +37,12 @@ members = [
 ]
 
 [dependency-groups]
-dev = [
-    "maturin>=1.8.3",
-    "cffi>=1.17.1",
-    "patchelf>=0.17.2.2; sys_platform == 'linux'",
+test = [
     "pandas>=2.2.3",
     "pyarrow>=19.0.1",
     "pyreadstat>=1.2.8",
+]
+build = [
+    "maturin>=1.8.3",
+    "patchelf>=0.17.2.2; sys_platform == 'linux'",    
 ]
