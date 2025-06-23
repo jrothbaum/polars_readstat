@@ -94,7 +94,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-dev llvm-dev
+          sudo apt-get install -y clang libclang-dev llvm-dev
         shell: bash
 
       - name: Build wheels (Linux)
