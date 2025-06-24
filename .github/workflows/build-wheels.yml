@@ -133,7 +133,7 @@ jobs:
       - name: Install ReadStat dependencies (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          choco install msys2 llvm make
+          choco install msys2 llvm make boost-msvc-14.3
           C:\tools\msys64\usr\bin\bash -lc "pacman -S --noconfirm autoconf automake libtool make pkg-config zlib-devel"
           echo "C:\tools\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -164,6 +164,19 @@ jobs:
       - name: Configure Conan profile
         run: conan profile detect --force
 
+      - name: Set Boost paths for Arrow
+        if: matrix.os == 'windows-latest'
+        run: |
+          # Find Boost installation from Conan
+          $boostPath = Get-ChildItem "C:\Users\runneradmin\.conan2\p\" -Directory | Where-Object {$_.Name -like "*boost*"} | Select-Object -First 1
+          if ($boostPath) {
+            $boostRoot = Join-Path $boostPath.FullName "p"
+            echo "BOOST_ROOT=$boostRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            echo "Boost_ROOT=$boostRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            echo "CMAKE_PREFIX_PATH=$boostRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            echo "Setting BOOST_ROOT to: $boostRoot"
+          }
+        shell: powershell
       - name: Build wheels (macOS)
         if: startsWith(matrix.os, 'macos-')
         run: |
