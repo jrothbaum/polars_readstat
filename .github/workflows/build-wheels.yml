@@ -47,6 +47,9 @@ jobs:
         run: |
           /opt/python/cp39-cp39/bin/pip install maturin conan
 
+      - name: Add Python tools to PATH
+        run: |
+          echo "/opt/python/cp39-cp39/bin" >> $GITHUB_PATH
       - name: Configure Conan profile
         run: |
           source ~/.cargo/env
