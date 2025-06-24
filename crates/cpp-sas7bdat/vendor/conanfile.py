@@ -16,7 +16,7 @@ class CppSAS7BDATProject(ConanFile):
     topics = ("c++17", "SAS7BDAT")
     settings = "os", "compiler", "build_type", "arch"
     options = {"shared": [True, False], "fPIC": [True, False], "ENABLE_COVERAGE": ["ON", "OFF"], "ENABLE_TESTING": ["ON", "OFF"]}
-    default_options = {"shared": False, "fPIC": True, "ENABLE_COVERAGE": "OFF", "fmt/*:shared": False, "ENABLE_TESTING": "ON"}
+    default_options = {"shared": False, "ENABLE_COVERAGE": "OFF", "fmt/*:shared": False, "ENABLE_TESTING": "ON"}
     generators = "VirtualBuildEnv", "VirtualRunEnv"
     build_policy = "missing"
     requires = (
