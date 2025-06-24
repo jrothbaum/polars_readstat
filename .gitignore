@@ -23,7 +23,14 @@ Cargo.lock
 *#
 .#*
 build
-*debug*
+debug/           # Debug directories
+*/debug/         # Debug subdirectories  
+*.debug          # .debug files
+debug.log        # Debug log files
+debug.txt        # Debug text files
+*_debug          # Files ending with _debug
+*-debug          # Files ending with -debug
+debug_*          # Files starting with debug_
 *release*
 *Release*
 test/data_*
