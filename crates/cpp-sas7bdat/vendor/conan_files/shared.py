@@ -5,8 +5,10 @@ class SharedConfig:
     def apply_options(conanfile):
         """Apply shared build options to any conanfile"""
         conanfile.options["*"].shared = False
+        
         if conanfile.settings.get_safe("os") != "Windows":
             conanfile.options["*"].fPIC = True
+
         # Common boost settings
         if "boost" in str(conanfile.requires):
             conanfile.options["boost"].without_python = True

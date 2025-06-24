@@ -8,8 +8,9 @@ class CppDatasetTestConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain", "VirtualRunEnv"
     build_policy = "missing"
+    
     options = {"shared": [True, False], "fPIC": [True, False]}
-    default_options = {"shared": False, "fPIC": True}
+    default_options = {"shared": False}
     requires = (
         "cppsas7bdat/1.0.1",
         "spdlog/1.9.2",

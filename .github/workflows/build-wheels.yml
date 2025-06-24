@@ -9,7 +9,7 @@ jobs:
   build-linux:
     name: Build wheels on Linux (RHEL 8 compatible)
     runs-on: ubuntu-latest
-    container: quay.io/pypa/manylinux_2_28_x86_64
+    container: quay.io/pypa/manylinux_2_34_x86_64:latest
     steps:
       - uses: actions/checkout@v4
 
