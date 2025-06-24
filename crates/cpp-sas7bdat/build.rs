@@ -55,13 +55,11 @@ fn build_cpp_project(manifest_dir: &PathBuf) {
     println!("cargo:warning=Using uv to run make build with project environment");
     
     // Use uv run - it will auto-detect the project
-    let output = Command::new("uv")
-        .arg("run")
-        .arg("make")
+    let output = Command::new("make")
         .arg("build")
         .current_dir(&vendor_dir)  // Run make in the vendor directory
         .output()
-        .expect("Failed to execute uv run make build");
+        .expect("Failed to execute make build");
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
