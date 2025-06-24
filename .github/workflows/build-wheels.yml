@@ -68,6 +68,10 @@ jobs:
         env:
           RUST_BACKTRACE: full
           BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/include/clang"
+          CXXFLAGS: "-fPIC"           # Force fPIC for all C++ compilation
+          CMAKE_CXX_FLAGS: "-fPIC"    # Force fPIC in CMake
+          CC: "gcc -fPIC"             # Force fPIC in C compiler
+          CXX: "g++ -fPIC"            # Force fPIC in C++ compiler
         shell: bash
 
       - name: Upload wheels
@@ -164,7 +168,22 @@ jobs:
       - name: Configure Conan profile
         run: conan profile detect --force
 
-      
+      - name: Debug Arrow library (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          echo "=== Checking Arrow library ==="
+          $arrowPath = "crates\cpp-sas7bdat\vendor\build\dependencies\direct_deploy\arrow\lib"
+          if (Test-Path $arrowPath) {
+            echo "Arrow lib found at: $arrowPath"
+            Get-ChildItem $arrowPath | Format-Table Name
+          } else {
+            echo "Arrow lib NOT found at: $arrowPath"
+            echo "Checking if dependencies directory exists..."
+            if (Test-Path "crates\cpp-sas7bdat\vendor\build\dependencies") {
+              Get-ChildItem "crates\cpp-sas7bdat\vendor\build\dependencies" -Recurse -Directory | Where-Object {$_.Name -like "*arrow*"}
+            }
+          }
+        shell: powershell
       - name: Build wheels (macOS)
         if: startsWith(matrix.os, 'macos-')
         run: |
