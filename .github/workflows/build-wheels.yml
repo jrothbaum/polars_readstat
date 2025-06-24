@@ -133,7 +133,7 @@ jobs:
       - name: Install ReadStat dependencies (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          choco install msys2 llvm
+          choco install msys2 llvm make
           C:\tools\msys64\usr\bin\bash -lc "pacman -S --noconfirm autoconf automake libtool make pkg-config zlib-devel"
           echo "C:\tools\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
