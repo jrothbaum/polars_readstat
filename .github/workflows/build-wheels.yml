@@ -100,13 +100,13 @@ jobs:
 
       - name: Configure Conan
         run: |
-          uv run conan profile detect --force
+          uv run --no-compile conan profile detect --force
         shell: bash
 
       - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          uv run maturin build --release --strip --out dist --interpreter ${{ steps.setup-python.outputs.python-path }} --target ${{ matrix.rust-target }} --compatibility manylinux_2_28
+          uv run --no-compile maturin build --release --strip --out dist --interpreter ${{ steps.setup-python.outputs.python-path }} --target ${{ matrix.rust-target }} --compatibility manylinux_2_28
         env:
           RUST_BACKTRACE: full
           BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/include/clang"
@@ -115,13 +115,13 @@ jobs:
       - name: Build wheels (macOS)
         if: startsWith(matrix.os, 'macos-')
         run: |
-          uv run maturin build --release --strip --out dist --interpreter ${{ steps.setup-python.outputs.python-path }} --target ${{ matrix.rust-target }}
+          uv run --no-compile maturin build --release --strip --out dist --interpreter ${{ steps.setup-python.outputs.python-path }} --target ${{ matrix.rust-target }}
         shell: bash
 
       - name: Build wheels (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          uv run maturin build --release --strip --out dist --interpreter python --target ${{ matrix.rust-target }}
+          uv run  --no-compile maturin build --release --strip --out dist --interpreter python --target ${{ matrix.rust-target }}
         shell: bash
 
 
