@@ -57,29 +57,13 @@ endif()
 
 
 add_library(cppsas7bdat ${LIBRARY_TYPE}
-  buffer.hpp
   column.cpp
   datasource_ifstream.cpp
-  decompressors.hpp
   encodings.cpp
-  encodings.hpp
-  exceptions.hpp
-  header.hpp
-  metadata.hpp
-  reader.cpp
-  stream.hpp
-  types.hpp
-  data.hpp
-  debug.hpp
   exceptions.cpp
-  formatters.hpp
-  memory.hpp
-  page.hpp
-  sas7bdat-impl.hpp
-  subheaders.hpp
+  reader.cpp
   version.cpp
   types.cpp
-  stream.hpp
   stream.cpp
   ${ARROW_SOURCES}
     )
