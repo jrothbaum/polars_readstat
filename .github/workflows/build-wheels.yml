@@ -99,8 +99,8 @@ jobs:
         run: |
           maturin build --release --strip --out dist \
             --interpreter ${{ steps.setup-python.outputs.python-path }} \
-            --target ${{ matrix.rust-target }} \
-            --compatibility manylinux_2_28
+            --target ${{ matrix.rust-target }}
+            # --compatibility manylinux_2_28
         env:
           RUST_BACKTRACE: full
           BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/include/clang"
