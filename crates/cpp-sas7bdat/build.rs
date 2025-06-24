@@ -159,8 +159,9 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
     
     // Link Arrow
     if arrow_lib_dir.exists() {
-        println!("cargo:rustc-link-lib=static=arrow");
+        link_arrow_library(&arrow_lib_dir);
     }
+
 
     // Link the main static library LAST (it depends on the others)
     println!("cargo:rustc-link-lib=static=cppsas7bdat");
@@ -190,6 +191,49 @@ fn link_boost_libraries(boost_lib_dir: &PathBuf) {
                     }
                 }
             }
+        }
+    }
+}
+
+fn link_arrow_library(arrow_lib_dir: &PathBuf) {
+    // Check what Arrow library files actually exist and link accordingly
+    let mut found_arrow = false;
+    
+    if let Ok(entries) = fs::read_dir(arrow_lib_dir) {
+        for entry in entries.flatten() {
+            if let Some(file_name) = entry.file_name().to_str() {
+                // Windows: look for arrow_static.lib
+                if cfg!(target_os = "windows") && file_name == "arrow_static.lib" {
+                    println!("cargo:rustc-link-lib=static=arrow_static");
+                    println!("cargo:warning=Linked Windows Arrow library: arrow_static");
+                    found_arrow = true;
+                    break;
+                }
+                // Unix: look for libarrow.a or libarrow_static.a
+                else if !cfg!(target_os = "windows") {
+                    if file_name == "libarrow_static.a" {
+                        println!("cargo:rustc-link-lib=static=arrow_static");
+                        println!("cargo:warning=Linked Unix Arrow library: arrow_static");
+                        found_arrow = true;
+                        break;
+                    } else if file_name == "libarrow.a" {
+                        println!("cargo:rustc-link-lib=static=arrow");
+                        println!("cargo:warning=Linked Unix Arrow library: arrow");
+                        found_arrow = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    if !found_arrow {
+        println!("cargo:warning=No Arrow library found! Falling back to default linking");
+        // Fallback - try the default name
+        if cfg!(target_os = "windows") {
+            println!("cargo:rustc-link-lib=static=arrow_static");
+        } else {
+            println!("cargo:rustc-link-lib=static=arrow");
         }
     }
 }

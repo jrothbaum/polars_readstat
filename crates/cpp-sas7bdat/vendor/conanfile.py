@@ -15,8 +15,10 @@ class CppSAS7BDATProject(ConanFile):
     url = "https://github.com/olivia76/cpp-sas7bdat"
     topics = ("c++17", "SAS7BDAT")
     settings = "os", "compiler", "build_type", "arch"
+
     options = {"shared": [True, False], "ENABLE_COVERAGE": ["ON", "OFF"], "ENABLE_TESTING": ["ON", "OFF"]}
     default_options = {"shared": False, "ENABLE_COVERAGE": "OFF", "fmt/*:shared": False, "ENABLE_TESTING": "ON"}
+
     generators = "VirtualBuildEnv", "VirtualRunEnv"
     build_policy = "missing"
     requires = (
@@ -66,4 +68,8 @@ class CppSAS7BDATProject(ConanFile):
         self.cpp_info.libs = ["cppsas7bdat"]
 
     def configure(self):
+        if self.settings.os != "Windows":
+            self.options.update({"shared": [True, False]})
+            self.default_options["shared"] = True
+
         SharedConfig.apply_options(self)
