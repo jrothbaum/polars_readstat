@@ -75,7 +75,7 @@ jobs:
 
       - name: Install Python dependencies with uv (no local build)
         run: |
-          uv sync --no-install-project --group build --no-install-project
+          uv sync --group build --no-install-project
           echo "$(pwd)/.venv/bin" >> $GITHUB_PATH
         shell: bash
 
