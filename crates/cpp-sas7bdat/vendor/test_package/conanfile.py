@@ -9,7 +9,7 @@ class CppDatasetTestConan(ConanFile):
     generators = "CMakeDeps", "CMakeToolchain", "VirtualRunEnv"
     build_policy = "missing"
     
-    options = {"shared": [True, False], "fPIC": [True, False]}
+    options = {"shared": [True, False]}
     default_options = {"shared": False}
     requires = (
         "cppsas7bdat/1.0.1",
