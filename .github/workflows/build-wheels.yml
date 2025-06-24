@@ -90,7 +90,10 @@ jobs:
         run: |
           echo "$(Get-Location)\.venv\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         shell: powershell
-
+      
+      - name: Configure Conan profile
+        run: conan profile detect --force
+      
       - name: Build wheels (Linux + macOS)
         if: matrix.os != 'windows-latest'
         run: |

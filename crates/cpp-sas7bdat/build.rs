@@ -52,7 +52,7 @@ fn build_cpp_project(manifest_dir: &PathBuf) {
         );
     }
     
-    println!("cargo:warning=Using uv to run make build with project environment");
+    println!("cargo:warning=Run make build with project environment");
     
     // Use uv run - it will auto-detect the project
     let output = Command::new("make")
