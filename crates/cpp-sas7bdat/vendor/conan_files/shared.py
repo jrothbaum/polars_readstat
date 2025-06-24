@@ -22,7 +22,8 @@ class SharedConfig:
         # Common arrow settings
         if "arrow" in str(conanfile.requires):
             conanfile.options["arrow"].shared = False
-            conanfile.options["arrow"].fPIC = True
+            if conanfile.settings.get_safe("os") != "Windows":
+                conanfile.options["arrow"].fPIC = True
             conanfile.options["arrow"].compute = False
             conanfile.options["arrow"].acero = False
             conanfile.options["arrow"].csv = False
