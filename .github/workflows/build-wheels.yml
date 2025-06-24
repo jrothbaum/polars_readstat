@@ -89,7 +89,7 @@ jobs:
             rust-target: x86_64-pc-windows-msvc
           - os: macos-13  # Intel runner
             rust-target: x86_64-apple-darwin
-            macos-target: "10.13"
+            macos-target: "10.15"
           - os: macos-14  # ARM runner  
             rust-target: aarch64-apple-darwin
             macos-target: "11.0"
