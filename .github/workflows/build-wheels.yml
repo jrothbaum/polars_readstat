@@ -75,7 +75,7 @@ jobs:
 
       - name: Install Python dependencies with uv (no local build)
         run: |
-          uv sync --group build --no-install-project
+          uv sync --no-install-project --group build --no-install-project
           echo "$(pwd)/.venv/bin" >> $GITHUB_PATH
         shell: bash
 
@@ -102,7 +102,7 @@ jobs:
       - name: Build wheels (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          uv run --no-compile maturin build --release --strip --out dist --interpreter ${{ steps.setup-python.outputs.python-path }} --target ${{ matrix.rust-target }} --compatibility manylinux_2_28
+          uv run --no-install-project --no-compile maturin build --release --strip --out dist --interpreter ${{ steps.setup-python.outputs.python-path }} --target ${{ matrix.rust-target }} --compatibility manylinux_2_28
         env:
           RUST_BACKTRACE: full
           BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/include/clang"
@@ -111,13 +111,13 @@ jobs:
       - name: Build wheels (macOS)
         if: startsWith(matrix.os, 'macos-')
         run: |
-          uv run --no-compile maturin build --release --strip --out dist --interpreter ${{ steps.setup-python.outputs.python-path }} --target ${{ matrix.rust-target }}
+          uv run --no-install-project --no-compile maturin build --release --strip --out dist --interpreter ${{ steps.setup-python.outputs.python-path }} --target ${{ matrix.rust-target }}
         shell: bash
 
       - name: Build wheels (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          uv run  --no-compile maturin build --release --strip --out dist --interpreter python --target ${{ matrix.rust-target }}
+          uv run --no-install-project --no-compile maturin build --release --strip --out dist --interpreter python --target ${{ matrix.rust-target }}
         shell: bash
 
 
