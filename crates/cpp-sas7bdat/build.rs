@@ -25,15 +25,6 @@ fn build_cpp_project(manifest_dir: &PathBuf) {
     println!("cargo:warning=Current working directory: {}", env::current_dir().unwrap().display());
     println!("cargo:warning=Manifest directory: {}", manifest_dir.display());
     
-
-    // Check if uv is available
-    let uv_check = Command::new("uv")
-        .arg("--version")
-        .output();
-    
-    if uv_check.is_err() {
-        panic!("uv is not available in PATH. Please install uv or ensure it's in your PATH.");
-    }
     
     println!("cargo:warning=Syncing Python dependencies with uv");
     
