@@ -26,26 +26,9 @@ fn build_cpp_project(manifest_dir: &PathBuf) {
     println!("cargo:warning=Manifest directory: {}", manifest_dir.display());
     
     
-    println!("cargo:warning=Syncing Python dependencies with uv");
-    
-    // First, sync dependencies to ensure everything is up-to-date
-    let sync_output = Command::new("uv")
-        .arg("sync")
-        .output()
-        .expect("Failed to execute uv sync");
-
-    if !sync_output.status.success() {
-        let stderr = String::from_utf8_lossy(&sync_output.stderr);
-        let stdout = String::from_utf8_lossy(&sync_output.stdout);
-        panic!(
-            "uv sync failed!\nSTDOUT:\n{}\nSTDERR:\n{}", 
-            stdout, stderr
-        );
-    }
-    
+   
     println!("cargo:warning=Run make build with project environment");
     
-    // Use uv run - it will auto-detect the project
     let output = Command::new("make")
         .arg("build")
         .current_dir(&vendor_dir)  // Run make in the vendor directory
