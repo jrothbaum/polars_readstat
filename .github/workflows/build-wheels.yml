@@ -1,146 +1,205 @@
 name: Build and publish polars_readstat
 on:
-  push:
-    tags:
-      - 'v*'
-  workflow_dispatch: # Allows manual triggering
+ push:
+   tags:
+     - 'v*'
+ workflow_dispatch: # Allows manual triggering
 
 jobs:
-  build:
-    name: Build wheels on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-13, macos-14]
-        python-version: ["3.9"] # , "3.10", "3.11", "3.12"]
-        include:
-          - os: ubuntu-latest
-            rust-target: x86_64-unknown-linux-gnu
-          - os: windows-latest
-            rust-target: x86_64-pc-windows-msvc
-          - os: macos-13  # Intel runner
-            rust-target: x86_64-apple-darwin
-          - os: macos-14  # ARM runner  
-            rust-target: aarch64-apple-darwin
-    steps:
-      - uses: actions/checkout@v4
+ build-linux:
+   name: Build wheels on Linux (RHEL 8 compatible)
+   runs-on: ubuntu-latest
+   container: quay.io/pypa/manylinux_2_28_x86_64
+   steps:
+     - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        id: setup-python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python-version }}
+     - name: Install ReadStat dependencies (Linux)
+       run: |
+         yum install -y autoconf automake libtool zlib-devel clang
 
-      - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-        shell: bash
+     - name: Install uv
+       run: |
+         curl -LsSf https://astral.sh/uv/install.sh | sh
+       shell: bash
 
-      - name: Add uv to PATH (Unix)
-        if: matrix.os != 'windows-latest'
-        run: |
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-        shell: bash
+     - name: Add uv to PATH
+       run: |
+         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+       shell: bash
 
-      - name: Add uv to PATH (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-        shell: powershell
+     - name: Verify uv installation
+       run: |
+         uv --version
+       shell: bash
 
-      - name: Verify uv installation
-        run: |
-          uv --version
-        shell: bash
+     - name: Install Rust
+       run: |
+         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+         source ~/.cargo/env
+         rustup target add x86_64-unknown-linux-gnu
 
-      - name: Install ReadStat dependencies (macOS)
-        if: startsWith(matrix.os, 'macos-')
-        run: |
-          brew install autoconf automake libtool
+     - name: Install Python dependencies with uv (no local build)
+       run: |
+         uv sync --group build --no-install-project
+       shell: bash
 
-      - name: Install ReadStat dependencies (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          choco install msys2 llvm
-          C:\tools\msys64\usr\bin\bash -lc "pacman -S --noconfirm autoconf automake libtool make pkg-config zlib-devel"
-          echo "C:\tools\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo "LIBCLANG_PATH=C:\Program Files\LLVM\lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-        shell: powershell
+     - name: Install Python tools
+       run: |
+         /opt/python/cp39-cp39/bin/pip install maturin conan
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust-target }}
+     - name: Configure Conan profile
+       run: |
+         source ~/.cargo/env
+         /opt/python/cp39-cp39/bin/conan profile detect --force
 
-      - name: Install Python dependencies with uv (no local build)
-        run: |
-          uv sync --group build --no-install-project
-          echo "$(pwd)/.venv/bin" >> $GITHUB_PATH
-        shell: bash
+     - name: Build wheels
+       run: |
+         source ~/.cargo/env
+         /opt/python/cp39-cp39/bin/maturin build --release --strip --out dist \
+           --interpreter /opt/python/cp39-cp39/bin/python \
+           --target x86_64-unknown-linux-gnu \
+           --compatibility manylinux_2_28
+       env:
+         RUST_BACKTRACE: full
+         BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/include/clang"
+       shell: bash
 
-      - name: Add venv to PATH (Unix)
-        if: matrix.os != 'windows-latest'
-        run: |
-          echo "$(pwd)/.venv/bin" >> $GITHUB_PATH
-        shell: bash
+     - name: Upload wheels
+       uses: actions/upload-artifact@v4
+       with:
+         name: wheels-linux
+         path: dist
 
-      - name: Add venv to PATH (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          echo "$(Get-Location)\.venv\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-        shell: powershell
-      
-      - name: Configure Conan profile
-        run: conan profile detect --force
-      
-      - name: Build wheels (Linux + macOS)
-        if: matrix.os != 'windows-latest'
-        run: |
-          maturin build --release --strip --out dist \
-            --interpreter ${{ steps.setup-python.outputs.python-path }} \
-            --target ${{ matrix.rust-target }}
-            # --compatibility manylinux_2_28
-        env:
-          RUST_BACKTRACE: full
-          BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/include/clang"
-        shell: bash
+ build-others:
+   name: Build wheels on ${{ matrix.os }}
+   runs-on: ${{ matrix.os }}
+   strategy:
+     fail-fast: false
+     matrix:
+       include:
+         - os: windows-latest
+           rust-target: x86_64-pc-windows-msvc
+         - os: macos-13  # Intel runner
+           rust-target: x86_64-apple-darwin
+           macos-target: "10.13"
+         - os: macos-14  # ARM runner  
+           rust-target: aarch64-apple-darwin
+           macos-target: "11.0"
+       python-version: ["3.9"]
 
-      - name: Build wheels (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          maturin build --release --strip --out dist `
-            --interpreter ${{ steps.setup-python.outputs.python-path }} `
-            --target ${{ matrix.rust-target }}
-        shell: powershell
+   steps:
+     - uses: actions/checkout@v4
 
-    
+     - name: Set up Python ${{ matrix.python-version }}
+       id: setup-python
+       uses: actions/setup-python@v4
+       with:
+         python-version: ${{ matrix.python-version }}
 
+     - name: Install uv
+       run: |
+         curl -LsSf https://astral.sh/uv/install.sh | sh
+       shell: bash
 
+     - name: Add uv to PATH (Unix)
+       if: matrix.os != 'windows-latest'
+       run: |
+         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+       shell: bash
 
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
-          path: dist
+     - name: Add uv to PATH (Windows)
+       if: matrix.os == 'windows-latest'
+       run: |
+         echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+       shell: powershell
 
-  release:
-    name: Create GitHub Release
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write 
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download all workflow artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: artifacts/**/*.whl
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+     - name: Verify uv installation
+       run: |
+         uv --version
+       shell: bash
+
+     - name: Install ReadStat dependencies (macOS)
+       if: startsWith(matrix.os, 'macos-')
+       run: |
+         brew install autoconf automake libtool
+
+     - name: Install ReadStat dependencies (Windows)
+       if: matrix.os == 'windows-latest'
+       run: |
+         choco install msys2 llvm
+         C:\tools\msys64\usr\bin\bash -lc "pacman -S --noconfirm autoconf automake libtool make pkg-config zlib-devel"
+         echo "C:\tools\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+         echo "LIBCLANG_PATH=C:\Program Files\LLVM\lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+       shell: powershell
+
+     - name: Install Rust
+       uses: dtolnay/rust-toolchain@stable
+       with:
+         targets: ${{ matrix.rust-target }}
+
+     - name: Install Python dependencies with uv (no local build)
+       run: |
+         uv sync --group build --no-install-project
+       shell: bash
+
+     - name: Add venv to PATH (Unix)
+       if: matrix.os != 'windows-latest'
+       run: |
+         echo "$(pwd)/.venv/bin" >> $GITHUB_PATH
+       shell: bash
+
+     - name: Add venv to PATH (Windows)
+       if: matrix.os == 'windows-latest'
+       run: |
+         echo "$(Get-Location)\.venv\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+       shell: powershell
+     
+     - name: Configure Conan profile
+       run: conan profile detect --force
+
+     - name: Build wheels (macOS)
+       if: startsWith(matrix.os, 'macos-')
+       run: |
+         maturin build --release --strip --out dist \
+           --interpreter ${{ steps.setup-python.outputs.python-path }} \
+           --target ${{ matrix.rust-target }}
+       env:
+         RUST_BACKTRACE: full
+         BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/include/clang"
+         MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos-target }}
+       shell: bash
+
+     - name: Build wheels (Windows)
+       if: matrix.os == 'windows-latest'
+       run: |
+         maturin build --release --strip --out dist `
+           --interpreter ${{ steps.setup-python.outputs.python-path }} `
+           --target ${{ matrix.rust-target }}
+       shell: powershell
+
+     - name: Upload wheels
+       uses: actions/upload-artifact@v4
+       with:
+         name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
+         path: dist
+
+ release:
+   name: Create GitHub Release
+   needs: [build-linux, build-others]
+   runs-on: ubuntu-latest
+   if: startsWith(github.ref, 'refs/tags/')
+   permissions:
+     contents: write 
+   steps:
+     - uses: actions/checkout@v4
+     - name: Download all workflow artifacts
+       uses: actions/download-artifact@v4
+       with:
+         path: artifacts
+     - name: Create GitHub Release
+       uses: softprops/action-gh-release@v1
+       with:
+         files: artifacts/**/*.whl
+         generate_release_notes: true
+       env:
+         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
