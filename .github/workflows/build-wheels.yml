@@ -16,6 +16,9 @@ jobs:
       - name: Install ReadStat dependencies (Linux)
         run: |
           yum install -y autoconf automake libtool zlib-devel clang
+          # Install newer CMake
+          yum install -y wget
+          wget -qO- "https://cmake.org/files/v3.26/cmake-3.26.4-linux-x86_64.tar.gz" | tar --strip-components=1 -xz -C /usr/local
 
       - name: Install uv
         run: |
