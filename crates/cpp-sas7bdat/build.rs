@@ -98,6 +98,23 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
     println!("cargo:warning=Spdlog lib dir exists: {}", spdlog_lib_dir.exists());
     println!("cargo:warning=Fmt lib dir exists: {}", fmt_lib_dir.exists());
     
+    // Debug: Check if main library exists
+    let main_lib_path = lib_dir.join("cppsas7bdat.lib");
+    println!("cargo:warning=Main library path: {}", main_lib_path.display());
+    println!("cargo:warning=Main library exists: {}", main_lib_path.exists());
+    
+    // List all files in the main lib directory for debugging
+    if lib_dir.exists() {
+        println!("cargo:warning=Contents of main lib directory:");
+        if let Ok(entries) = fs::read_dir(&lib_dir) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    println!("cargo:warning=Found in main lib dir: {}", name);
+                }
+            }
+        }
+    }
+    
     if arrow_lib_dir.exists() {
         println!("cargo:rustc-link-search=native={}", arrow_lib_dir.display());
         if let Ok(entries) = fs::read_dir(&arrow_lib_dir) {
@@ -162,9 +179,35 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
         link_arrow_library(&arrow_lib_dir);
     }
 
-
     // Link the main static library LAST (it depends on the others)
-    println!("cargo:rustc-link-lib=static=cppsas7bdat");
+    // Try different possible library names for Windows
+    let possible_main_libs = [
+        "cppsas7bdat",
+        "libcppsas7bdat", 
+        "cppsas7bdat_static"
+    ];
+    
+    let mut found_main_lib = false;
+    for lib_name in &possible_main_libs {
+        let lib_file = if cfg!(target_os = "windows") {
+            format!("{}.lib", lib_name)
+        } else {
+            format!("lib{}.a", lib_name)
+        };
+        
+        let lib_path = lib_dir.join(&lib_file);
+        if lib_path.exists() {
+            println!("cargo:rustc-link-lib=static={}", lib_name);
+            println!("cargo:warning=Successfully found and linked main library: {}", lib_name);
+            found_main_lib = true;
+            break;
+        }
+    }
+    
+    if !found_main_lib {
+        println!("cargo:warning=WARNING: Main library not found! Trying default name anyway.");
+        println!("cargo:rustc-link-lib=static=cppsas7bdat");
+    }
 
     // Link only essential system libraries
     if cfg!(target_os = "linux") {
