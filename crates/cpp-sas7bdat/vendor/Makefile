@@ -27,7 +27,7 @@ CONAN_BUILD_JOBS := 1
 MAX_MEMORY_USAGE := low
 
 PIP_OPTIONS :=
-CONAN_OPTIONS := -s:b compiler.cppstd=17 -s:h compiler.cppstd=17 --profile:build=default --build=catch2/3.4.0 --build=missing
+CONAN_OPTIONS := -s:b compiler.cppstd=17 -s:h compiler.cppstd=17 --profile:build=default --build=b2* --build=catch2/3.4.0 --build=missing
 #CONAN_OPTIONS := -s:b compiler.cppstd=20 -s:h compiler.cppstd=20 --profile:build=default --profile:host=default --build=missing
 
 # Define the path to the Conan executable relative to the Makefile's location
