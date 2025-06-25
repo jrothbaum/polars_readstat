@@ -18,7 +18,10 @@ jobs:
           yum install -y autoconf automake libtool zlib-devel clang wget perl
           # Install modern GCC toolchain
           yum install -y devtoolset-11-gcc devtoolset-11-gcc-c++ devtoolset-11-binutils
-    
+          
+          # Enable SCL repository for devtoolset
+          yum install -y centos-release-scl
+          
           # Install modern CMake
           wget -qO- "https://cmake.org/files/v3.26/cmake-3.26.4-linux-x86_64.tar.gz" | tar --strip-components=1 -xz -C /usr/local
           
