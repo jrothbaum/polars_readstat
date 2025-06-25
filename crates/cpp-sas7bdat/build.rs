@@ -100,8 +100,49 @@ fn find_library_files(search_dir: &PathBuf, search_patterns: &[&str]) -> Vec<Pat
 }
 
 fn link_prebuilt_library(manifest_dir: &PathBuf) {
-    // Point to your pre-built library
-    let lib_dir = manifest_dir.join("vendor/build/Release/src");
+    // Different build systems create different directory structures
+    let possible_lib_dirs = if cfg!(target_os = "windows") {
+        // Windows (Visual Studio/MSBuild) structure
+        vec![
+            manifest_dir.join("vendor/build/src/Release"),
+            manifest_dir.join("vendor/build/Release/src"),
+            manifest_dir.join("vendor/build/Release"),
+        ]
+    } else {
+        // Unix (Make) structure
+        vec![
+            manifest_dir.join("vendor/build/src"),
+            manifest_dir.join("vendor/build/Release/src"),
+            manifest_dir.join("vendor/build"),
+        ]
+    };
+    
+    // Find the directory that actually contains our library
+    let mut lib_dir = None;
+    for dir in &possible_lib_dirs {
+        println!("cargo:warning=Checking potential lib dir: {}", dir.display());
+        let test_lib_path = if cfg!(target_os = "windows") {
+            dir.join("cppsas7bdat.lib")
+        } else {
+            dir.join("libcppsas7bdat.a")
+        };
+        
+        if test_lib_path.exists() {
+            println!("cargo:warning=Found main library at: {}", test_lib_path.display());
+            lib_dir = Some(dir.clone());
+            break;
+        }
+    }
+    
+    let lib_dir = lib_dir.unwrap_or_else(|| {
+        println!("cargo:warning=No library found in any expected location, using default");
+        if cfg!(target_os = "windows") {
+            manifest_dir.join("vendor/build/src/Release")
+        } else {
+            manifest_dir.join("vendor/build/src")
+        }
+    });
+    
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     
     // Dependencies directory from Conan (where Makefile puts them)
@@ -120,10 +161,14 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
     println!("cargo:warning=Spdlog lib dir exists: {}", spdlog_lib_dir.exists());
     println!("cargo:warning=Fmt lib dir exists: {}", fmt_lib_dir.exists());
     
-    // Debug: Check if main library exists
-    let main_lib_path = lib_dir.join("cppsas7bdat.lib");
-    println!("cargo:warning=Main library path: {}", main_lib_path.display());
-    println!("cargo:warning=Main library exists: {}", main_lib_path.exists());
+    // Debug: Check if main library exists in the selected directory
+    let main_lib_path = if cfg!(target_os = "windows") {
+        lib_dir.join("cppsas7bdat.lib")
+    } else {
+        lib_dir.join("libcppsas7bdat.a")
+    };
+    println!("cargo:warning=Final main library path: {}", main_lib_path.display());
+    println!("cargo:warning=Final main library exists: {}", main_lib_path.exists());
     
     // NEW: Comprehensive search for the main library file
     println!("cargo:warning=================================");
@@ -154,12 +199,12 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
             let found_files = find_library_files(location, &main_lib_patterns);
             
             if !found_files.is_empty() {
-                println!("cargo:warning=Found {} potential library files in {}:", found_files.len(), location.display());
+                println!("cargo:warning=Found {} potential main library files in {}:", found_files.len(), location.display());
                 for file in &found_files {
-                    println!("cargo:warning=  -> {}", file.display());
+                    println!("cargo:warning=  MAIN LIBRARY CANDIDATE -> {}", file.display());
                 }
             } else {
-                println!("cargo:warning=No matching files found in {}", location.display());
+                println!("cargo:warning=No main library files found in {}", location.display());
             }
         } else {
             println!("cargo:warning=Directory doesn't exist: {}", location.display());
@@ -174,8 +219,12 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
     let build_dir = manifest_dir.join("vendor/build");
     if build_dir.exists() {
         let all_lib_files = find_library_files(&build_dir, &[".lib"]);
-        println!("cargo:warning=Found {} .lib files in build directory:", all_lib_files.len());
-        for file in &all_lib_files {
+        println!("cargo:warning=Found {} .lib files in build directory (showing first 20):", all_lib_files.len());
+        for (i, file) in all_lib_files.iter().enumerate() {
+            if i >= 20 { 
+                println!("cargo:warning=  ... and {} more .lib files", all_lib_files.len() - 20);
+                break; 
+            }
             println!("cargo:warning=  .lib file: {}", file.display());
         }
     }
@@ -186,6 +235,44 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
         println!("cargo:warning=Found {} .a files in build directory:", all_a_files.len());
         for file in &all_a_files {
             println!("cargo:warning=  .a file: {}", file.display());
+        }
+    }
+    
+    // NEW: Let's also check the make output more carefully
+    println!("cargo:warning=--------------------------------");
+    println!("cargo:warning=CHECKING MAKE OUTPUT DIRECTORY");
+    println!("cargo:warning=--------------------------------");
+    
+    // Check various build output directories that make might use
+    let possible_output_dirs = [
+        manifest_dir.join("vendor/build"),
+        manifest_dir.join("vendor/build/src"),
+        manifest_dir.join("vendor/build/Release"),
+        manifest_dir.join("vendor/build/Release/src"),
+        manifest_dir.join("vendor/build/Debug"),
+        manifest_dir.join("vendor/build/Debug/src"),
+        manifest_dir.join("vendor/out"),
+        manifest_dir.join("vendor/lib"),
+    ];
+    
+    for dir in &possible_output_dirs {
+        if dir.exists() {
+            println!("cargo:warning=Checking directory: {}", dir.display());
+            if let Ok(entries) = fs::read_dir(dir) {
+                let mut file_count = 0;
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                            if name.ends_with(".lib") || name.ends_with(".a") || name.contains("cppsas7bdat") || name.contains("sas7bdat") {
+                                println!("cargo:warning=  IMPORTANT FILE: {}", path.display());
+                            }
+                            file_count += 1;
+                        }
+                    }
+                }
+                println!("cargo:warning=  Total files in directory: {}", file_count);
+            }
         }
     }
     
