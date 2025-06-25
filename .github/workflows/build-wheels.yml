@@ -28,19 +28,6 @@ jobs:
           gcc --version
           g++ --version
           cmake --version
-          
-          # Test C++17 support
-          echo "=== Testing C++17 ==="
-          echo '#include <iostream>
-          int main() { 
-              auto x = 42; 
-              if constexpr(true) { 
-                  std::cout << "C++17 works!" << std::endl; 
-              }
-              return 0; 
-          }' > test.cpp
-          g++ -std=c++17 test.cpp -o test && ./test || echo "C++17 test failed"
-          rm -f test.cpp test
   
       - name: Install uv
         run: |
