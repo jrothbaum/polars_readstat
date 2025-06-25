@@ -2,6 +2,7 @@ from conan import ConanFile, tools
 from conan.tools.cmake import CMakeDeps, CMakeToolchain, cmake_layout, CMake
 import os
 import sys
+import platform
 
 sys.path.insert(0, f"{os.path.dirname(__file__)}/conan_files")
 from shared import SharedConfig
@@ -19,6 +20,11 @@ class CppSAS7BDATProject(ConanFile):
     options = {"shared": [True, False], "ENABLE_COVERAGE": ["ON", "OFF"], "ENABLE_TESTING": ["ON", "OFF"]}
     default_options = {"shared": False, "ENABLE_COVERAGE": "OFF", "fmt/*:shared": False, "ENABLE_TESTING": "ON"}
 
+    # Add fPIC option if not on Windows
+    if platform.system() != "Windows":
+        options["fPIC"] = [True, False]
+        default_options["fPIC"] = True
+    
     generators = "VirtualBuildEnv", "VirtualRunEnv"
     build_policy = "missing"
     requires = (
@@ -68,8 +74,4 @@ class CppSAS7BDATProject(ConanFile):
         self.cpp_info.libs = ["cppsas7bdat"]
 
     def configure(self):
-        if self.settings.os != "Windows":
-            self.options.update({"shared": [True, False]})
-            self.default_options["shared"] = True
-
         SharedConfig.apply_options(self)
