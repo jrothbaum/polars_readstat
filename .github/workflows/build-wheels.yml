@@ -214,13 +214,36 @@ jobs:
             --interpreter ${{ steps.setup-python.outputs.python-path }} `
             --target ${{ matrix.rust-target }}
         shell: powershell
-
+      - name: Debug build output (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          echo "=== Checking vendor/build directory structure ==="
+          if (Test-Path "crates\cpp-sas7bdat\vendor\build") {
+            echo "Contents of vendor/build:"
+            Get-ChildItem "crates\cpp-sas7bdat\vendor\build" -Recurse | Format-Table FullName, Length
+            echo ""
+            echo "=== Library files specifically ==="
+            Get-ChildItem "crates\cpp-sas7bdat\vendor\build" -Recurse | Where-Object {$_.Name -like "*.lib" -or $_.Name -like "*.a"} | Format-Table FullName, Length
+          } else {
+            echo "vendor/build directory does not exist"
+          }
+          
+          echo "=== Checking for any cppsas7bdat files ==="
+          if (Test-Path "crates\cpp-sas7bdat\vendor") {
+            Get-ChildItem "crates\cpp-sas7bdat\vendor" -Recurse | Where-Object {$_.Name -like "*cppsas7bdat*"} | Format-Table FullName, Length
+          }
+          
+          echo "=== Checking target directory for Rust build artifacts ==="
+          if (Test-Path "target") {
+            Get-ChildItem "target" -Recurse | Where-Object {$_.Name -like "*cppsas7bdat*"} | Format-Table FullName, Length
+          }
+        shell: powershell
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
           path: dist
-
+      
   release:
     name: Create GitHub Release
     needs: [build-linux, build-others]
