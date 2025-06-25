@@ -70,6 +70,7 @@ jobs:
           CMAKE_CXX_FLAGS: "-fPIC"    # Force fPIC in CMake
           CC: "gcc -fPIC"             # Force fPIC in C compiler
           CXX: "g++ -fPIC"            # Force fPIC in C++ compiler
+          MAKEFLAGS: "-j2"            # Fewer jobs in C++ compiler
         shell: bash
 
       - name: Upload wheels
