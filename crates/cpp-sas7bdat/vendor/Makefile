@@ -26,6 +26,11 @@ CMAKE_BUILD_JOBS := 1
 CONAN_BUILD_JOBS := 1
 MAX_MEMORY_USAGE := low
 
+# Conan download timeout settings
+export CONAN_USER_TOOLS_FILES_DOWNLOAD_TIMEOUT = 300
+export CONAN_USER_TOOLS_FILES_DOWNLOAD_RETRY = 3
+export CONAN_USER_TOOLS_FILES_DOWNLOAD_RETRY_WAIT = 15
+
 PIP_OPTIONS :=
 CONAN_OPTIONS := -s:b compiler.cppstd=17 -s:h compiler.cppstd=17 --profile:build=default --build=b2* --build=catch2/3.4.0 --build=missing
 #CONAN_OPTIONS := -s:b compiler.cppstd=20 -s:h compiler.cppstd=20 --profile:build=default --profile:host=default --build=missing

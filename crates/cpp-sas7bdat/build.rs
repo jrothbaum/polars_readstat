@@ -66,15 +66,37 @@ fn generate_bindings(out_dir: &PathBuf) {
         .allowlist_type("ArrowArray")
         .allowlist_type("ArrowSchema")
         .allowlist_var("SAS_ARROW_.*")
-        // Block the old chunked reader API to force migration
-        .blocklist_function("chunked_reader_.*")
-        .blocklist_function("chunk_iterator_.*")
         .generate()
         .expect("Unable to generate bindings");
 
     bindings
         .write_to_file(out_dir.join("bindings.rs"))
         .expect("Couldn't write bindings!");
+}
+
+// New helper function to recursively search for library files
+fn find_library_files(search_dir: &PathBuf, search_patterns: &[&str]) -> Vec<PathBuf> {
+    let mut found_files = Vec::new();
+    
+    fn search_recursive(dir: &PathBuf, patterns: &[&str], found: &mut Vec<PathBuf>) {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    search_recursive(&path, patterns, found);
+                } else if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                    for pattern in patterns {
+                        if file_name.contains(pattern) {
+                            found.push(path.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    search_recursive(search_dir, search_patterns, &mut found_files);
+    found_files
 }
 
 fn link_prebuilt_library(manifest_dir: &PathBuf) {
@@ -102,6 +124,70 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
     let main_lib_path = lib_dir.join("cppsas7bdat.lib");
     println!("cargo:warning=Main library path: {}", main_lib_path.display());
     println!("cargo:warning=Main library exists: {}", main_lib_path.exists());
+    
+    // NEW: Comprehensive search for the main library file
+    println!("cargo:warning=================================");
+    println!("cargo:warning=COMPREHENSIVE LIBRARY SEARCH");
+    println!("cargo:warning=================================");
+    
+    // Search patterns for the main library
+    let main_lib_patterns = ["cppsas7bdat", "sas7bdat"];
+    
+    // Search in multiple possible locations
+    let search_locations = [
+        manifest_dir.join("vendor/build"),
+        manifest_dir.join("vendor/build/Release"),
+        manifest_dir.join("vendor/build/Debug"),
+        manifest_dir.join("vendor/build/src"),
+        manifest_dir.join("vendor/build/Release/src"),
+        manifest_dir.join("vendor/build/Debug/src"),
+        manifest_dir.join("vendor/src"),
+        manifest_dir.join("vendor/lib"),
+        manifest_dir.join("vendor"),
+    ];
+    
+    println!("cargo:warning=Searching for main library files containing: {:?}", main_lib_patterns);
+    
+    for location in &search_locations {
+        if location.exists() {
+            println!("cargo:warning=Searching in: {}", location.display());
+            let found_files = find_library_files(location, &main_lib_patterns);
+            
+            if !found_files.is_empty() {
+                println!("cargo:warning=Found {} potential library files in {}:", found_files.len(), location.display());
+                for file in &found_files {
+                    println!("cargo:warning=  -> {}", file.display());
+                }
+            } else {
+                println!("cargo:warning=No matching files found in {}", location.display());
+            }
+        } else {
+            println!("cargo:warning=Directory doesn't exist: {}", location.display());
+        }
+    }
+    
+    // NEW: Also search for ANY .lib files in the build directory
+    println!("cargo:warning=--------------------------------");
+    println!("cargo:warning=SEARCHING FOR ALL .lib FILES");
+    println!("cargo:warning=--------------------------------");
+    
+    let build_dir = manifest_dir.join("vendor/build");
+    if build_dir.exists() {
+        let all_lib_files = find_library_files(&build_dir, &[".lib"]);
+        println!("cargo:warning=Found {} .lib files in build directory:", all_lib_files.len());
+        for file in &all_lib_files {
+            println!("cargo:warning=  .lib file: {}", file.display());
+        }
+    }
+    
+    // NEW: Also search for ANY .a files (in case it's building static libraries with different extension)
+    let all_a_files = find_library_files(&build_dir, &[".a"]);
+    if !all_a_files.is_empty() {
+        println!("cargo:warning=Found {} .a files in build directory:", all_a_files.len());
+        for file in &all_a_files {
+            println!("cargo:warning=  .a file: {}", file.display());
+        }
+    }
     
     // List all files in the main lib directory for debugging
     if lib_dir.exists() {
