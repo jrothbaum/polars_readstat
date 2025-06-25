@@ -48,9 +48,10 @@ class CppSAS7BDATProject(ConanFile):
 
 
     def requirements(self):
-        self.requires("boost/1.85.0", headers=True, libs=True, visible=True, transitive_headers=True, transitive_libs=True)
+        self.requires("boost/1.82.0", headers=True, libs=True, visible=True, transitive_headers=True, transitive_libs=True, override=True)
         self.requires("arrow/19.0.1")
         self.test_requires("catch2/3.4.0")
+        self.requires("thrift/0.15.0", override=True)
 
     def build(self):
         cmake = CMake(self)
