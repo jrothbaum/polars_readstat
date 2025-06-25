@@ -16,7 +16,15 @@ jobs:
       - name: Install ReadStat dependencies (Linux)
         run: |
           yum install -y autoconf automake libtool zlib-devel clang wget perl
+          # Install modern GCC toolchain
+          yum install -y devtoolset-11-gcc devtoolset-11-gcc-c++ devtoolset-11-binutils
+    
+          # Install modern CMake
           wget -qO- "https://cmake.org/files/v3.26/cmake-3.26.4-linux-x86_64.tar.gz" | tar --strip-components=1 -xz -C /usr/local
+          
+          # Enable the modern toolchain for this session and future ones
+          source /opt/rh/devtoolset-11/enable
+          echo "source /opt/rh/devtoolset-11/enable" >> ~/.bashrc
 
       - name: Install uv
         run: |
@@ -66,11 +74,12 @@ jobs:
         env:
           RUST_BACKTRACE: full
           BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/include/clang"
-          CXXFLAGS: "-fPIC"           # Force fPIC for all C++ compilation
-          CMAKE_CXX_FLAGS: "-fPIC"    # Force fPIC in CMake
-          CC: "gcc -fPIC"             # Force fPIC in C compiler
-          CXX: "g++ -fPIC"            # Force fPIC in C++ compiler
-          MAKEFLAGS: "-j2"            # Fewer jobs in C++ compiler
+          CXXFLAGS: "-std=c++17 -fPIC"           # Added C++17 standard
+          CMAKE_CXX_FLAGS: "-std=c++17 -fPIC"    # Added C++17 standard
+          CMAKE_CXX_STANDARD: "17"               # Added CMake C++ standard
+          CC: "/opt/rh/devtoolset-11/root/usr/bin/gcc"     # Use modern GCC
+          CXX: "/opt/rh/devtoolset-11/root/usr/bin/g++"    # Use modern G++
+          MAKEFLAGS: "-j2"
         shell: bash
 
       - name: Upload wheels
