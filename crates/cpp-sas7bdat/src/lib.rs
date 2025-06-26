@@ -141,8 +141,6 @@ extern "C" {
         end_row: u64,    // 0 = no end filter
     ) -> SasArrowErrorCode;
 
-    fn sas_arrow_reader_reset(reader: *mut SasArrowReader) -> SasArrowErrorCode;
-
     fn sas_arrow_reader_destroy(reader: *mut SasArrowReader);
 
     fn sas_arrow_get_last_error() -> *const c_char;
@@ -440,16 +438,6 @@ impl SasReader {
         Ok(polars_type)
     }
     
-    /// Reset the reader (may not be implemented in your C++ code yet)
-    pub fn reset(&mut self) -> PolarsResult<()> {
-        let result = unsafe { sas_arrow_reader_reset(self.reader) };
-        
-        if result != SasArrowErrorCode::SasArrowOk {
-            return Err(Self::error_from_code(result));
-        }
-        
-        Ok(())
-    }
     
     /// Convert error code to PolarsError
     fn error_from_code(code: SasArrowErrorCode) -> PolarsError {
