@@ -2,9 +2,8 @@ from __future__ import annotations
 from typing import Any, Iterator, Optional
 from polars.io.plugins import register_io_source
 import polars as pl
-from polars_readstat_rs import (read_readstat,
-                                read_cppsas_py)
-
+from polars_readstat.polars_readstat_rs import (read_readstat,
+                                                read_cppsas_py)
 
 def scan_readstat(path:str,
                   engine:str="cpp") -> pl.LazyFrame:
