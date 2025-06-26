@@ -355,6 +355,7 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
     // Link the main static library LAST (it depends on the others)
     // Try different possible library names for Windows
     let possible_main_libs = [
+        "cppsas7bdat_bundled",  // Try bundled version first
         "cppsas7bdat",
         "libcppsas7bdat", 
         "cppsas7bdat_static"
@@ -371,15 +372,15 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
         let lib_path = lib_dir.join(&lib_file);
         if lib_path.exists() {
             println!("cargo:rustc-link-lib=static={}", lib_name);
-            println!("cargo:warning=Successfully found and linked main library: {}", lib_name);
+            println!("cargo:warning=Successfully found and linked main library: {} at {}", lib_name, lib_path.display());
             found_main_lib = true;
             break;
         }
     }
     
     if !found_main_lib {
-        println!("cargo:warning=WARNING: Main library not found! Trying default name anyway.");
-        println!("cargo:rustc-link-lib=static=cppsas7bdat");
+        println!("cargo:warning=WARNING: Main library not found! Trying bundled version as fallback.");
+        println!("cargo:rustc-link-lib=static=cppsas7bdat_bundled");
     }
 
     // Link only essential system libraries
