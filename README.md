@@ -40,8 +40,7 @@ Because of concerns about the performance of readstat reading large SAS files, I
 
 Other notable features
 - Multithreaded using the number of pl.thread_pool_size (readstat serialization to Arrow only)
-- Currently comparable to pandas (see benchmarks below) on full reads and faster when reading subsets of columns
-- I haven't done the equivalent benchmarks for the cpp-sas7bdat-based read, but the rust-only version is at least 2x faster than the readstat version in the ACS sas test file
+- Currently comparable to pandas and pyreadstat or faster (see benchmarks below)
 
 Pending tasks:
 - Write support for Stata (dta) and SPSS (sav) files.  Readstat itself cannot write SAS (sas7bdat) files that SAS can read, and I'm not fool enough to try to figure that out.  Also, any workflow that involves SAS should be one-way (SAS->something else) so you should only read SAS files, never write them.
