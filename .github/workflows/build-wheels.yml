@@ -179,22 +179,7 @@ jobs:
       - name: Configure Conan profile
         run: conan profile detect --force
 
-      - name: Debug Arrow library (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          echo "=== Checking Arrow library ==="
-          $arrowPath = "crates\cpp-sas7bdat\vendor\build\dependencies\direct_deploy\arrow\lib"
-          if (Test-Path $arrowPath) {
-            echo "Arrow lib found at: $arrowPath"
-            Get-ChildItem $arrowPath | Format-Table Name
-          } else {
-            echo "Arrow lib NOT found at: $arrowPath"
-            echo "Checking if dependencies directory exists..."
-            if (Test-Path "crates\cpp-sas7bdat\vendor\build\dependencies") {
-              Get-ChildItem "crates\cpp-sas7bdat\vendor\build\dependencies" -Recurse -Directory | Where-Object {$_.Name -like "*arrow*"}
-            }
-          }
-        shell: powershell
+      
       - name: Build wheels (macOS)
         if: startsWith(matrix.os, 'macos-')
         run: |
