@@ -1,0 +1,32 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for trusted publishing
+      contents: read
+    
+    steps:
+    - name: Download release assets
+      run: |
+        mkdir -p dist
+        # Get the latest release info
+        RELEASE_INFO=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/latest")
+        
+        # Download all .whl and .tar.gz files from the latest release
+        echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name | test("\\.(whl|tar\\.gz)$")) | .browser_download_url' | while read url; do
+          echo "Downloading: $url"
+          curl -L -o "dist/$(basename "$url")" "$url"
+        done
+        
+    - name: Publish to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        packages-dir: dist/
+        password: ${{ secrets.PYPI_API_TOKEN }}
+        skip-existing: true
