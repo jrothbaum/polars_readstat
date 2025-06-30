@@ -3,7 +3,7 @@ name: Test Publish to PyPI
 on:
   release:
     types: [published]
-
+  workflow_dispatch:  # Allows manual triggering
 jobs:
   publish:
     runs-on: ubuntu-latest
