@@ -13,9 +13,24 @@ namespace cppsas7bdat {
 namespace INTERNAL {
 namespace DECOMPRESSOR {
 
-constexpr uint8_t C_NULL = 0x00;  /**< '\@' */
+constexpr uint8_t C_NULL = 0x00;  /**< '\0' */
 constexpr uint8_t C_SPACE = 0x20; /**< ' ' */
 constexpr uint8_t C_AT = 0x40;    /**< '@' */
+
+// ReadStat RLE command constants
+#define SAS_RLE_COMMAND_COPY64         0x00
+#define SAS_RLE_COMMAND_INSERT_BYTE18  0x04
+#define SAS_RLE_COMMAND_INSERT_AT17    0x05
+#define SAS_RLE_COMMAND_INSERT_BLANK17 0x06
+#define SAS_RLE_COMMAND_INSERT_ZERO17  0x07
+#define SAS_RLE_COMMAND_COPY1          0x08
+#define SAS_RLE_COMMAND_COPY17         0x09
+#define SAS_RLE_COMMAND_COPY33         0x0A
+#define SAS_RLE_COMMAND_COPY49         0x0B
+#define SAS_RLE_COMMAND_INSERT_BYTE3   0x0C
+#define SAS_RLE_COMMAND_INSERT_AT2     0x0D
+#define SAS_RLE_COMMAND_INSERT_BLANK2  0x0E
+#define SAS_RLE_COMMAND_INSERT_ZERO2   0x0F
 
 struct SRC_VALUES {
   const BYTES values;
@@ -25,8 +40,17 @@ struct SRC_VALUES {
   explicit SRC_VALUES(const BYTES &_values)
       : values(_values), n_src(values.size()) {}
 
-  auto pop() noexcept { return values[i_src++]; }
+  auto pop() noexcept { 
+    if (i_src >= n_src) {
+      return uint8_t(0);
+    }
+    return values[i_src++]; 
+  }
+  
   auto pop(const size_t _n) noexcept {
+    if (i_src + _n > n_src) {
+      return values.substr(i_src, n_src - i_src);
+    }
     auto v = values.substr(i_src, _n);
     i_src += _n;
     return v;
@@ -34,6 +58,7 @@ struct SRC_VALUES {
 
   bool check(const size_t _n) const noexcept { return i_src + _n <= n_src; }
   size_t remaining() const noexcept { return n_src - i_src; }
+  bool has_bytes(size_t n) const noexcept { return i_src + n <= n_src; }
 };
 
 struct None {
@@ -74,13 +99,13 @@ template <Endian _endian, Format _format> struct DST_VALUES {
   bool check(const size_t _n) const noexcept { return i_dst + _n <= n_dst; }
   void assert_check(const size_t _n) const {
     if (!check(_n)) {
-      spdlog::critical("Invalid dst length: {}+{}>{}\n", i_dst, _n, n_dst);
+      spdlog::critical("Invalid dst length: {}+{}>{}", i_dst, _n, n_dst);
       EXCEPTION::cannot_decompress();
     }
   }
 };
 
-/// SASYZCR2
+/// SASYZCR2 - Fixed RDC implementation
 template <Endian _endian, Format _format>
 struct RDC : public DST_VALUES<_endian, _format> {
   using DST_VALUES<_endian, _format>::buf;
@@ -97,87 +122,84 @@ struct RDC : public DST_VALUES<_endian, _format> {
 
   void store_pattern(const size_t _offset, const size_t _n) {
     assert_check(_n);
+    if (i_dst < _offset) {
+      EXCEPTION::cannot_decompress();
+    }
     buf.copy(i_dst, i_dst - _offset, _n);
     i_dst += _n;
   }
 
   BYTES operator()(const BYTES &_values) {
-    constexpr uint8_t ONE{1}, FOUR{4}, EIGHT{8};
-    constexpr uint8_t THREE{3}, SIXTEEN{16}, NINETEEN{19};
-
     reset();
-
-    using T = int32_t;
     SRC_VALUES src(_values);
-    T ctrl_mask{0};
-    T ctrl_bits{0};
+    
+    uint32_t ctrl_bits = 0;
+    uint32_t ctrl_mask = 0;
 
-    while (src.check(3) && check()) {
-      D(spdlog::info("RDC({}/{},{}/{})\n", src.i_src, src.n_src, i_dst, n_dst));
-      // get new load of control bits if needed
-      ctrl_mask >>= ONE;
+    while (src.has_bytes(1) && check()) {
+      // Check if we need more control bits
       if (ctrl_mask == 0) {
-        // The 2 next lines must be performed in that order
-        ctrl_bits = (static_cast<T>(src.pop())) << EIGHT;
-        ctrl_bits += (static_cast<T>(src.pop()));
+        if (!src.has_bytes(2)) {
+          break;
+        }
+        uint8_t byte1 = src.pop();
+        uint8_t byte2 = src.pop();
+        ctrl_bits = (static_cast<uint32_t>(byte1) << 8) | byte2;
         ctrl_mask = 0x8000;
       }
-      // just copy this char if control bit is zero
+      
       if ((ctrl_bits & ctrl_mask) == 0) {
-        store_value(src.pop(), 1);
+        // Copy literal byte
+        if (!src.has_bytes(1)) break;
+        uint8_t literal = src.pop();
+        store_value(literal, 1);
       } else {
-        // undo the compression code
-        const auto val = src.pop();
-        const uint8_t cmd = (val >> FOUR) & 0x0F;
-        size_t cnt = val & 0x0F;
-        if (cmd == 0) { // short rle
-          cnt += THREE;
-          store_value(src.pop(), cnt);
-        } else if (cmd == 1) { // long rle
-          cnt += static_cast<size_t>((static_cast<T>(src.pop()) << FOUR) +
-                                     NINETEEN);
-          store_value(src.pop(), cnt);
+        // Compressed data
+        if (!src.has_bytes(1)) break;
+        uint8_t command_byte = src.pop();
+        uint8_t cmd = (command_byte >> 4) & 0x0F;
+        uint8_t cnt = command_byte & 0x0F;
+        
+        if (cmd == 0) { // short RLE
+          if (!src.has_bytes(1)) break;
+          uint8_t repeat_byte = src.pop();
+          size_t count = cnt + 3;
+          store_value(repeat_byte, count);
+        } else if (cmd == 1) { // long RLE  
+          if (!src.has_bytes(2)) break;
+          uint8_t extra = src.pop();
+          uint8_t repeat_byte = src.pop();
+          size_t count = cnt + ((static_cast<size_t>(extra) << 4) + 19);
+          store_value(repeat_byte, count);
         } else if (cmd == 2) { // long pattern
-          const size_t ofs =
-              cnt + THREE +
-              static_cast<size_t>(static_cast<T>(src.pop()) << FOUR);
-          cnt = static_cast<size_t>(src.pop() + SIXTEEN);
-          store_pattern(ofs, cnt);
+          if (!src.has_bytes(2)) break;
+          uint8_t extra = src.pop();
+          uint8_t count_byte = src.pop();
+          size_t offset = cnt + 3 + (static_cast<size_t>(extra) << 4);
+          size_t count = count_byte + 16;
+          store_pattern(offset, count);
         } else if (cmd >= 3 && cmd <= 15) { // short pattern
-          const size_t ofs =
-              cnt + THREE +
-              static_cast<size_t>(static_cast<T>(src.pop()) << FOUR);
-          store_pattern(ofs, cmd);
+          if (!src.has_bytes(1)) break;
+          uint8_t extra = src.pop();
+          size_t offset = cnt + 3 + (static_cast<size_t>(extra) << 4);
+          size_t count = cmd;
+          store_pattern(offset, count);
         } else {
-          spdlog::critical("unknown marker {:#X} at offset {}\n", val,
-                           (src.i_src - 1));
+          spdlog::critical("RDC: Invalid command {}", cmd);
           EXCEPTION::cannot_decompress();
         }
       }
+      
+      // Shift control mask for next iteration
+      ctrl_mask >>= 1;
     }
+    
     fill();
     return buf.as_bytes();
   }
 };
 
-constexpr uint8_t SAS_RLE_COMMAND_COPY64 = 0x00;
-constexpr uint8_t SAS_RLE_COMMAND_INSERT_BYTE18 = 0x04;
-constexpr uint8_t SAS_RLE_COMMAND_INSERT_AT17 = 0x05;
-constexpr uint8_t SAS_RLE_COMMAND_INSERT_BLANK17 = 0x06;
-constexpr uint8_t SAS_RLE_COMMAND_INSERT_ZERO17 = 0x07;
-constexpr uint8_t SAS_RLE_COMMAND_COPY1 = 0x08;
-constexpr uint8_t SAS_RLE_COMMAND_COPY17 = 0x09;
-constexpr uint8_t SAS_RLE_COMMAND_COPY33 = 0x0A;
-constexpr uint8_t SAS_RLE_COMMAND_COPY49 = 0x0B;
-constexpr uint8_t SAS_RLE_COMMAND_INSERT_BYTE3 = 0x0C;
-constexpr uint8_t SAS_RLE_COMMAND_INSERT_AT2 = 0x0D;
-constexpr uint8_t SAS_RLE_COMMAND_INSERT_BLANK2 = 0x0E;
-constexpr uint8_t SAS_RLE_COMMAND_INSERT_ZERO2 = 0X0F;
-
-/// SASYZCRL
-/**
- *  From https://github.com/WizardMac/ReadStat
- */
+/// SASYZCRL - ReadStat-based RLE implementation
 template <Endian _endian, Format _format>
 struct RLE : public DST_VALUES<_endian, _format> {
   using DST_VALUES<_endian, _format>::buf;
@@ -192,76 +214,111 @@ struct RLE : public DST_VALUES<_endian, _format> {
   explicit RLE(const Properties::Metadata *_metadata)
       : DST_VALUES<_endian, _format>(_metadata) {}
 
-  BYTES operator()(const BYTES &_values) {
-    constexpr uint8_t FOUR{4}, EIGHT{8};
+  // ReadStat-style copy function
+  void copy_bytes(SRC_VALUES& src, size_t count) {
+    count = std::min(count, src.remaining());
+    if (count == 0) return;
+    
+    assert_check(count);
+    auto data = src.pop(count);
+    buf.copy(i_dst, data);
+    i_dst += count;
+  }
 
+  BYTES operator()(const BYTES &_values) {
     reset();
     SRC_VALUES src(_values);
-    auto store_values = [&](size_t n) {
-      n = std::min(n, src.remaining());
-      assert_check(n);
-      buf.copy(i_dst, src.pop(n));
-      i_dst += n;
-    };
+    
+    while (src.has_bytes(1) && check()) {
+      if (!src.has_bytes(1)) break;
+      
+      const uint8_t control_byte = src.pop();
+      const uint8_t command = (control_byte >> 4) & 0x0F;
+      const uint8_t end_of_first_byte = control_byte & 0x0F;
 
-    while (src.check(2) && check()) {
-      const auto val = src.pop();
-      const uint8_t command = static_cast<uint8_t>(val >> FOUR);
-      const size_t end_of_first_byte = static_cast<size_t>(val & 0x0F);
-      D(spdlog::info("RLE:({}, {}: {:#X})\n", src.i_src, i_dst, command));
       switch (command) {
-        break;
-      case SAS_RLE_COMMAND_COPY64: {
-        const size_t n = (end_of_first_byte << EIGHT) + src.pop() + 64;
-        store_values(n);
-      } break;
-      case SAS_RLE_COMMAND_INSERT_BYTE18: {
-        const size_t n = (end_of_first_byte << FOUR) + src.pop() + 18;
-        store_value(src.pop(), n);
-      } break;
-      case SAS_RLE_COMMAND_INSERT_AT17: {
-        const size_t n = (end_of_first_byte << EIGHT) + src.pop() + 17;
-        store_value(C_AT, n);
-      } break;
-      case SAS_RLE_COMMAND_INSERT_BLANK17: {
-        const size_t n = (end_of_first_byte << EIGHT) + src.pop() + 17;
-        store_value(C_SPACE, n);
-      } break;
-      case SAS_RLE_COMMAND_INSERT_ZERO17: {
-        const size_t n = (end_of_first_byte << EIGHT) + src.pop() + 17;
-        store_value(C_NULL, n);
-      } break;
-      case SAS_RLE_COMMAND_COPY1: {
-        store_values(end_of_first_byte + 1);
-      } break;
-      case SAS_RLE_COMMAND_COPY17: {
-        store_values(end_of_first_byte + 17);
-      } break;
-      case SAS_RLE_COMMAND_COPY33: {
-        store_values(end_of_first_byte + 33);
-      } break;
-      case SAS_RLE_COMMAND_COPY49: {
-        store_values(end_of_first_byte + 49);
-      } break;
-      case SAS_RLE_COMMAND_INSERT_BYTE3: {
-        store_value(src.pop(), end_of_first_byte + 3);
-      } break;
-      case SAS_RLE_COMMAND_INSERT_AT2: {
-        store_value(C_AT, end_of_first_byte + 2);
-      } break;
-      case SAS_RLE_COMMAND_INSERT_BLANK2: {
-        store_value(C_SPACE, end_of_first_byte + 2);
-      } break;
-      case SAS_RLE_COMMAND_INSERT_ZERO2: {
-        store_value(C_NULL, end_of_first_byte + 2);
-      } break;
-      default: {
-        spdlog::critical("Invalid command: {:#X} at offset {}\n", command,
-                         (src.i_src - 1));
-        EXCEPTION::cannot_decompress();
-      }
+        case SAS_RLE_COMMAND_COPY64: {
+          if (!src.has_bytes(1)) goto done;
+          size_t count = (static_cast<size_t>(end_of_first_byte) << 8) + src.pop() + 64;
+          copy_bytes(src, count);
+          break;
+        }
+        case SAS_RLE_COMMAND_INSERT_BYTE18: {
+          if (!src.has_bytes(2)) goto done;
+          size_t count = (static_cast<size_t>(end_of_first_byte) << 4) + src.pop() + 18;
+          uint8_t byte_to_insert = src.pop();
+          store_value(byte_to_insert, count);
+          break;
+        }
+        case SAS_RLE_COMMAND_INSERT_AT17: {
+          if (!src.has_bytes(1)) goto done;
+          size_t count = (static_cast<size_t>(end_of_first_byte) << 8) + src.pop() + 17;
+          store_value(C_AT, count);
+          break;
+        }
+        case SAS_RLE_COMMAND_INSERT_BLANK17: {
+          if (!src.has_bytes(1)) goto done;
+          size_t count = (static_cast<size_t>(end_of_first_byte) << 8) + src.pop() + 17;
+          store_value(C_SPACE, count);
+          break;
+        }
+        case SAS_RLE_COMMAND_INSERT_ZERO17: {
+          if (!src.has_bytes(1)) goto done;
+          size_t count = (static_cast<size_t>(end_of_first_byte) << 8) + src.pop() + 17;
+          store_value(C_NULL, count);
+          break;
+        }
+        case SAS_RLE_COMMAND_COPY1: {
+          size_t count = end_of_first_byte + 1;
+          copy_bytes(src, count);
+          break;
+        }
+        case SAS_RLE_COMMAND_COPY17: {
+          size_t count = end_of_first_byte + 17;
+          copy_bytes(src, count);
+          break;
+        }
+        case SAS_RLE_COMMAND_COPY33: {
+          size_t count = end_of_first_byte + 33;
+          copy_bytes(src, count);
+          break;
+        }
+        case SAS_RLE_COMMAND_COPY49: {
+          size_t count = end_of_first_byte + 49;
+          copy_bytes(src, count);
+          break;
+        }
+        case SAS_RLE_COMMAND_INSERT_BYTE3: {
+          if (!src.has_bytes(1)) goto done;
+          uint8_t byte_to_insert = src.pop();
+          size_t count = end_of_first_byte + 3;
+          store_value(byte_to_insert, count);
+          break;
+        }
+        case SAS_RLE_COMMAND_INSERT_AT2: {
+          size_t count = end_of_first_byte + 2;
+          store_value(C_AT, count);
+          break;
+        }
+        case SAS_RLE_COMMAND_INSERT_BLANK2: {
+          size_t count = end_of_first_byte + 2;
+          store_value(C_SPACE, count);
+          break;
+        }
+        case SAS_RLE_COMMAND_INSERT_ZERO2: {
+          size_t count = end_of_first_byte + 2;
+          store_value(C_NULL, count);
+          break;
+        }
+        default: {
+          spdlog::critical("RLE: Invalid command 0x{:X} at src offset {}", command, src.i_src - 1);
+          EXCEPTION::cannot_decompress();
+          break;
+        }
       }
     }
+
+done:
     fill();
     return buf.as_bytes();
   }
