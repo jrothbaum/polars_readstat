@@ -33,8 +33,8 @@ def scan_readstat(path:str,
         batch_size: int | None=1_000_000,
     ) -> Iterator[pl.DataFrame]:
         if path.endswith(".sas7bdat") and engine == "cpp":
-            if with_columns is not None: 
-                print(with_columns)
+            # if with_columns is not None: 
+            #     print(with_columns)
             src = read_cppsas_py(path,
                                  batch_size, 
                                  n_rows, 
