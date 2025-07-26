@@ -1,7 +1,7 @@
 /**
  * \file include/cppsas7bdat/sink/arrow.hpp
  *
- * \brief Apache Arrow datasink for streaming chunked output
+ * \brief Apache Arrow datasink for streaming chunked output with character encoding support
  *
  * \author Modified for streaming based on cppsas7bdat CSV sink
  */
@@ -16,13 +16,143 @@
 #include <arrow/type.h>
 #include <arrow/status.h>
 #include <arrow/c/bridge.h>  // For C Data Interface
+#include <iconv.h>
+#include <errno.h>
 #include <memory>
 #include <vector>
 #include <string>
+#include <cstring>
+
+// Include the cppsas7bdat encoding detection
+namespace cppsas7bdat {
+namespace INTERNAL {
+std::string_view get_encoding(const uint8_t _e) noexcept;
+} // namespace INTERNAL
+} // namespace cppsas7bdat
 
 namespace cppsas7bdat {
 namespace datasink {
 namespace detail {
+// Character conversion utility class
+class charset_converter {
+private:
+    iconv_t converter_;
+    bool is_valid_;
+    std::string from_encoding_;
+    std::string to_encoding_;
+    
+public:
+    charset_converter(const std::string& from_encoding = "", const std::string& to_encoding = "UTF-8") 
+        : converter_(reinterpret_cast<iconv_t>(-1)), is_valid_(false), from_encoding_(from_encoding), to_encoding_(to_encoding) {
+        
+        if (!from_encoding.empty() && from_encoding != to_encoding) {
+            converter_ = iconv_open(to_encoding.c_str(), from_encoding.c_str());
+            if (converter_ != reinterpret_cast<iconv_t>(-1)) {
+                is_valid_ = true;
+            }
+        }
+    }
+    
+    ~charset_converter() {
+        if (is_valid_ && converter_ != reinterpret_cast<iconv_t>(-1)) {
+            iconv_close(converter_);
+        }
+    }
+    
+    // Non-copyable
+    charset_converter(const charset_converter&) = delete;
+    charset_converter& operator=(const charset_converter&) = delete;
+    
+    // Movable
+    charset_converter(charset_converter&& other) noexcept 
+        : converter_(other.converter_), is_valid_(other.is_valid_),
+          from_encoding_(std::move(other.from_encoding_)), to_encoding_(std::move(other.to_encoding_)) {
+        other.converter_ = reinterpret_cast<iconv_t>(-1);
+        other.is_valid_ = false;
+    }
+    
+    charset_converter& operator=(charset_converter&& other) noexcept {
+        if (this != &other) {
+            if (is_valid_ && converter_ != reinterpret_cast<iconv_t>(-1)) {
+                iconv_close(converter_);
+            }
+            converter_ = other.converter_;
+            is_valid_ = other.is_valid_;
+            from_encoding_ = std::move(other.from_encoding_);
+            to_encoding_ = std::move(other.to_encoding_);
+            other.converter_ = reinterpret_cast<iconv_t>(-1);
+            other.is_valid_ = false;
+        }
+        return *this;
+    }
+    
+    enum convert_result {
+        CONVERT_OK = 0,
+        CONVERT_LONG_STRING,
+        CONVERT_BAD_STRING,
+        CONVERT_ERROR
+    };
+    
+    convert_result convert_string(std::string& dst, const char* src, size_t src_len) {
+        if (!is_valid_ || !src || src_len == 0) {
+            // No conversion needed or no converter available
+            dst.assign(src, src_len);
+            return CONVERT_OK;
+        }
+        
+        // Strip trailing spaces and nulls (like readstat does)
+        while (src_len && (src[src_len-1] == ' ' || src[src_len-1] == '\0')) {
+            src_len--;
+        }
+        
+        if (src_len == 0) {
+            dst.clear();
+            return CONVERT_OK;
+        }
+        
+        // Estimate output buffer size (UTF-8 can be up to 4 bytes per character)
+        size_t dst_len = src_len * 4 + 1;
+        dst.resize(dst_len);
+        
+        char* dst_ptr = &dst[0];
+        size_t dst_left = dst_len - 1;
+        const char* src_ptr = src;
+        size_t src_left = src_len;
+        
+        // Reset converter state
+        iconv(converter_, nullptr, nullptr, nullptr, nullptr);
+        
+        size_t status = iconv(converter_, const_cast<char**>(&src_ptr), &src_left, &dst_ptr, &dst_left);
+        
+        if (status == static_cast<size_t>(-1)) {
+            if (errno == E2BIG) {
+                return CONVERT_LONG_STRING;
+            } else if (errno == EILSEQ) {
+                return CONVERT_BAD_STRING;
+            } else if (errno != EINVAL) { // EINVAL indicates improper truncation; accept it
+                return CONVERT_ERROR;
+            }
+        }
+        
+        // Resize string to actual converted length
+        size_t converted_len = dst_len - dst_left - 1;
+        dst.resize(converted_len);
+        
+        return CONVERT_OK;
+    }
+    
+    bool needs_conversion() const {
+        return is_valid_;
+    }
+    
+    const std::string& get_source_encoding() const {
+        return from_encoding_;
+    }
+    
+    const std::string& get_target_encoding() const {
+        return to_encoding_;
+    }
+};
 
 class arrow_sink {
 private:
@@ -32,6 +162,13 @@ private:
     int64_t chunk_size_;
     int64_t current_row_count_; // Tracks rows in the current, in-progress chunk
     bool builders_need_reset_ = false; 
+    charset_converter converter_;
+    std::string temp_string_; // Reusable buffer for string conversions
+    
+    // Function pointer for string conversion strategy - set once in set_properties()
+    using string_converter_func = std::function<arrow::Status(arrow::StringBuilder*, const std::string&)>;
+    string_converter_func convert_and_append_string_;
+    string_converter_func convert_and_append_unknown_;
     
     // Convert SAS column type to Arrow DataType
     std::shared_ptr<arrow::DataType> sas_to_arrow_type(cppsas7bdat::Column::Type type) {
@@ -114,7 +251,7 @@ private:
             case cppsas7bdat::Column::Type::string: {
                 auto string_builder = static_cast<arrow::StringBuilder*>(builder.get());
                 auto value = column.get_string(p);
-                return string_builder->Append(value);
+                return convert_and_append_string_(string_builder, std::string(value));
             }
             case cppsas7bdat::Column::Type::integer: {
                 auto int_builder = static_cast<arrow::Int64Builder*>(builder.get());
@@ -167,7 +304,7 @@ private:
             default: {
                 auto string_builder = static_cast<arrow::StringBuilder*>(builder.get());
                 auto value = column.to_string(p);
-                return string_builder->Append(value);
+                return convert_and_append_unknown_(string_builder, std::string(value));
             }
         }
         return arrow::Status::OK();
@@ -199,8 +336,12 @@ private:
     }
 
 public:
-    explicit arrow_sink(int64_t chunk_size = 65536) noexcept 
+    explicit arrow_sink(int64_t chunk_size = 65536, const std::string& source_encoding = "") noexcept 
         : chunk_size_(chunk_size), current_row_count_(0), builders_need_reset_(false) {
+        // Only set up converter if explicit encoding is provided
+        if (!source_encoding.empty()) {
+            converter_ = charset_converter(source_encoding, "UTF-8");
+        }
     }
 
     ~arrow_sink() {
@@ -208,6 +349,44 @@ public:
     
     void set_properties(const Properties& _properties) {
         columns = COLUMNS(_properties.columns);
+
+        // Auto-detect encoding from SAS file if not already manually set
+        bool needs_conversion = false;
+        if (!converter_.needs_conversion() && _properties.encoding != "UTF-8") {
+            const std::string& detected_encoding = _properties.encoding;
+            
+            // Only set up conversion if it's not already UTF-8
+            if (!detected_encoding.empty() && detected_encoding != "UTF-8") {
+                // printf("INFO: Auto-detected SAS file encoding: %s\n", 
+                //     detected_encoding.c_str());
+                // fflush(stdout);
+                converter_ = charset_converter(detected_encoding, "UTF-8");
+                needs_conversion = true;
+            }
+        } else if (converter_.needs_conversion()) {
+            needs_conversion = true;
+        }
+
+        // Set up function pointers for fast string conversion
+        if (needs_conversion) {
+            // Use iconv conversion path
+            convert_and_append_string_ = [this](arrow::StringBuilder* builder, const std::string& value) -> arrow::Status {
+                auto result = converter_.convert_string(temp_string_, value.c_str(), value.length());
+                if (result == charset_converter::CONVERT_OK) {
+                    return builder->Append(temp_string_);
+                } else {
+                    // Fallback to original on conversion failure
+                    return builder->Append(value);
+                }
+            };
+            convert_and_append_unknown_ = convert_and_append_string_; // Same logic for unknown types
+        } else {
+            // Direct append path - no conversion needed
+            convert_and_append_string_ = [](arrow::StringBuilder* builder, const std::string& value) -> arrow::Status {
+                return builder->Append(value);
+            };
+            convert_and_append_unknown_ = convert_and_append_string_;
+        }
 
         // Create Arrow schema
         std::vector<std::shared_ptr<arrow::Field>> fields;
@@ -290,14 +469,29 @@ public:
         }
         return arrow::Result<std::shared_ptr<arrow::RecordBatch>>(nullptr);
     }
+    
+    // Set encoding after construction if needed
+    void set_encoding(const std::string& source_encoding) {
+        converter_ = charset_converter(source_encoding, "UTF-8");
+    }
+    
+    // Get the current encoding being used for conversion
+    std::string get_current_encoding() const {
+        return converter_.needs_conversion() ? converter_.get_source_encoding() : "UTF-8";
+    }
+    
+    // Check if encoding conversion is active
+    bool is_converting_encoding() const {
+        return converter_.needs_conversion();
+    }
 };
 
 } // namespace detail
 
-// The arrow_factory now only supports the base arrow_sink.
+// The arrow_factory now supports specifying source encoding
 struct arrow_factory {
-    auto operator()(int64_t chunk_size = 65536) const noexcept {
-        return detail::arrow_sink(chunk_size);
+    auto operator()(int64_t chunk_size = 65536, const std::string& source_encoding = "") const noexcept {
+        return detail::arrow_sink(chunk_size, source_encoding);
     }
 } arrow;
 

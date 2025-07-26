@@ -523,6 +523,7 @@ SasArrowErrorCode sas_arrow_reader_next_batch(
                 //       more_rows_from_sas, reader->current_row_count, reader->end_row);
             }
 
+            
             auto status = arrow::ExportRecordBatch(*batch, array_out);
             if (!status.ok()) {
                 set_error("Failed to export RecordBatch: " + status.ToString());
