@@ -393,6 +393,12 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
         println!("cargo:rustc-link-lib=c++");
         println!("cargo:rustc-link-lib=System");
     }
+
+    if cfg!(target_os = "windows") {
+        // Link iconv functions that will be provided by iconv-sys
+        println!("cargo:rustc-link-lib=iconv");
+        println!("cargo:warning=Linking iconv for Windows");
+    }
 }
 
 fn link_boost_libraries(boost_lib_dir: &PathBuf) {
