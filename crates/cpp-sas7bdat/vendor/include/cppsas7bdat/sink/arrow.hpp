@@ -20,9 +20,14 @@
 // On Windows, declare iconv functions as external (they'll be provided by iconv-sys via Rust)
 extern "C" {
     typedef void* iconv_t;
-    iconv_t iconv_open(const char* tocode, const char* fromcode);
-    size_t iconv(iconv_t cd, char** inbuf, size_t* inbytesleft, char** outbuf, size_t* outbytesleft);
-    int iconv_close(iconv_t cd);
+    iconv_t libiconv_open(const char* tocode, const char* fromcode);
+    size_t libiconv(iconv_t cd, char** inbuf, size_t* inbytesleft, char** outbuf, size_t* outbytesleft);
+    int libiconv_close(iconv_t cd);
+    
+    // Create aliases for the standard names
+    #define iconv_open libiconv_open
+    #define iconv libiconv
+    #define iconv_close libiconv_close
 }
 #define HAVE_ICONV 1
 #else
