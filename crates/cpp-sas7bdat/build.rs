@@ -148,6 +148,8 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
     // Dependencies directory from Conan (where Makefile puts them)
     let deps_dir = manifest_dir.join("vendor/build/dependencies/direct_deploy");
     
+
+    
     // Add search paths for all dependency libraries
     let arrow_lib_dir = deps_dir.join("arrow/lib");
     let boost_lib_dir = deps_dir.join("boost/lib");
@@ -161,6 +163,21 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
     println!("cargo:warning=Spdlog lib dir exists: {}", spdlog_lib_dir.exists());
     println!("cargo:warning=Fmt lib dir exists: {}", fmt_lib_dir.exists());
     
+    // On Windows, find and add the path for the shared iconv library
+    if cfg!(target_os = "windows") {
+        if let Ok(iconv_dir) = env::var("DEP_ICONV_ROOT") {
+            let iconv_lib_path = PathBuf::from(iconv_dir).join("lib");
+            if iconv_lib_path.exists() {
+                println!("cargo:rustc-link-search=native={}", iconv_lib_path.display());
+                println!("cargo:warning=✅ Found and added iconv-sys library path: {}", iconv_lib_path.display());
+            } else {
+                println!("cargo:warning=❌ iconv-sys lib path does not exist: {}", iconv_lib_path.display());
+            }
+        } else {
+            println!("cargo:warning=❌ DEP_ICONV_ROOT env var not set. Ensure iconv-sys is a build-dependency. Link will likely fail.");
+        }
+    }
+
     // Debug: Check if main library exists in the selected directory
     let main_lib_path = if cfg!(target_os = "windows") {
         lib_dir.join("cppsas7bdat.lib")
@@ -360,6 +377,10 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
         "libcppsas7bdat", 
         "cppsas7bdat_static"
     ];
+
+    if cfg!(target_os = "windows") {
+        println!("cargo:rustc-link-lib=iconv");
+    }
     
     let mut found_main_lib = false;
     for lib_name in &possible_main_libs {
@@ -394,11 +415,7 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
         println!("cargo:rustc-link-lib=System");
     }
 
-    if cfg!(target_os = "windows") {
-        // Link iconv functions that will be provided by iconv-sys
-        println!("cargo:rustc-link-lib=iconv");
-        println!("cargo:warning=Linking iconv for Windows");
-    }
+    
 }
 
 fn link_boost_libraries(boost_lib_dir: &PathBuf) {

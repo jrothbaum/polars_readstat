@@ -18,7 +18,7 @@ cc = "1.2.27"
 bindgen = "0.72.0"
 num_cpus = "1.0"
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(windows)'.build-dependencies]
 iconv-sys = { path = "../iconv-sys", version = "0.2.0" }
 
 [dev-dependencies]
