@@ -11,6 +11,11 @@ authors = [{name = "Jon Rothbaum", email = "jlrothbaum@gmail.com"}]
 requires-python = ">=3.9"
 license = {text = "MIT"}
 
+[project.urls]
+Homepage = "https://github.com/jrothbaum/polars_readstat"
+Repository = "https://github.com/jrothbaum/polars_readstat"
+"Bug Tracker" = "https://github.com/jrothbaum/polars_readstat/issues"
+
 classifiers = [
   "Programming Language :: Rust",
   "Programming Language :: Python :: Implementation :: CPython",
