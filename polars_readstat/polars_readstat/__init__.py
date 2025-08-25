@@ -5,8 +5,21 @@ import polars as pl
 from polars_readstat.polars_readstat_rs import (read_readstat,
                                                 read_cppsas_py)
 
+
+
+@pl.api.register_dataframe_namespace("readstat")
+@pl.api.register_lazyframe_namespace("readstat")
+class polars_readstat:
+    def __init__(self, df: pl.DataFrame | pl.LazyFrame) -> None:
+        self._df = df
+        self.engine = ""
+        self.column_info = {}
+        self.file_info = {}
+
+    
+
 def scan_readstat(path:str,
-                  engine:str="cpp") -> pl.LazyFrame:
+                  engine:str="readstat") -> pl.LazyFrame:
     if path.endswith(".sas7bdat") and engine not in ["cpp","readstat"]:
         engine = "cpp"
         print(f"{engine} is not a valid reader for sas7bdat files.  Defaulting to cpp.",
@@ -22,15 +35,15 @@ def scan_readstat(path:str,
         else:
             src = read_readstat(path,
                                 0, 
-                                0,
-                                1)
+                                0)
             return src.schema()
-    
+
+    src = None    
     def source_generator(
         with_columns: list[str] | None,
         predicate: pl.Expr | None,
         n_rows: int | None,
-        batch_size: int | None=1_000_000,
+        batch_size: int | None=100_000,
     ) -> Iterator[pl.DataFrame]:
         if path.endswith(".sas7bdat") and engine == "cpp":
             # if with_columns is not None: 
@@ -50,8 +63,7 @@ def scan_readstat(path:str,
         else:
             src = read_readstat(path,
                                 batch_size,
-                                n_rows,
-                                threads=pl.thread_pool_size())
+                                n_rows)
             
             schema = src.schema()
 
@@ -62,7 +74,12 @@ def scan_readstat(path:str,
                 yield out
 
 
+    out = register_io_source(io_source=source_generator, schema=schema())
 
-    return register_io_source(io_source=source_generator, schema=schema())
-
+    # out.readstat.engine = engine
+    # if engine == "readstat":
+    #     out.readstat.column_info = src.get_column_info()
+    #     out.readstat.file_info = src.get_file_info()
+        
+    return out
 

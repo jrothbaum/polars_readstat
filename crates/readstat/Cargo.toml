@@ -1,16 +1,17 @@
 [package]
 name = "readstat"
 version = "0.13.0"
-authors = ["Curtis Alexander <calex@calex.org>"]
+authors = ["Jonathan Rothbaum <jon.rothbaum@gmail.com",
+           "Based on readstat by Curtis Alexander <calex@calex.org>"]
 edition = "2021"
 description = "Rust wrapper of the ReadStat C library, modified to use polars arrow by Jon Rothbaum"
 license = "MIT"
 repository = "https://github.com/jrothbaum/polars_readstat"
 
 [dependencies]
-polars = { version = "0.48.1", default-features = false }
+polars = { version = "0.48.1", default-features = false, features=["dtype-date","dtype-datetime","dtype-duration"] }
 chrono = { version = "0.4", features = ["serde"] }
-colored = "2.0"
+colored = "3.0.0"
 lexical = "7.0"
 log = "0.4"
 num-derive = "0.4"

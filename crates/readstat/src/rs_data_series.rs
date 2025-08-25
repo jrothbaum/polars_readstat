@@ -2,7 +2,7 @@ use polars::prelude::{
     datatypes::DataType, DataFrame, PolarsResult, Schema, Series
 };
 use log::debug;
-use num_traits::{FromPrimitive, Saturating};
+use num_traits::FromPrimitive;
 use std::{
     collections::BTreeMap,
     error::Error,
@@ -38,26 +38,12 @@ impl Default for Extensions {
     }
 }
 
-
-pub enum TypedColumn {
-    StringColumn(Vec<Option<String>>),
-    // I8Column(Vec<Option<i8>>),
-    // I16Column(Vec<Option<i16>>),
-    I32Column(Vec<Option<i32>>),
-    I64Column(Vec<Option<i64>>),
-    F32Column(Vec<Option<f32>>),
-    F64Column(Vec<Option<f64>>),
-    DateColumn(Vec<Option<i32>>),
-    TimeColumn(Vec<Option<i64>>),
-    DateTimeColumn(Vec<Option<i64>>),
-}
-
 #[derive(Default)]
 pub struct ReadStatData {
     pub var_count: i32,
     pub vars: BTreeMap<i32, ReadStatVarMetadata>,
     // data
-    pub cols: Vec<TypedColumn>,
+    pub cols: Vec<SeriesBuilder>,
     pub schema: Schema,
     pub extension: Extensions,
     // chunk
@@ -138,45 +124,15 @@ impl ReadStatData {
         );
 
         let mut cols = Vec::with_capacity(column_count);
-        for (_, dt) in sub_schema.iter() {
-            // Create appropriate typed column
-            let column = match &dt {
-                DataType::String => {
-                    TypedColumn::StringColumn(Vec::with_capacity(n_row_builder))
-                },
-                DataType::Float64 => {
-                    TypedColumn::F64Column(Vec::with_capacity(n_row_builder))
-                },
-                DataType::Float32 => {
-                    TypedColumn::F32Column(Vec::with_capacity(n_row_builder))
-                },
-                // DataType::Int8 => {
-                //     TypedColumn::I8Column(Vec::with_capacity(n_row_builder))
-                // },
-                // DataType::Int16 => {
-                //     TypedColumn::I16Column(Vec::with_capacity(n_row_builder))
-                // },
-                DataType::Int32 => {
-                    TypedColumn::I32Column(Vec::with_capacity(n_row_builder))
-                },
-                DataType::Int64 => {
-                    TypedColumn::I64Column(Vec::with_capacity(n_row_builder))
-                },
-                DataType::Date => {
-                    TypedColumn::DateColumn(Vec::with_capacity(n_row_builder))
-                },
-                DataType::Time => {
-                    TypedColumn::TimeColumn(Vec::with_capacity(n_row_builder))
-                },
-                DataType::Datetime(_, _) => {
-                    TypedColumn::DateTimeColumn(Vec::with_capacity(n_row_builder))
-                },
-                // Default case
-                _ => TypedColumn::StringColumn(Vec::with_capacity(n_row_builder))
-            };
-
-            cols.push(column);
+        for (name, dtype) in sub_schema.iter() {
+            let builder = SeriesBuilder::new_with_nulls(
+                name.clone(),
+                dtype,
+                n_row_builder // Pre-allocate with nulls (your preference)
+            );
+            cols.push(builder);
         }
+
         self.cols = cols;
     }
 
@@ -190,90 +146,17 @@ impl ReadStatData {
         );
 
 
-        let series_vec: Vec<Series> = self
+        let series_vec: Result<Vec<Series>, _> = self
             .cols
-            .iter_mut()
-            .zip(sub_schema.iter())
-            .map(|(col, (name, _field))| {
-            // Create Series directly from the typed column
-            match col {
-                TypedColumn::StringColumn(vec) => {
-                    // Use mem::take to avoid cloning when possible
-                    let values = std::mem::take(vec);
-                    Series::new(name.clone(), values)
-                },
-                TypedColumn::I64Column(vec) => {
-                    let values = std::mem::take(vec);
-                    Series::new(name.clone(), values)
-                },
-                TypedColumn::I32Column(vec) => {
-                    let values = std::mem::take(vec);
-                    Series::new(name.clone(), values)
-                },
-                // TypedColumn::I16Column(vec) => {
-                //     let values = std::mem::take(vec);
-                //     Series::new(name.clone(), values)
-                // },
-                // TypedColumn::I8Column(vec) => {
-                //     let values = std::mem::take(vec);
-                //     Series::new(name.clone(), values)
-                // },
-                TypedColumn::F64Column(vec) => {
-                    let values = std::mem::take(vec);
-                    Series::new(name.clone(), values)
-                },
-                TypedColumn::F32Column(vec) => {
-                    let values = std::mem::take(vec);
-                    Series::new(name.clone(), values)
-                },
-                TypedColumn::DateColumn(vec) => {
-                    let values = std::mem::take(vec);
-                    //  let series = Series::new(name.clone(), values);
-
-                    Int32Chunked::new(name.clone(), values).into_date().into_series()
-                },
-                TypedColumn::TimeColumn(vec) => {
-                    let values = std::mem::take(vec);
-
-                    Int64Chunked::new(name.clone(), values).into_time().into_series()
-                    // let series = Series::new(name.clone(), values);
-                    // cast_series(series, &DataType::Time).unwrap()
-                },
-                TypedColumn::DateTimeColumn(vec) => {
-                    let values = std::mem::take(vec);
-                    Int64Chunked::new(name.clone(), values).into_datetime(TimeUnit::Milliseconds, None).into_series()
-                    // let series = Series::new(name.clone(), values);
-                    // cast_series(series, &DataType::Datetime(TimeUnit::Milliseconds, None)).unwrap()
-                },
-                // TypedColumn::DateTimeWithMillisecondsColumn(vec) => {
-                //     let values = std::mem::take(vec);
-                //     let series = Series::new(name.clone(), values);
-                //     cast_series(series, &DataType::Datetime(TimeUnit::Milliseconds, None)).unwrap()
-                // },
-                // TypedColumn::DateTimeWithMicrosecondsColumn(vec) => {
-                //     let values = std::mem::take(vec);
-                //     let series = Series::new(name, values);
-                //     cast_series(series, &DataType::Datetime(TimeUnit::Microseconds, None)).unwrap()
-                // },
-                // TypedColumn::DateTimeWithNanosecondsColumn(vec) => {
-                //     let values = std::mem::take(vec);
-                //     let series = Series::new(name, values);
-                //     cast_series(series, &DataType::Datetime(TimeUnit::Nanoseconds, None)).unwrap()
-                // },
-                // TypedColumn::TimeWithMillisecondsColumn(vec) => {
-                //     let values = std::mem::take(vec);
-                //     let series = Series::new(name, values);
-                //     cast_series(series, &DataType::Time).unwrap()
-                // },
-                // Add any other types your code might use
-            }
-        })
-        .collect();
-
+            .drain(..) // Take ownership and clear the vec
+            .map(|builder| builder.into_series())
+            .collect();
 
 
         // Create a DataFrame from the Series collection
-        let df = DataFrame::from_iter(series_vec);
+        let series_vec = series_vec?;
+        let df = DataFrame::from_iter(series_vec.into_iter());
+
         
         self.df = Some(df);
         
@@ -442,7 +325,7 @@ impl ReadStatData {
     fn set_row_info(mut self, row_start: u32, row_end: u32) -> Self {
         self.row_start = row_start as usize;
         self.row_end = row_end as usize;
-        self.rows_to_process = (row_end.saturating_sub(row_start)) as usize;
+        self.rows_to_process = (row_end.saturating_sub(row_start) + 1) as usize;
         
         self
     }
@@ -459,8 +342,8 @@ impl ReadStatData {
     // Method called when a row is complete (from your handle_value callback)
     pub fn on_row_complete(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.chunk_rows_processed += 1;
+        
         self.total_rows_processed += 1;
-
         
         // Check if we should emit a chunk
         if self.chunk_rows_processed >= self.chunk_size {
@@ -480,6 +363,7 @@ impl ReadStatData {
             // Convert current builders to DataFrame
             self.cols_to_df()?;
             
+            println!("Rows processed: {}",self.chunk_rows_processed);
             if let Some(df) = self.df.take() {
                 self.chunk_buffer.lock().unwrap().push(df);
 
@@ -502,6 +386,3 @@ impl ReadStatData {
 
 }
 
-fn cast_series(series: Series, dtype: &DataType) -> PolarsResult<Series> {
-    series.cast(dtype)
-}

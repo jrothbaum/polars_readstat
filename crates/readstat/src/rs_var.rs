@@ -42,6 +42,7 @@ impl ReadStatVar {
     pub fn get_value_string(
         value: readstat_sys::readstat_value_t
     ) -> String {
+        //  unsafe { println!("{:?}",ptr_to_string(readstat_sys::readstat_string_value(value)))}
         unsafe { ptr_to_string(readstat_sys::readstat_string_value(value))}
     }
 

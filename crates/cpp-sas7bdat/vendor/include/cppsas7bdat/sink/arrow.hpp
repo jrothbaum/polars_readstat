@@ -16,6 +16,7 @@
 #include <arrow/type.h>
 #include <arrow/status.h>
 #include <arrow/c/bridge.h>  // For C Data Interface
+#include <arrow/util/utf8.h>  // Arrow UTF-8 utilities
 #ifdef _WIN32
 // On Windows, declare iconv functions as external (they'll be provided by iconv-sys via Rust)
 extern "C" {
@@ -49,7 +50,8 @@ std::string_view get_encoding(const uint8_t _e) noexcept;
 namespace cppsas7bdat {
 namespace datasink {
 namespace detail {
-// Character conversion utility class
+
+// Optimized character conversion utility class with buffer reuse
 class charset_converter {
 private:
     iconv_t converter_;
@@ -57,14 +59,20 @@ private:
     std::string from_encoding_;
     std::string to_encoding_;
     
+    // Pre-allocated buffer for conversions - reused across calls
+    mutable std::string conversion_buffer_;
+    
 public:
     charset_converter(const std::string& from_encoding = "", const std::string& to_encoding = "UTF-8") 
-        : converter_(reinterpret_cast<iconv_t>(-1)), is_valid_(false), from_encoding_(from_encoding), to_encoding_(to_encoding) {
+        : converter_(reinterpret_cast<iconv_t>(-1)), is_valid_(false), 
+          from_encoding_(from_encoding), to_encoding_(to_encoding) {
         
         if (!from_encoding.empty() && from_encoding != to_encoding) {
             converter_ = iconv_open(to_encoding.c_str(), from_encoding.c_str());
             if (converter_ != reinterpret_cast<iconv_t>(-1)) {
                 is_valid_ = true;
+                // Pre-allocate conversion buffer to avoid repeated allocations
+                conversion_buffer_.reserve(8192); // 8KB default
             }
         }
     }
@@ -82,7 +90,8 @@ public:
     // Movable
     charset_converter(charset_converter&& other) noexcept 
         : converter_(other.converter_), is_valid_(other.is_valid_),
-          from_encoding_(std::move(other.from_encoding_)), to_encoding_(std::move(other.to_encoding_)) {
+          from_encoding_(std::move(other.from_encoding_)), to_encoding_(std::move(other.to_encoding_)),
+          conversion_buffer_(std::move(other.conversion_buffer_)) {
         other.converter_ = reinterpret_cast<iconv_t>(-1);
         other.is_valid_ = false;
     }
@@ -96,6 +105,7 @@ public:
             is_valid_ = other.is_valid_;
             from_encoding_ = std::move(other.from_encoding_);
             to_encoding_ = std::move(other.to_encoding_);
+            conversion_buffer_ = std::move(other.conversion_buffer_);
             other.converter_ = reinterpret_cast<iconv_t>(-1);
             other.is_valid_ = false;
         }
@@ -109,14 +119,65 @@ public:
         CONVERT_ERROR
     };
     
-    convert_result convert_string(std::string& dst, const char* src, size_t src_len) {
+    // Optimized batch conversion for Arrow string arrays
+    arrow::Result<std::shared_ptr<arrow::Array>> convert_string_array_batch(
+        const std::shared_ptr<arrow::Array>& input_array) const {
+        
+        if (!is_valid_) {
+            return input_array; // No conversion needed
+        }
+        
+        auto string_array = std::static_pointer_cast<arrow::StringArray>(input_array);
+        auto pool = arrow::default_memory_pool();
+        arrow::StringBuilder builder(pool);
+        
+        // Pre-allocate based on input size with padding for encoding expansion
+        ARROW_RETURN_NOT_OK(builder.Reserve(string_array->length()));
+        
+        // Estimate total data size (UTF-8 can be up to 4x larger than source)
+        int64_t estimated_data_size = 0;
+        for (int64_t i = 0; i < string_array->length(); ++i) {
+            if (!string_array->IsNull(i)) {
+                estimated_data_size += string_array->value_length(i) * 4; // 4x expansion estimate
+            }
+        }
+        ARROW_RETURN_NOT_OK(builder.ReserveData(estimated_data_size));
+        
+        // Reset converter state once at the beginning of the batch
+        iconv(converter_, nullptr, nullptr, nullptr, nullptr);
+        
+        // Process all strings in the batch
+        for (int64_t i = 0; i < string_array->length(); ++i) {
+            if (string_array->IsNull(i)) {
+                ARROW_RETURN_NOT_OK(builder.AppendNull());
+                continue;
+            }
+            
+            auto value = string_array->GetString(i);
+            std::string converted;
+            auto result = convert_string_optimized(converted, value.data(), value.length());
+            
+            if (result == CONVERT_OK) {
+                ARROW_RETURN_NOT_OK(builder.Append(converted));
+            } else {
+                // Fallback to original on conversion failure
+                ARROW_RETURN_NOT_OK(builder.Append(value));
+            }
+        }
+        
+        std::shared_ptr<arrow::Array> converted_array;
+        ARROW_RETURN_NOT_OK(builder.Finish(&converted_array));
+        return converted_array;
+    }
+    
+private:
+    convert_result convert_string_optimized(std::string& dst, const char* src, size_t src_len) const {
         if (!is_valid_ || !src || src_len == 0) {
-            // No conversion needed or no converter available
             dst.assign(src, src_len);
             return CONVERT_OK;
         }
         
-        // Strip trailing spaces and nulls (like readstat does)
+        // Strip trailing spaces and nulls efficiently
         while (src_len && (src[src_len-1] == ' ' || src[src_len-1] == '\0')) {
             src_len--;
         }
@@ -126,16 +187,54 @@ public:
             return CONVERT_OK;
         }
         
-        // Estimate output buffer size (UTF-8 can be up to 4 bytes per character)
-        size_t dst_len = src_len * 4 + 1;
-        dst.resize(dst_len);
+        // Use pre-allocated buffer, resize if needed
+        size_t estimated_size = src_len * 4 + 1; // UTF-8 expansion estimate
+        if (conversion_buffer_.capacity() < estimated_size) {
+            conversion_buffer_.reserve(estimated_size * 2); // Extra headroom
+        }
+        conversion_buffer_.resize(estimated_size);
         
-        char* dst_ptr = &dst[0];
-        size_t dst_left = dst_len - 1;
+        char* dst_ptr = &conversion_buffer_[0];
+        size_t dst_left = estimated_size - 1;
         const char* src_ptr = src;
         size_t src_left = src_len;
         
-        // Reset converter state
+        // Don't reset converter state for each string - batch processing handles this
+        size_t status = iconv(converter_, const_cast<char**>(&src_ptr), &src_left, &dst_ptr, &dst_left);
+        
+        if (status == static_cast<size_t>(-1)) {
+            if (errno == E2BIG) {
+                // Buffer too small - retry with larger buffer
+                size_t larger_size = estimated_size * 2;
+                conversion_buffer_.resize(larger_size);
+                return convert_string_retry(dst, src, src_len, larger_size);
+            } else if (errno == EILSEQ) {
+                return CONVERT_BAD_STRING;
+            } else if (errno != EINVAL) { // EINVAL indicates improper truncation; accept it
+                return CONVERT_ERROR;
+            }
+        }
+        
+        // Efficient assignment using move semantics
+        size_t converted_len = estimated_size - dst_left - 1;
+        conversion_buffer_.resize(converted_len);
+        dst = std::move(conversion_buffer_);
+        
+        // Prepare buffer for next use
+        conversion_buffer_.clear();
+        
+        return CONVERT_OK;
+    }
+    
+    convert_result convert_string_retry(std::string& dst, const char* src, size_t src_len, size_t buffer_size) const {
+        conversion_buffer_.resize(buffer_size);
+        
+        char* dst_ptr = &conversion_buffer_[0];
+        size_t dst_left = buffer_size - 1;
+        const char* src_ptr = src;
+        size_t src_left = src_len;
+        
+        // Reset state for retry
         iconv(converter_, nullptr, nullptr, nullptr, nullptr);
         
         size_t status = iconv(converter_, const_cast<char**>(&src_ptr), &src_left, &dst_ptr, &dst_left);
@@ -145,16 +244,23 @@ public:
                 return CONVERT_LONG_STRING;
             } else if (errno == EILSEQ) {
                 return CONVERT_BAD_STRING;
-            } else if (errno != EINVAL) { // EINVAL indicates improper truncation; accept it
+            } else if (errno != EINVAL) {
                 return CONVERT_ERROR;
             }
         }
         
-        // Resize string to actual converted length
-        size_t converted_len = dst_len - dst_left - 1;
-        dst.resize(converted_len);
+        size_t converted_len = buffer_size - dst_left - 1;
+        conversion_buffer_.resize(converted_len);
+        dst = std::move(conversion_buffer_);
+        conversion_buffer_.clear();
         
         return CONVERT_OK;
+    }
+    
+public:
+    // For compatibility with existing code (single string conversion)
+    convert_result convert_string(std::string& dst, const char* src, size_t src_len) const {
+        return convert_string_optimized(dst, src, src_len);
     }
     
     bool needs_conversion() const {
@@ -179,12 +285,7 @@ private:
     int64_t current_row_count_; // Tracks rows in the current, in-progress chunk
     bool builders_need_reset_ = false; 
     charset_converter converter_;
-    std::string temp_string_; // Reusable buffer for string conversions
-    
-    // Function pointer for string conversion strategy - set once in set_properties()
-    using string_converter_func = std::function<arrow::Status(arrow::StringBuilder*, const std::string&)>;
-    string_converter_func convert_and_append_string_;
-    string_converter_func convert_and_append_unknown_;
+    std::vector<size_t> string_column_indices_; // Track which columns are strings
     
     // Convert SAS column type to Arrow DataType
     std::shared_ptr<arrow::DataType> sas_to_arrow_type(cppsas7bdat::Column::Type type) {
@@ -258,7 +359,7 @@ private:
         }
     }
     
-    // Append value to the appropriate builder
+    // Append value to the appropriate builder (no encoding conversion here)
     arrow::Status append_value(size_t col_idx, Column::PBUF p) {
         const auto& column = columns[col_idx];
         auto& builder = builders_[col_idx];
@@ -267,7 +368,8 @@ private:
             case cppsas7bdat::Column::Type::string: {
                 auto string_builder = static_cast<arrow::StringBuilder*>(builder.get());
                 auto value = column.get_string(p);
-                return convert_and_append_string_(string_builder, std::string(value));
+                // Store raw string data - conversion happens at batch finalization
+                return string_builder->Append(std::string(value));
             }
             case cppsas7bdat::Column::Type::integer: {
                 auto int_builder = static_cast<arrow::Int64Builder*>(builder.get());
@@ -320,14 +422,14 @@ private:
             default: {
                 auto string_builder = static_cast<arrow::StringBuilder*>(builder.get());
                 auto value = column.to_string(p);
-                return convert_and_append_unknown_(string_builder, std::string(value));
+                // Store raw string data - conversion happens at batch finalization
+                return string_builder->Append(std::string(value));
             }
         }
         return arrow::Status::OK();
     }
     
-    // Finalize current chunk and create a record batch.
-    // This method now returns the batch directly instead of storing it.
+    // Finalize current chunk and create a record batch with encoding conversion if needed
     arrow::Result<std::shared_ptr<arrow::RecordBatch>> finalize_current_chunk() {
         if (current_row_count_ == 0) {
             return arrow::Result<std::shared_ptr<arrow::RecordBatch>>(nullptr);
@@ -336,10 +438,20 @@ private:
         std::vector<std::shared_ptr<arrow::Array>> arrays;
         arrays.reserve(builders_.size());
 
+        // First, finish all builders to get raw arrays
         for (auto& builder : builders_) {
             std::shared_ptr<arrow::Array> array;
             ARROW_RETURN_NOT_OK(builder->Finish(&array));
             arrays.push_back(array);
+        }
+
+        // Apply encoding conversion to string columns if needed
+        if (converter_.needs_conversion() && !string_column_indices_.empty()) {
+            for (size_t idx : string_column_indices_) {
+                auto converted_result = converter_.convert_string_array_batch(arrays[idx]);
+                ARROW_RETURN_NOT_OK(converted_result.status());
+                arrays[idx] = converted_result.ValueOrDie();
+            }
         }
 
         auto batch = arrow::RecordBatch::Make(schema_, current_row_count_, arrays);
@@ -360,48 +472,28 @@ public:
         }
     }
 
-    ~arrow_sink() {
-    }
+    ~arrow_sink() = default;
     
     void set_properties(const Properties& _properties) {
         columns = COLUMNS(_properties.columns);
 
         // Auto-detect encoding from SAS file if not already manually set
-        bool needs_conversion = false;
         if (!converter_.needs_conversion() && _properties.encoding != "UTF-8") {
             const std::string& detected_encoding = _properties.encoding;
             
             // Only set up conversion if it's not already UTF-8
             if (!detected_encoding.empty() && detected_encoding != "UTF-8") {
-                // printf("INFO: Auto-detected SAS file encoding: %s\n", 
-                //     detected_encoding.c_str());
-                // fflush(stdout);
                 converter_ = charset_converter(detected_encoding, "UTF-8");
-                needs_conversion = true;
             }
-        } else if (converter_.needs_conversion()) {
-            needs_conversion = true;
         }
 
-        // Set up function pointers for fast string conversion
-        if (needs_conversion) {
-            // Use iconv conversion path
-            convert_and_append_string_ = [this](arrow::StringBuilder* builder, const std::string& value) -> arrow::Status {
-                auto result = converter_.convert_string(temp_string_, value.c_str(), value.length());
-                if (result == charset_converter::CONVERT_OK) {
-                    return builder->Append(temp_string_);
-                } else {
-                    // Fallback to original on conversion failure
-                    return builder->Append(value);
-                }
-            };
-            convert_and_append_unknown_ = convert_and_append_string_; // Same logic for unknown types
-        } else {
-            // Direct append path - no conversion needed
-            convert_and_append_string_ = [](arrow::StringBuilder* builder, const std::string& value) -> arrow::Status {
-                return builder->Append(value);
-            };
-            convert_and_append_unknown_ = convert_and_append_string_;
+        // Identify string column indices for batch conversion
+        string_column_indices_.clear();
+        for (size_t i = 0; i < columns.size(); ++i) {
+            if (columns[i].type == cppsas7bdat::Column::Type::string || 
+                columns[i].type == cppsas7bdat::Column::Type::unknown) {
+                string_column_indices_.push_back(i);
+            }
         }
 
         // Create Arrow schema

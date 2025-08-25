@@ -1,0 +1,22 @@
+[package]
+name = "polars-readstat-streaming"
+version = "0.1.0" 
+authors = ["Jonathan Rothbaum <jon.rothbaum@gmail.com"]
+edition = "2021"
+description = "Streaming crate for polars-readstat"
+license = "MIT"
+repository = "https://github.com/jrothbaum/polars_readstat"
+
+[dependencies]
+path_abs = "0.5"
+polars = { version = "0.48.1", default-features = false, features=["dtype-i8","dtype-i16","dtype-date","fmt"] }
+polars-core = "0.48.1"
+readstat = { path = "../readstat" }
+cpp-sas7bdat = { path = "../cpp-sas7bdat" }
+
+rayon = "1.8"
+log = "0.4"
+env_logger = "0.11.8"
+
+[target.'cfg(windows)'.dependencies]
+iconv-sys = { path = "../iconv-sys", version = "0.2.0" }

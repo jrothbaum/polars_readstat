@@ -4,7 +4,7 @@
  *  \brief Decompressors
  *
  *  \author Olivia Quinet
- */
+*/
 
 #ifndef _CPP_SAS7BDAT_SRC_DECOMPRESSORS_HPP_
 #define _CPP_SAS7BDAT_SRC_DECOMPRESSORS_HPP_
@@ -47,13 +47,14 @@ struct SRC_VALUES {
     return values[i_src++]; 
   }
   
-  auto pop(const size_t _n) noexcept {
-    if (i_src + _n > n_src) {
-      return values.substr(i_src, n_src - i_src);
-    }
-    auto v = values.substr(i_src, _n);
-    i_src += _n;
-    return v;
+  // Get pointer to current position for direct access
+  const uint8_t* current_ptr() const noexcept {
+    return values.data() + i_src;
+  }
+
+  // Advance position without copying data
+  void advance(size_t _n) noexcept {
+    i_src = std::min(i_src + _n, n_src);
   }
 
   bool check(const size_t _n) const noexcept { return i_src + _n <= n_src; }
@@ -216,13 +217,18 @@ struct RLE : public DST_VALUES<_endian, _format> {
 
   // ReadStat-style copy function
   void copy_bytes(SRC_VALUES& src, size_t count) {
-    count = std::min(count, src.remaining());
-    if (count == 0) return;
-    
-    assert_check(count);
-    auto data = src.pop(count);
-    buf.copy(i_dst, data);
-    i_dst += count;
+      count = std::min(count, src.remaining());
+      if (count == 0) return;
+      
+      assert_check(count);
+      
+      // Copy bytes one by one using the existing buffer interface
+      for (size_t i = 0; i < count; ++i) {
+          if (!src.has_bytes(1)) break;
+          uint8_t byte_val = src.pop();
+          buf.set(i_dst + i, byte_val, 1);
+      }
+      i_dst += count;
   }
 
   BYTES operator()(const BYTES &_values) {

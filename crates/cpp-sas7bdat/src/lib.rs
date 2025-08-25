@@ -26,6 +26,24 @@ pub struct SasArrowReaderInfo {
     pub num_columns: u32,
     pub chunk_size: u32,
     pub schema_ready: bool,
+
+    // SAS properties
+    pub row_count: u64,
+    pub row_length: u32,
+    pub compression: u8,  // 0=None, 1=RLE, 2=RDC
+    pub page_length: u32,
+    pub page_count: u32,
+    pub header_length: u32,
+    
+    // String pointers for SAS metadata
+    pub dataset_name: *const c_char,
+    pub encoding: *const c_char,
+    pub file_type: *const c_char,
+    pub sas_release: *const c_char,
+    pub sas_server_type: *const c_char,
+    pub os_name: *const c_char,
+    pub creator: *const c_char,
+    pub creator_proc: *const c_char,
 }
 
 // Column info structure matching your C++ header
@@ -33,10 +51,68 @@ pub struct SasArrowReaderInfo {
 #[derive(Debug, Clone, Copy)]
 pub struct SasArrowColumnInfo {
     pub name: *const c_char,
-    pub type_name: *const c_char,
+    pub sas_type: *const c_char,
+    pub index: u32,
+
+    pub format: *const c_char,
+    pub label: *const c_char,
+    pub length: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct PropertiesStrings {
+    pub dataset_name: String,
+    pub encoding: String,
+    pub file_type: String,
+    pub sas_release: String,
+    pub sas_server_type: String,
+    pub os_name: String,
+    pub creator: String,
+    pub creator_proc: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SasFileInfo {
+    pub row_count: u64,
+    pub row_length: u32,
+    pub compression: u8,
+    pub page_length: u32,
+    pub page_count: u32,
+    pub header_length: u32,
+    pub dataset_name: String,
+    pub encoding: String,
+    pub file_type: String,
+    pub sas_release: String,
+    pub sas_server_type: String,
+    pub os_name: String,
+    pub creator: String,
+    pub creator_proc: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SasSchemaInfo {
+    pub polars_schema: Schema,
+    pub columns: Vec<SasColumnInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SasColumnInfo {
+    pub name: String,
+    pub sas_type: String,
+    pub sas_format: String,
+    pub sas_label: String,
+    pub length: u32,
     pub index: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct SasFileMetadata {
+    // File-level properties
+    pub file_info: SasFileInfo,
+    
+    // Schema with column details
+    pub schema: SasSchemaInfo,
+}
 // Arrow FFI structures (compatible with Arrow C Data Interface)
 #[repr(C)]
 pub struct CArrowSchema {
@@ -209,10 +285,28 @@ impl SasReader {
         
         // Get file info
         let mut info = SasArrowReaderInfo {
-            num_columns: 0,
-            chunk_size: 0,
-            schema_ready: false,
-        };
+        num_columns: 0,
+        chunk_size: 0,
+        schema_ready: false,
+        
+        // SAS properties defaults
+        row_count: 0,
+        row_length: 0,
+        compression: 0,
+        page_length: 0,
+        page_count: 0,
+        header_length: 0,
+        
+        // String pointer defaults
+        dataset_name: ptr::null(),
+        encoding: ptr::null(),
+        file_type: ptr::null(),
+        sas_release: ptr::null(),
+        sas_server_type: ptr::null(),
+        os_name: ptr::null(),
+        creator: ptr::null(),
+        creator_proc: ptr::null(),
+    };
         
         let result = unsafe {
             sas_arrow_reader_get_info(reader, &mut info)
@@ -278,11 +372,14 @@ impl SasReader {
     }
 
     /// Get column information
-    pub fn get_column_info(&self, column_index: u32) -> PolarsResult<(String, String)> {
+    pub fn get_column_info(&self, column_index: u32) -> PolarsResult<(String, String, String, String, u32)> {
         let mut column_info = SasArrowColumnInfo {
             name: ptr::null(),
-            type_name: ptr::null(),
+            sas_type: ptr::null(),
             index: 0,
+            format: ptr::null(),
+            label: ptr::null(),
+            length: 0,
         };
         
         let result = unsafe {
@@ -301,17 +398,57 @@ impl SasReader {
             }
         };
         
-        let type_name = unsafe {
-            if column_info.type_name.is_null() {
+        let sas_type = unsafe {
+            if column_info.sas_type.is_null() {
                 String::new()
             } else {
-                CStr::from_ptr(column_info.type_name).to_string_lossy().to_string()
+                CStr::from_ptr(column_info.sas_type).to_string_lossy().to_string()
             }
         };
         
-        Ok((name, type_name))
+        let format = unsafe {
+            if column_info.format.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(column_info.format).to_string_lossy().to_string()
+            }
+        };
+        
+        let label = unsafe {
+            if column_info.label.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(column_info.label).to_string_lossy().to_string()
+            }
+        };
+        
+        Ok((name, sas_type, format, label, column_info.length))
     }
-    
+
+    pub fn get_properties_strings(&self) -> PropertiesStrings {
+        let info = &self.info;
+        unsafe {
+            PropertiesStrings {
+                dataset_name: Self::c_str_to_string(info.dataset_name),
+                encoding: Self::c_str_to_string(info.encoding),
+                file_type: Self::c_str_to_string(info.file_type),
+                sas_release: Self::c_str_to_string(info.sas_release),
+                sas_server_type: Self::c_str_to_string(info.sas_server_type),
+                os_name: Self::c_str_to_string(info.os_name),
+                creator: Self::c_str_to_string(info.creator),
+                creator_proc: Self::c_str_to_string(info.creator_proc),
+            }
+        }
+    }
+
+    unsafe fn c_str_to_string(ptr: *const c_char) -> String {
+        if ptr.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(ptr).to_string_lossy().to_string()
+        }
+    }
+
     /// Read the next batch as a DataFrame
     pub fn read_next_batch(&mut self) -> PolarsResult<DataFrame> {
         self.get_schema()?;
@@ -556,13 +693,74 @@ impl Iterator for SasBatchIterator {
 
 // Convenience functions
 impl SasReader {
+    // Create a reader and get comprehensive metadata including schema and file info
+    pub fn read_sas_metadata(file_path: &str) -> PolarsResult<SasFileMetadata> {
+        let mut reader = Self::new(file_path, Some(1), None)?;
+        
+        // Get the schema first to ensure everything is initialized
+        let polars_schema = reader.get_schema()?.clone();
+        
+        // Get file-level info
+        let info = reader.get_info();
+        let file_strings = reader.get_properties_strings();
+        
+        let file_info = SasFileInfo {
+            row_count: info.row_count,
+            row_length: info.row_length,
+            compression: info.compression,
+            page_length: info.page_length,
+            page_count: info.page_count,
+            header_length: info.header_length,
+            dataset_name: file_strings.dataset_name,
+            encoding: file_strings.encoding,
+            file_type: file_strings.file_type,
+            sas_release: file_strings.sas_release,
+            sas_server_type: file_strings.sas_server_type,
+            os_name: file_strings.os_name,
+            creator: file_strings.creator,
+            creator_proc: file_strings.creator_proc,
+        };
+        
+        // Get detailed column information
+        let mut columns = Vec::with_capacity(info.num_columns as usize);
+        for i in 0..info.num_columns {
+            let (name,
+                sas_type,
+                sas_format, 
+                sas_label,
+                length,
+            ) = reader.get_column_info(i)?;
+            
+            // Get the Polars data type for this colum
+
+            columns.push(SasColumnInfo {
+                name,
+                sas_type,
+                sas_format,
+                sas_label,
+                index: i,
+                length,
+            });
+        }
+        
+        let schema_info = SasSchemaInfo {
+            polars_schema,
+            columns,
+        };
+        
+        Ok(SasFileMetadata {
+            file_info,
+            schema: schema_info,
+        })
+    }
+
     /// Create a reader and get just the schema
     pub fn read_sas_schema(file_path: &str) -> PolarsResult<Schema> {
         let mut reader = Self::new(
             file_path, 
             Some(1),
             None,
-    )?;
+        )?;
         Ok(reader.get_schema()?.clone())
     }
 }

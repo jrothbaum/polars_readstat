@@ -4,10 +4,14 @@ pub use rs_data::ReadStatData;
 pub use rs_metadata::{ReadStatCompress, ReadStatEndian, ReadStatMetadata, ReadStatVarMetadata};
 pub use rs_path::ReadStatPath;
 pub use rs_var::{ReadStatVar, ReadStatVarFormatClass, ReadStatVarType, ReadStatVarTypeClass};
+pub use rs_parser::ReadStatParser;
+pub use stream::ReadStatStreamer;
 
 mod cb;
 mod common;
 mod err;
+mod series_builder;
+mod stream;
 mod formats;
 mod rs_data;
 mod rs_metadata;

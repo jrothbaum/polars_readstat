@@ -45,13 +45,34 @@ typedef struct {
     uint32_t num_columns;
     uint32_t chunk_size;
     bool schema_ready;
+
+    // Add SAS properties
+    uint64_t row_count;
+    uint32_t row_length;
+    uint8_t compression;  // 0=None, 1=RLE, 2=RDC
+    uint32_t page_length;
+    uint32_t page_count;
+    uint32_t header_length;
+    
+    // String pointers for SAS metadata
+    const char* dataset_name;
+    const char* encoding;
+    const char* file_type;
+    const char* sas_release;
+    const char* sas_server_type;
+    const char* os_name;
+    const char* creator;
+    const char* creator_proc;
 } SasArrowReaderInfo;
 
 // Column information
 typedef struct {
     const char* name;
-    const char* type_name;
+    const char* sas_type;
     uint32_t index;
+    const char* format;
+    const char* label;
+    uint32_t length;
 } SasArrowColumnInfo;
 
 } // extern "C"
@@ -335,11 +356,30 @@ SasArrowErrorCode sas_arrow_reader_get_info(
         SasArrowErrorCode err = const_cast<SasArrowReader*>(reader)->ensure_schema_ready();
         if (err != SAS_ARROW_OK) return err;
         
+        const auto& properties = reader->reader->properties();
         auto schema = reader->sink->get_schema();
         
         info->num_columns = static_cast<uint32_t>(schema->num_fields());
         info->chunk_size = reader->chunk_size;
         info->schema_ready = reader->schema_initialized;
+
+        // SAS properties from Header and Metadata
+        info->row_count = properties.row_count;
+        info->row_length = static_cast<uint32_t>(properties.row_length);
+        info->compression = static_cast<uint8_t>(properties.compression);
+        info->page_length = static_cast<uint32_t>(properties.page_length);
+        info->page_count = static_cast<uint32_t>(properties.page_count);
+        info->header_length = static_cast<uint32_t>(properties.header_length);
+        
+        // String properties (pointers remain valid as long as reader exists)
+        info->dataset_name = properties.dataset_name.c_str();
+        info->encoding = properties.encoding.c_str();
+        info->file_type = properties.file_type.c_str();
+        info->sas_release = properties.sas_release.c_str();
+        info->sas_server_type = properties.sas_server_type.c_str();
+        info->os_name = properties.os_name.c_str();
+        info->creator = properties.creator.c_str();
+        info->creator_proc = properties.creator_proc.c_str();
         
         return SAS_ARROW_OK;
     });
@@ -367,8 +407,49 @@ SasArrowErrorCode sas_arrow_reader_get_column_info(
         
         auto field = schema->field(static_cast<int>(column_index));
         column_info->name = field->name().c_str();
-        column_info->type_name = field->type()->ToString().c_str();
         column_info->index = column_index;
+        
+         const auto& properties = reader->reader->properties();
+         const auto& columns = properties.columns;
+        // Check if we have format info for this column
+        if (column_index < columns.size()) {
+            const auto& column = columns[column_index];
+            column_info->format = column.format.c_str();
+            column_info->label = column.label.c_str();
+            column_info->length = static_cast<uint32_t>(column.length());
+
+            // Get SAS type from Column::Type enum
+            switch (column.type) {
+                case cppsas7bdat::Column::Type::string:
+                    column_info->sas_type = "string";
+                    break;
+                case cppsas7bdat::Column::Type::number:
+                    column_info->sas_type = "number";
+                    break;
+                case cppsas7bdat::Column::Type::integer:
+                    column_info->sas_type = "integer";
+                    break;
+                case cppsas7bdat::Column::Type::datetime:
+                    column_info->sas_type = "datetime";
+                    break;
+                case cppsas7bdat::Column::Type::date:
+                    column_info->sas_type = "date";
+                    break;
+                case cppsas7bdat::Column::Type::time:
+                    column_info->sas_type = "time";
+                    break;
+                case cppsas7bdat::Column::Type::unknown:
+                default:
+                    column_info->sas_type = "unknown";
+                    break;
+            }
+        } else {
+            // Fallback to empty strings
+            column_info->format = "";
+            column_info->label = "";
+            column_info->sas_type = "unknown";
+            column_info->length = 0;
+        }
         
         return SAS_ARROW_OK;
     });

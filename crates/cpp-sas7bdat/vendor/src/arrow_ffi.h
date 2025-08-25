@@ -44,8 +44,11 @@ typedef struct {
 // Column information
 typedef struct {
     const char* name;
-    const char* type_name;  // e.g., "string", "int64", "float64", "timestamp(MICRO)", "date32", "time64(MICRO)"
+    const char* sas_type;
     uint32_t index;
+    const char* format;
+    const char* label;
+    uint32_t length;
 } SasArrowColumnInfo;
 
 /**

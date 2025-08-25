@@ -11,7 +11,7 @@ fn main() {
     build_cpp_project(&manifest_dir);
     generate_bindings(&out_dir);
     link_prebuilt_library(&manifest_dir);
- 
+
     println!("cargo:rerun-if-changed=vendor/include/cppsas7bdat/sink/arrow.hpp");
     println!("cargo:rerun-if-changed=vendor/src/arrow_ffi.cpp");
     println!("cargo:rerun-if-changed=vendor/src/arrow_ffi.h");

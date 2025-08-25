@@ -6,10 +6,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use crate::{
     common::ptr_to_string,
     formats,
-    rs_data::{
-        ReadStatData,
-        TypedColumn
-    },
+    rs_data::{ReadStatData},
     rs_metadata::{ReadStatCompress, ReadStatEndian, ReadStatMetadata, ReadStatVarMetadata},
     rs_var::{ReadStatVar, ReadStatVarType, ReadStatVarTypeClass},
     series_builder::SeriesBuilder
@@ -219,79 +216,59 @@ pub extern "C" fn handle_value(
     };
 
     if var_index_assign.is_none() {
-        if var_index == (d.var_count - 1) as usize {
-            // Row is complete - call chunking logic
-            if let Err(e) = d.on_row_complete() {
-                eprintln!("Error in row completion: {}", e);
-            }
-        }
         return ReadStatHandler::READSTAT_HANDLER_OK as c_int;
     }
 
     let is_missing = unsafe { readstat_sys::readstat_value_is_system_missing(value) } > 0;
     if is_missing {
-        match &mut d.cols[var_index_assign.unwrap()] {
-            TypedColumn::StringColumn(vec) => vec.push(None),
-            TypedColumn::F64Column(vec) => vec.push(None),
-            TypedColumn::F32Column(vec) => vec.push(None),
-            TypedColumn::I32Column(vec) => vec.push(None),
-            TypedColumn::I64Column(vec) => vec.push(None),
-            TypedColumn::DateColumn(vec) => vec.push(None),
-            TypedColumn::TimeColumn(vec) => vec.push(None),
-            TypedColumn::DateTimeColumn(vec) => vec.push(None),
-        };
-
-        if var_index == (d.var_count - 1) as usize {
-            // Row is complete - call chunking logic
-            if let Err(e) = d.on_row_complete() {
-                eprintln!("Error in row completion: {}", e);
-            }
-        }
+        // Value is already None due to pre-allocation, so we can skip
         return ReadStatHandler::READSTAT_HANDLER_OK as c_int;
     }
 
+    let assign_idx = var_index_assign.unwrap();
+    let obs_idx = d.chunk_rows_processed;
 
     // Direct assignment to pre-allocated series builder
-    // get value and assign to
-    match &mut d.cols[var_index_assign.unwrap()] {
-        TypedColumn::StringColumn(vec) => {
-            vec.push(Some(ReadStatVar::get_value_string(value)));
+    match &mut d.cols[assign_idx] {
+        SeriesBuilder::String { .. } => {
+            let val = ReadStatVar::get_value_string(value);
+            d.cols[assign_idx].set_string_at_index(obs_idx, val);
         },
-        // TypedColumn::I8Column(vec) => {
-        //     vec[obs_index as usize] = Some(ReadStatVar::get_value_i8(value));
-        // },
-        // TypedColumn::I16Column(vec) => {
-        //     vec[obs_index as usize] = Some(ReadStatVar::get_value_i16(value));
-        // },
-        TypedColumn::I32Column(vec) => {
-            vec.push(Some(ReadStatVar::get_value_i32(value)));
+        SeriesBuilder::I8 { .. } => {
+            let val = ReadStatVar::get_value_i8(value);
+            d.cols[assign_idx].set_i8_at_index(obs_idx, val);
         },
-        TypedColumn::I64Column(vec) => {
-            vec.push(Some(ReadStatVar::get_value_i64(value)));
+        SeriesBuilder::I16 { .. } => {
+            let val = ReadStatVar::get_value_i16(value);
+            d.cols[assign_idx].set_i16_at_index(obs_idx, val);
         },
-        TypedColumn::F32Column(vec) => {
-            vec.push(Some(ReadStatVar::get_value_f32(value)));
+        SeriesBuilder::I32 { .. } => {
+            let val = ReadStatVar::get_value_i32(value);
+            d.cols[assign_idx].set_i32_at_index(obs_idx, val);
         },
-        TypedColumn::F64Column(vec) => {
-            vec.push(Some(ReadStatVar::get_value_f64(value)));
+        SeriesBuilder::I64 { .. } => {
+            let val = ReadStatVar::get_value_i64(value);
+            d.cols[assign_idx].set_i64_at_index(obs_idx, val);
         },
-        TypedColumn::DateColumn(vec) => {
-            vec.push(Some(ReadStatVar::get_value_date32(
-                value,
-                &d.extension
-            )));
+        SeriesBuilder::F32 { .. } => {
+            let val = ReadStatVar::get_value_f32(value);
+            d.cols[assign_idx].set_f32_at_index(obs_idx, val);
         },
-        TypedColumn::TimeColumn(vec) => {
-            vec.push(Some(ReadStatVar::get_value_time64(
-                value,
-                &d.extension
-            )));
+        SeriesBuilder::F64 { .. } => {
+            let val = ReadStatVar::get_value_f64(value);
+            d.cols[assign_idx].set_f64_at_index(obs_idx, val);
         },
-        TypedColumn::DateTimeColumn(vec) => {
-            vec.push(Some(ReadStatVar::get_value_datetime64(
-                value,
-                &d.extension
-            )));
+        SeriesBuilder::Date { .. } => {
+            let val = ReadStatVar::get_value_date32(value, &d.extension);
+            d.cols[assign_idx].set_date_at_index(obs_idx, val);
+        },
+        SeriesBuilder::Time { .. } => {
+            let val = ReadStatVar::get_value_time64(value, &d.extension);
+            d.cols[assign_idx].set_time_at_index(obs_idx, val);
+        },
+        SeriesBuilder::DateTime { .. } => {
+            let val = ReadStatVar::get_value_datetime64(value, &d.extension);
+            d.cols[assign_idx].set_datetime_at_index(obs_idx, val);
         },
     }
 

@@ -1,20 +1,17 @@
 /**
- *  \file tests/tests_decompressors.cpp
+ * \file tests/tests_decompressors.cpp
  *
- *  \brief
+ * \brief
  *
- *  \author  Olivia Quinet
+ * \author Olivia Quinet
  */
-
 #include "../src/sas7bdat-impl.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators_all.hpp>
 #include <catch2/matchers/catch_matchers_all.hpp>
-
 using namespace cppsas7bdat;
 using namespace cppsas7bdat::INTERNAL;
 using namespace cppsas7bdat::INTERNAL::DECOMPRESSOR;
-
 namespace {
 const BYTES operator"" _b(const char *_p, size_t _n) {
   auto p = reinterpret_cast<const unsigned char *>(_p);
@@ -27,7 +24,6 @@ const auto source2{"abcdefghijklmnopqrstuvwxyz"_b};
 SCENARIO("When I pop values from a source, I get the expected values",
          "[internal][decompressor][SRC_VALUES][pop]") {
   const auto source = GENERATE(source1, source2);
-
   GIVEN("A source") {
     auto src = SRC_VALUES(source);
     THEN("The remaining is the length of the source") {
@@ -41,11 +37,20 @@ SCENARIO("When I pop values from a source, I get the expected values",
         CHECK(src.remaining() == source.size() - 1);
       }
     }
-    WHEN("I pop all the values in one go") {
-      auto test = src.pop(source.size());
-      THEN("I get then expected value") {
-        CHECK(test == source);
+    WHEN("I get a pointer to the data and advance") {
+      const uint8_t* ptr = src.current_ptr();
+      src.advance(source.size());
+      THEN("I get the expected pointer and remaining is zero") {
+        CHECK(ptr == source.data());
         CHECK(src.remaining() == 0);
+      }
+    }
+    WHEN("I get a pointer to part of the data and advance") {
+      const uint8_t* ptr = src.current_ptr();
+      src.advance(1);
+      THEN("I get the expected pointer and remaining is decremented") {
+        CHECK(ptr == source.data());
+        CHECK(src.remaining() == source.size() - 1);
       }
     }
   }
@@ -54,7 +59,6 @@ SCENARIO("When I pop values from a source, I get the expected values",
 SCENARIO("The None decompressor just does a perfect forward of the data",
          "[internal][decompressor][None]") {
   const auto source = GENERATE(source1, source2);
-
   GIVEN("The none decompressor and a source") {
     const auto decompressor = DECOMPRESSOR::None();
     WHEN("The source is passed to the decompressor") {
@@ -67,7 +71,7 @@ SCENARIO("The None decompressor just does a perfect forward of the data",
 SCENARIO("I can store values in the destination",
          "[internal][decompressor][DST_VALUES]") {
   GIVEN("A destination of one character") {
-    const auto dst = DST_VALUES<Endian::little, Format::bit32>((size_t)1);
+    auto dst = DST_VALUES<Endian::little, Format::bit32>((size_t)1);
     WHEN("I check if one value can be added") {
       THEN("It is accepted") {
         CHECK(dst.check() == true);
