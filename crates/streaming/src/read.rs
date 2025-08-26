@@ -5,18 +5,22 @@ use readstat::ReadStatMetadata;
 use crate::metadata::{
     Metadata,
 };
-pub enum Engine {
+enum Engine {
     CppSas7bdat,
     ReadStat,
 }
 
-enum Backend {
+pub enum Backend {
     Cpp(CppBackend),
     ReadStat(ReadStatBackend),
 }
 
 pub struct Reader {
     backend: Backend,
+    path: String,
+    size_hint: usize,
+    with_columns: Option<Vec<String>>,
+    threads: usize
 }
 
 impl Reader {
@@ -41,25 +45,31 @@ impl Reader {
         let backend = match engine_enum {
             Engine::CppSas7bdat => {
                 Backend::Cpp(CppBackend::new(
-                    path,
+                    path.clone(),
                     size_hint,
-                    with_columns,
+                    with_columns.clone(),
                     threads,
                     schema
                 ))
             }
             Engine::ReadStat => {
                 Backend::ReadStat(ReadStatBackend::new(
-                    path,
+                    path.clone(),
                     size_hint,
-                    with_columns,
+                    with_columns.clone(),
                     threads,
                     md
                 ))
             }
         };
 
-        Reader { backend }
+        Reader {
+            path, 
+            backend,
+            size_hint,
+            with_columns,
+            threads
+         }
     }
 
     pub fn schema(&mut self) -> Result<&Schema, Box<dyn std::error::Error>> {
@@ -72,23 +82,7 @@ impl Reader {
     pub fn metadata(&mut self) -> Result<Option<Metadata>, Box<dyn std::error::Error>> {
         match &mut self.backend {
             Backend::Cpp(backend) => Ok(Some(backend.metadata().unwrap().clone())),
-            Backend::ReadStat(backend) => {
-                Ok(None)
-                // //  Get the schema, if needed
-                // let _ = backend.schema();
-                // Ok(backend.md.as_ref().map(|md| md.clone()))
-            },
-        }
-    }
-
-    pub fn get_md(&mut self) -> Result<Option<ReadStatMetadata>, Box<dyn std::error::Error>> {
-        match &mut self.backend {
-            Backend::Cpp(backend) => Ok(None),
-            Backend::ReadStat(backend) => {
-                //  Get the schema, if needed
-                let _ = backend.schema();
-                Ok(backend.md.as_ref().map(|md| md.clone()))
-            },
+            Backend::ReadStat(backend) => Ok(Some(backend.metadata().unwrap().clone())),
         }
     }
 
@@ -103,6 +97,34 @@ impl Reader {
         match &mut self.backend {
             Backend::Cpp(backend) => backend.next(),
             Backend::ReadStat(backend) => backend.next(),
+        }
+    }
+
+    pub fn copy_for_reading(&mut self) -> Reader {
+        match &mut self.backend {
+            Backend::Cpp(backend) => {
+                Reader::new(
+                    self.path.clone(),
+                    self.size_hint.clone(),
+                    self.with_columns.clone(),
+                    self.threads,
+                    "cpp".to_string(),
+                    None,
+                    Some(backend.schema().unwrap().clone())
+                )
+            },
+            Backend::ReadStat(backend) => {
+                let schema = backend.schema().unwrap().clone();
+                Reader::new(
+                    self.path.clone(),
+                    self.size_hint.clone(),
+                    self.with_columns.clone(),
+                    self.threads,
+                    "readstat".to_string(),
+                    backend.md.clone(),
+                    Some(backend.schema().unwrap().clone())
+                )
+            },
         }
     }
 }

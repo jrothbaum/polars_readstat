@@ -33,7 +33,7 @@ fn main() {
         100_000,
         None,
         10,
-        "cpp".to_string(),
+        "readstat".to_string(),
         None,
         None
     );
@@ -49,73 +49,15 @@ fn main() {
         println!("{:?}",df);
     }
 
+    println!("{:?}", reader.metadata());
     
-    return ();
-
-    // let mut reader_2 = read::Reader::new(
-    //     path.to_string(), 
-    //     100_000,
-    //     None,
-    //     10,
-    //     "readstat".to_string(),
-    //     reader.metadata().unwrap(),
-    //     None
-    // );
-
+    // let mut reader_2 = reader.copy_for_reading();
     // reader_2.initialize_reader(0, 5);
 
     // while let Ok(Some(df)) = reader_2.next() {
     //     println!("{:?}",df);
     // }
 
-    return ();
-    
-    
-    
-    
-    
-    
-    
-    let mut rs_reader = ReadStatBackend::new(
-        path.to_string(), 
-        100_000,
-        None,
-        10,
-        None
-    );
+    // return ();
 
-    let schema = rs_reader.schema().unwrap().clone();
-
-    println!("{:?}",(rs_reader.md.as_ref().unwrap().row_count as usize));
-    rs_reader.initialize_reader(
-        0,
-        (rs_reader.md.as_ref().unwrap().row_count as usize)
-    );
-
-    println!("Readstat: {:?}",schema);
-
-    while let Ok(Some(df)) = rs_reader.next() {
-        println!("{:?}",df);
-    }
-    // let mut cpp_reader = CppBackend::new(
-    //     path.to_string(), 
-    //     100_000,
-    //     None,
-    //     10,
-    //     None
-    // );
-
-    // let schema = cpp_reader.schema().unwrap().clone();
-
-    // cpp_reader.initialize_reader(
-    //     0,
-    //     5
-    // );
-
-    // println!("CPP:     {:?}",schema);
-
-    // //  let mut results = Vec::new();
-    // while let Ok(Some(df)) = cpp_reader.next() {
-    //     println!("{:?}",df);
-    // }
 }

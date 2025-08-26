@@ -9,7 +9,15 @@ use std::sync::{Arc, Condvar, Mutex};
 use path_abs::{PathAbs, PathInfo};
 
 
-use readstat::{ReadStatMetadata, ReadStatData, ReadStatPath, ReadStatStreamer};
+use readstat::{
+    ReadStatMetadata,
+    ReadStatData, 
+    ReadStatPath,
+    ReadStatStreamer,
+    ReadStatCompress,
+    ReadStatVarTypeClass,
+    ReadStatVarFormatClass
+};
 use crate::backends::{ReaderBackend};
 use crate::metadata::{
     Metadata,
@@ -148,7 +156,79 @@ impl ReadStatBackend {
         // Read metadata
         let _ = md.read_metadata(&self.rsp, skip_row_count);
 
-        self.md = Some(md.to_owned());
+        self.md = Some(md.clone());
+
+
+        let file_info = MetadataFileInfo {
+            n_rows: md.row_count as u64,
+            n_cols: md.var_count as u32,
+            size: None,
+            page_size: None,
+            page_count: None,
+            header_length: None,
+            row_length: None,
+            compression: Some(match md.compression {
+                ReadStatCompress::None => "None".to_string(),
+                ReadStatCompress::Rows => "RLE".to_string(),
+                ReadStatCompress::Binary => "RDC".to_string(),
+            }),
+            name: if md.table_name.is_empty() { 
+                None 
+            } else { 
+                Some(md.table_name) 
+            },
+            encoding: if md.file_encoding.is_empty() { 
+                None 
+            } else { 
+                Some(md.file_encoding) 
+            },
+            file_type: Some(md.extension),
+            sas_release: Some(md.version.to_string()),
+            sas_server_type: None,
+            os_name: None,
+            creator: None,
+            creator_proc: None,
+            created_date: parse_datetime_to_timestamp(&md.creation_time),
+            modified_date: parse_datetime_to_timestamp(&md.modified_time),
+        };
+
+        let mut column_info: Vec<MetadataColumnInfo> = md.vars
+            .into_iter()
+            .map(|(index, var_meta)| MetadataColumnInfo {
+                name: var_meta.var_name,
+                index: index as u32,
+                type_class: Some(match var_meta.var_format_class {
+                    Some(ReadStatVarFormatClass::Date) => "date".to_string(),
+                    Some(ReadStatVarFormatClass::DateTime) => "datetime".to_string(), 
+                    Some(ReadStatVarFormatClass::Time) => "time".to_string(),
+                    None => match var_meta.var_type_class {
+                        ReadStatVarTypeClass::String => "string".to_string(),
+                        ReadStatVarTypeClass::Numeric => "number".to_string(),
+                    }
+                }),
+                format: if var_meta.var_format.is_empty() { 
+                    None 
+                } else { 
+                    Some(var_meta.var_format) 
+                },
+                label: if var_meta.var_label.is_empty() { 
+                    None 
+                } else { 
+                    Some(var_meta.var_label) 
+                },
+                length: None,
+            })
+            .collect();
+
+        // Sort by index to ensure consistent ordering
+        column_info.sort_by_key(|col| col.index);
+
+        self._metadata = Some(Metadata {
+            file_info,
+            column_info,
+        });
+
+        ()
     }
 
     fn start_streaming(&mut self) -> PolarsResult<()> {
@@ -178,4 +258,18 @@ impl ReadStatBackend {
         Ok(())
     }
 
+}
+
+
+fn parse_datetime_to_timestamp(datetime_str: &str) -> Option<i64> {
+    if datetime_str.is_empty() {
+        return None;
+    }
+    
+    // Parse "2018-08-16 16:21:52" format
+    if let Ok(naive_dt) = chrono::NaiveDateTime::parse_from_str(datetime_str, "%Y-%m-%d %H:%M:%S") {
+        Some(naive_dt.and_utc().timestamp())
+    } else {
+        None
+    }
 }

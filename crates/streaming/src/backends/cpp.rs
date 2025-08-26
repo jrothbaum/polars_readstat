@@ -43,8 +43,6 @@ impl ReaderBackend for CppBackend {
         if self._schema.is_none() {
             self.read_metadata();
         }
-        println!("HI");
-        println!("Pre-{:?}",&self._metadata);
         match &self._metadata {
             Some(meta) => Ok(meta),
             None => Err("Metadata not available".into()),
@@ -218,6 +216,8 @@ impl CppBackend {
                 }
             }
         }
+        column_info.sort_by_key(|col| col.index);
+
         
         // Create the complete metadata
         self._metadata = Some(Metadata {
