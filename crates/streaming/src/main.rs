@@ -4,14 +4,70 @@ mod backends;
 mod metadata;
 mod stream;
 
+use polars::prelude::{AnonymousScan, AnonymousScanArgs};
 use strategy::{
     calculate_partition_strategy,
     PartitionStrategy
 };
 
+use stream::PolarsReadstat;
+
 
 use crate::{backends::{CppBackend, ReadStatBackend, ReaderBackend}, read::Reader};
 fn main() {
+    use std::time::Instant;
+    use std::time::Duration;
+    let start = Instant::now();
+    //  let path = "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/sample.sas7bdat";
+    let path = "/home/jrothbaum/Downloads/sas_pil/psam_p17.sas7bdat";
+
+    let rs = PolarsReadstat::new(
+        path.to_string(), 
+        100000, 
+        None, 
+        6, 
+        "cpp".to_string()
+    );
+
+    
+    let mut batch_count = 0;
+    loop {
+        let scan_opts = AnonymousScanArgs {
+            with_columns: None,
+            schema: rs.schema(None).clone().unwrap(),
+            output_schema:None,
+            predicate: None,
+            n_rows:None,
+        };
+        
+        match rs.next_batch(scan_opts) {
+            Ok(Some(df)) => {
+                batch_count += 1;
+                println!("Batch {}: {:?}", batch_count, df);
+            },
+            Ok(None) => {
+                println!("No more batches. Total batches: {}", batch_count);
+                break;
+            },
+            Err(polars_error) => {
+                println!("ERROR! {:?}", polars_error);
+                break;
+            }
+        }
+    }
+
+
+    let elapsed = start.elapsed();
+    println!("Time elapsed: {:?}", elapsed);
+
+
+
+
+
+
+
+
+    return ();
     let out = calculate_partition_strategy(
         100_000,
         1_000_000,
@@ -26,8 +82,6 @@ fn main() {
     
 
 
-    //  let path = "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/sample.sas7bdat";
-    let path = "/home/jrothbaum/Downloads/sas_pil/psam_p17.sas7bdat";
     //  Use universal reader
     let mut reader = read::Reader::new(
         path.to_string(), 
