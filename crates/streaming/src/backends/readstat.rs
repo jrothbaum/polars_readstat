@@ -6,6 +6,7 @@ use polars::prelude::*;
 use polars_core::schema;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use path_abs::{PathAbs, PathInfo};
 
 
@@ -39,6 +40,9 @@ pub struct ReadStatBackend {
     is_started:bool,
     is_complete:Option<Arc<Mutex<bool>>>,
     notifier:Option<Arc<Condvar>>,
+
+    // Cancellation flag
+    cancel_flag: Arc<AtomicBool>,
 }
 
 
@@ -84,7 +88,8 @@ impl ReaderBackend for ReadStatBackend {
                 notifier
             );
 
-            
+        // Set the cancel flag in ReadStatData
+        rsd.cancel_flag = Arc::clone(&self.cancel_flag);
         let rsd_arc = Arc::new(Mutex::new(rsd));
         self.rsd = Some(rsd_arc.clone());
         self.streamer = Some(Arc::new(Mutex::new(consumer)));
@@ -121,6 +126,12 @@ impl ReaderBackend for ReadStatBackend {
             Ok(None)
         }
     }
+
+    fn cancel(&mut self) -> PolarsResult<()>{
+        self.cancel_flag.store(true, Ordering::Relaxed);
+
+        Ok(())
+    }
 }
 
 impl ReadStatBackend {
@@ -130,6 +141,7 @@ impl ReadStatBackend {
         with_columns: Option<Vec<String>>,
         threads: usize,
         md: Option<ReadStatMetadata>,
+        _metadata: Option<Metadata>,
     ) -> Self {
         return ReadStatBackend { 
             rsp: ReadStatPath::new(PathBuf::from(path.clone())).unwrap(), 
@@ -137,12 +149,13 @@ impl ReadStatBackend {
             with_columns: with_columns, 
             threads: threads, 
             md: md,
-            _metadata: None,
+            _metadata: _metadata,
             rsd: None,
             streamer: None,
             is_started: false,
             is_complete: None,
             notifier: None,
+            cancel_flag: Arc::new(AtomicBool::new(false))
         }
     }
 
@@ -260,6 +273,11 @@ impl ReadStatBackend {
 
 }
 
+impl Drop for ReadStatBackend {
+    fn drop(&mut self) {
+        self.cancel(); // Just set the flag and exit
+    }
+}
 
 fn parse_datetime_to_timestamp(datetime_str: &str) -> Option<i64> {
     if datetime_str.is_empty() {

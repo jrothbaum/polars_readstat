@@ -25,4 +25,6 @@ pub trait ReaderBackend {
     ) -> PolarsResult<()>;
 
     fn next(&mut self) -> PolarsResult<Option<DataFrame>>;
+
+    fn cancel(&mut self) -> PolarsResult<()>;
 }

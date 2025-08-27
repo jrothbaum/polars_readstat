@@ -100,6 +100,12 @@ impl ReaderBackend for CppBackend {
             Ok(None)
         }
     }
+
+    fn cancel(&mut self) -> PolarsResult<()>{
+        //  self.cancel_flag.store(true, Ordering::Relaxed);
+
+        Ok(())
+    }
 }
 
 impl CppBackend {
@@ -108,7 +114,8 @@ impl CppBackend {
         size_hint: usize,
         with_columns: Option<Vec<String>>,
         threads: usize,
-        schema: Option<Schema>
+        schema: Option<Schema>,
+        _metadata: Option<Metadata>,
     ) -> Self {
         return CppBackend {
             path: path, 
@@ -117,7 +124,7 @@ impl CppBackend {
             threads: threads, 
             _schema: schema,
             iterator: None,
-            _metadata: None,
+            _metadata: _metadata,
         }
     }
 
@@ -226,7 +233,6 @@ impl CppBackend {
         });
         ()
     }
-    
 
     
 }

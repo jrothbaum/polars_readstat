@@ -18,11 +18,11 @@ pub enum Backend {
 pub struct Reader {
     backend: Backend,
     path: String,
-    size_hint: usize,
-    with_columns: Option<Vec<String>>,
-    threads: usize
+    pub size_hint: usize,
+    pub with_columns: Option<Vec<String>>,
+    pub threads: usize
 }
-
+unsafe impl Send for Reader {}
 impl Reader {
     pub fn new(
         path: String,
@@ -32,6 +32,7 @@ impl Reader {
         engine: String,
         md: Option<ReadStatMetadata>,
         schema: Option<Schema>,
+        _metadata: Option<Metadata>,
     ) -> Self {
 
         let engine_enum = if path.ends_with(".sas7bdat") & (engine == "cpp") {
@@ -49,7 +50,8 @@ impl Reader {
                     size_hint,
                     with_columns.clone(),
                     threads,
-                    schema
+                    schema,
+                    _metadata
                 ))
             }
             Engine::ReadStat => {
@@ -58,7 +60,8 @@ impl Reader {
                     size_hint,
                     with_columns.clone(),
                     threads,
-                    md
+                    md,
+                    _metadata,
                 ))
             }
         };
@@ -77,6 +80,31 @@ impl Reader {
             Backend::Cpp(backend) => backend.schema(),
             Backend::ReadStat(backend) => backend.schema(),
         }
+    }
+
+    pub fn schema_with_projection_pushdown(
+        &mut self
+    ) -> Result<Schema, Box<dyn std::error::Error>> {
+        // Get the full schema
+        let full_schema = self.schema().unwrap().clone();
+        
+        let filtered_schema = match &self.with_columns {
+            Some(selected_columns) => {
+                // Create new schema with only selected columns
+                Schema::from_iter(
+                    selected_columns
+                        .iter()
+                        .filter_map(|col_name| {
+                            full_schema.get(col_name).map(|dtype| {
+                                (PlSmallStr::from(col_name), dtype.clone())
+                            })
+                        })
+                )
+            }
+            None => full_schema, // Use full schema if no columns specified
+        };
+        
+        Ok(filtered_schema)
     }
 
     pub fn metadata(&mut self) -> Result<Option<Metadata>, Box<dyn std::error::Error>> {
@@ -103,6 +131,8 @@ impl Reader {
     pub fn copy_for_reading(&mut self) -> Reader {
         match &mut self.backend {
             Backend::Cpp(backend) => {
+                //  Make sure the schema/metadata has been retrieved
+                let schema = backend.schema().unwrap().clone();
                 Reader::new(
                     self.path.clone(),
                     self.size_hint.clone(),
@@ -110,10 +140,12 @@ impl Reader {
                     self.threads,
                     "cpp".to_string(),
                     None,
-                    Some(backend.schema().unwrap().clone())
+                    Some(schema),
+                    Some(backend.metadata().unwrap().clone())
                 )
             },
             Backend::ReadStat(backend) => {
+                //  Make sure the schema/metadata has been retrieved
                 let schema = backend.schema().unwrap().clone();
                 Reader::new(
                     self.path.clone(),
@@ -122,9 +154,17 @@ impl Reader {
                     self.threads,
                     "readstat".to_string(),
                     backend.md.clone(),
-                    Some(backend.schema().unwrap().clone())
+                    Some(schema),
+                    Some(backend.metadata().unwrap().clone())
                 )
             },
+        }
+    }
+
+    pub fn cancel(&mut self) -> PolarsResult<()> {
+        match &mut self.backend {
+            Backend::Cpp(backend) => backend.cancel(),
+            Backend::ReadStat(backend) => backend.cancel(),
         }
     }
 }

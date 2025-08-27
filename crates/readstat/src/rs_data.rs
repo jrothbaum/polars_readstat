@@ -11,6 +11,7 @@ use std::{
     thread,
     time::Duration
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{
     cb,
@@ -80,6 +81,7 @@ pub struct ReadStatData {
     //  Callback
     pub chunk_buffer: Arc<Mutex<Vec<DataFrame>>>,
     pub notifier: Option<Arc<Condvar>>,
+    pub cancel_flag: Arc<AtomicBool>,
 }
 
 impl ReadStatData {
@@ -114,6 +116,7 @@ impl ReadStatData {
             
             chunk_buffer: Arc::new(Mutex::new(Vec::new())),
             notifier: None,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
 
         }
     }
@@ -291,6 +294,14 @@ impl ReadStatData {
         Ok(())
     }
 
+    pub fn cancel(&self) {
+        self.cancel_flag.store(true, Ordering::Relaxed);
+    }
+
+    // Check if cancelled (for internal use in callbacks)
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel_flag.load(Ordering::Relaxed)
+    }
     fn parse_data(&mut self, rsp: &ReadStatPath) -> Result<(), Box<dyn Error + Send + Sync>> {
         // path as pointer
         debug!("Path as C string is {:?}", &rsp.cstring_path);
@@ -458,6 +469,10 @@ impl ReadStatData {
 
     // Method called when a row is complete (from your handle_value callback)
     pub fn on_row_complete(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if self.is_cancelled() {
+            return Err("Operation cancelled".into());
+        }
+        
         self.chunk_rows_processed += 1;
         self.total_rows_processed += 1;
 
