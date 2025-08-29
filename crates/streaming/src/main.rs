@@ -17,6 +17,10 @@ use crate::{backends::{CppBackend, ReadStatBackend, ReaderBackend}, read::Reader
 fn main() {
     use std::time::Instant;
     use std::time::Duration;
+    use num_cpus;
+
+    let num_threads = num_cpus::get_physical();
+    //  println!("{:?}",num_threads);
     let start = Instant::now();
     //  let path = "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/sample.sas7bdat";
     let path = "/home/jrothbaum/Downloads/sas_pil/psam_p17.sas7bdat";
@@ -25,8 +29,8 @@ fn main() {
         path.to_string(), 
         100000, 
         None, 
-        6, 
-        "cpp".to_string()
+        num_threads, 
+        "readstat".to_string()
     );
 
     

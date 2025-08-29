@@ -24,8 +24,8 @@ use std::{
 
 fn main() {
     // let path_string = "/home/jrothbaum/Coding/polars_readstat/crates/cpp-sas7bdat/vendor/test/data/file1.sas7bdat";
-    //  let path_string = "/home/jrothbaum/Downloads/sas_pil/psam_p17.sas7bdat";
-    let path_string = "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/sample.sas7bdat";
+    let path_string = "/home/jrothbaum/Downloads/sas_pil/psam_p17.sas7bdat";
+    //  let path_string = "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/sample.sas7bdat";
     
     let path = PathBuf::from(&path_string);
 
@@ -45,12 +45,21 @@ fn main() {
     let (mut consumer, chunk_buffer, notifier, is_complete) = ReadStatStreamer::new();
     let stat_path = ReadStatPath::new(PathBuf::from(&path_string)).unwrap();
 
-    let mut rsd = ReadStatData::new(None)
+    use std::time::Instant;
+    use std::thread;
+    use std::time::Duration;
+    let start = Instant::now();
+
+    let mut columns = Vec::new();
+    columns.push(1 as usize);
+    columns.push(2);
+    columns.push(3);
+    let mut rsd = ReadStatData::new(Some(columns))
             .init(
                 md.clone(),
                 0,
                 (md.row_count as u32).saturating_sub(1),
-                100000,
+                10000,
                 chunk_buffer,
                 notifier
             );
@@ -63,8 +72,10 @@ fn main() {
     });
 
     while let Some(df) = consumer.next() {
-        println!("{:?}", format!("{:?}",df));
+        println!("{:?}", df);
     }
+    let elapsed = start.elapsed();
+    println!("Time elapsed: {:?}", elapsed);
     // _ = rsd.read_data(&stat_path);
     // let df = rsd.df.unwrap();
 

@@ -8,7 +8,7 @@ use polars::prelude::*;
 use polars::functions::concat_df_horizontal;
 use polars_core::utils::arrow::io::ipc::format::ipc::Schema;
 
-use crate::read::Reader;
+use crate::read::{Backend, Reader};
 use crate::metadata::{self, Metadata};
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
@@ -211,7 +211,7 @@ impl PolarsReadstat {
         threads: usize,
         engine: String,
     ) -> Self {
-        let reader = Reader::new(
+        let mut reader = Reader::new(
             path,
             size_hint,
             with_columns,
@@ -221,6 +221,11 @@ impl PolarsReadstat {
             None,
             None
         );
+
+        // if matches!(reader.backend, Backend::Cpp(_)) && threads > 1 {
+        //     reader.threads = 1;
+        //     println!("cpp engine currently only supports 1 thread.")
+        // }
 
         PolarsReadstat { 
             reader: Mutex::new(reader),
@@ -283,6 +288,9 @@ impl PolarsReadstat {
         } else {
             (1, min(n_chunks, threads))
         };
+
+        let p_row = min(n_chunks, threads);
+        let p_col = 1;
 
         // Validate partitioning
         if p_col == 0 || p_row == 0 {

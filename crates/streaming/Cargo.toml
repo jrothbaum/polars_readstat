@@ -18,6 +18,8 @@ rayon = "1.8"
 log = "0.4"
 env_logger = "0.11.8"
 chrono = "0.4"
+num_cpus = "1.0"
+
 
 [target.'cfg(windows)'.dependencies]
 iconv-sys = { path = "../iconv-sys", version = "0.2.0" }

@@ -86,8 +86,7 @@ static void set_error(const std::string& message) {
 }
 
 // --- Simple Sink Wrapper (no filtering) ---
-// Global sink reference
-static std::shared_ptr<cppsas7bdat::datasink::detail::arrow_sink> g_current_sink;
+thread_local std::shared_ptr<cppsas7bdat::datasink::detail::arrow_sink> g_current_sink;
 
 class SinkWrapper {
 public:

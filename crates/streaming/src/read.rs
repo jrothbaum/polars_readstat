@@ -16,8 +16,8 @@ pub enum Backend {
 }
 
 pub struct Reader {
-    backend: Backend,
-    path: String,
+    pub backend: Backend,
+    pub path: String,
     pub size_hint: usize,
     pub with_columns: Option<Vec<String>>,
     pub threads: usize
