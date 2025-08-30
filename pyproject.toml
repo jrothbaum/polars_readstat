@@ -28,7 +28,7 @@ manifest-path = "crates/polars_readstat_rs/Cargo.toml"
 module-name = "polars_readstat.polars_readstat_rs"
 python-source = "polars_readstat"
 python-packages = ["polars_readstat"]
-features = ["python"] 
+features = ["python"]
 include = [{ path = "polars_readstat/**/*", format = "wheel" }]
 
 [tool.uv.workspace]
