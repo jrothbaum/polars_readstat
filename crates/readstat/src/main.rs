@@ -10,7 +10,7 @@ pub use stream::ReadStatStreamer;
 mod cb;
 mod common;
 mod err;
-mod series_builder;
+//  mod series_builder;
 mod formats;
 mod rs_data;
 mod rs_metadata;

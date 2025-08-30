@@ -1,16 +1,14 @@
 //  rs_data_vector
 use polars::prelude::{
-    datatypes::DataType, DataFrame, PolarsResult, Schema, Series
+    datatypes::DataType, DataFrame, Schema
 };
 use log::debug;
-use num_traits::{FromPrimitive, Saturating};
+use num_traits::{FromPrimitive};
 use std::{
     collections::BTreeMap,
     error::Error,
     os::raw::c_void,
-    sync::{Arc, Mutex, Condvar},
-    thread,
-    time::Duration
+    sync::{Arc, Mutex, Condvar}
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -23,8 +21,7 @@ use crate::{
         schema_with_filter_pushdown
     },
     rs_parser::ReadStatParser,
-    rs_path::ReadStatPath,
-    series_builder::SeriesBuilder
+    rs_path::ReadStatPath
 };
 
 pub enum Extensions  {
@@ -516,8 +513,4 @@ impl ReadStatData {
         Ok(false)
     }
 
-}
-
-fn cast_series(series: Series, dtype: &DataType) -> PolarsResult<Series> {
-    series.cast(dtype)
 }

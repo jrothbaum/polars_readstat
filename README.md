@@ -16,6 +16,26 @@ df_stata = (df_stata.head(1000)
                     .select(["b","c"]))
 ...
 df_stata = df_stata.collect()
+
+# You can also load the metadata
+md = scan_readstat_metadata("/path/file.sas7bdat")
+
+# For sas7bdat files, there are two "engines"
+#   1. readstat:  generally, but not always slower, but less likely to have errors
+#                 the default
+#   2. cpp:       faster, but more likely to fail loading a file
+#                 If it's going to throw an error, it usually does so quickly
+
+# The engine can be passed to both scan_readstat and scan_readstat_metadata
+md = scan_readstat_metadata("/path/file.sas7bdat",
+                            engine="cpp")
+df = scan_readstat("/path/file.sas7bdat",
+                   engine="cpp")
+
+md = scan_readstat_metadata("/path/file.sas7bdat",
+                            engine="readstat")
+df = scan_readstat("/path/file.sas7bdat",
+                   engine="readstat")
 # That's it
 ```
 
@@ -39,7 +59,7 @@ Because of concerns about the performance of readstat reading large SAS files, I
 - Added rust ffi bindings to the C++ code to zero-copy pass the Arrow array to rust and polars 
 
 Other notable features
-- Multithreaded using the number of pl.thread_pool_size (readstat serialization to Arrow only)
+- Multithreaded using the number of pl.thread_pool_size
 - Currently comparable to pandas and pyreadstat or faster (see benchmarks below)
 
 Pending tasks:
@@ -52,6 +72,7 @@ CPU: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics<br>
 Cores: 16<br>
 RAM: 14Gi<br>
 OS: Linux Mint 22<br>
+Last Run: August 29, 2025
 
 This is not intended to be a scientific benchmark, just a test of loading realistic files.  The Stata and SAS files used are different.  One is tall and narrow (lots of rows, few columns) and the other is shorter and wider (fewer rows, many more columns).
 

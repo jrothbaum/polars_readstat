@@ -12,7 +12,6 @@ use crate::{
     },
     rs_metadata::{ReadStatCompress, ReadStatEndian, ReadStatMetadata, ReadStatVarMetadata},
     rs_var::{ReadStatVar, ReadStatVarType, ReadStatVarTypeClass},
-    series_builder::SeriesBuilder
 };
 
 // C types
@@ -251,7 +250,6 @@ pub extern "C" fn handle_value(
     }
 
 
-    // Direct assignment to pre-allocated series builder
     // get value and assign to
     match &mut d.cols[var_index_assign.unwrap()] {
         TypedColumn::StringColumn(vec) => {

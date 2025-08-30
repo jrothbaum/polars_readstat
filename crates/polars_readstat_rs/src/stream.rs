@@ -57,7 +57,7 @@ struct ScanState {
 }
 
 pub struct PolarsReadstat {
-    reader: Mutex<Reader>,
+    pub reader: Mutex<Reader>,
     thread_handle: Mutex<Option<mpsc::Receiver<ChunkMessage>>>,
     scan_state: Mutex<Option<ScanState>>,
     p_col: Mutex<Option<usize>>,

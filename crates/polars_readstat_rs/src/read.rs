@@ -1,38 +1,170 @@
-    //  use log::{debug, info, warn, error};
-use log::debug;
-use polars::frame::DataFrame;
-use polars_core::utils::concat_df;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use std::cmp::min;
-use std::{env, path::PathBuf};
-use std::{error::Error, thread};
-
-use path_abs::{PathAbs, PathInfo};
-
-use readstat::ReadStatPath;
+use polars::prelude::*;
+use crate::backends::{self, CppBackend, ReadStatBackend, ReaderBackend};
 use readstat::ReadStatMetadata;
 
-pub fn read_metadata(
-    in_path:PathBuf,
-    skip_row_count:bool,
-) -> Result<ReadStatMetadata,Box<dyn Error + Send + Sync>> {
-    // Validate and create path to sas7bdat/sas7bcat
-    let stat_path = PathAbs::new(in_path)?.as_path().to_path_buf();
-    debug!(
-        "Retrieving metadata from the file {}",
-        &stat_path.to_string_lossy()
-    );
+use crate::metadata::{
+    Metadata,
+};
+enum Engine {
+    CppSas7bdat,
+    ReadStat,
+}
 
-    // out_path and format determine the type of writing performed
-    let rsp = ReadStatPath::new(stat_path)?;
+pub enum Backend {
+    Cpp(CppBackend),
+    ReadStat(ReadStatBackend),
+}
 
-    // Instantiate ReadStatMetadata
-    let mut md = ReadStatMetadata::new();
+pub struct Reader {
+    pub backend: Backend,
+    pub path: String,
+    pub size_hint: usize,
+    pub with_columns: Option<Vec<String>>,
+    pub threads: usize
+}
+unsafe impl Send for Reader {}
+impl Reader {
+    pub fn new(
+        path: String,
+        size_hint: usize,
+        with_columns: Option<Vec<String>>,
+        threads: usize,
+        engine: String,
+        md: Option<ReadStatMetadata>,
+        schema: Option<Schema>,
+        _metadata: Option<Metadata>,
+    ) -> Self {
 
-    // Read metadata
-    md.read_metadata(&rsp, skip_row_count)?;
+        let engine_enum = if path.ends_with(".sas7bdat") & (engine == "cpp") {
+            Engine::CppSas7bdat
+        } else {
+            if engine == "cpp" {
+                println!("Using readstat engine for non-sas file ({:?}", path);
+            }
+            Engine::ReadStat
+        };
+        let backend = match engine_enum {
+            Engine::CppSas7bdat => {
+                Backend::Cpp(CppBackend::new(
+                    path.clone(),
+                    size_hint,
+                    with_columns.clone(),
+                    threads,
+                    schema,
+                    _metadata
+                ))
+            }
+            Engine::ReadStat => {
+                Backend::ReadStat(ReadStatBackend::new(
+                    path.clone(),
+                    size_hint,
+                    with_columns.clone(),
+                    threads,
+                    md,
+                    _metadata,
+                ))
+            }
+        };
 
-    
-    // Return
-    Ok(md)
+        Reader {
+            path, 
+            backend,
+            size_hint,
+            with_columns,
+            threads
+         }
+    }
+
+    pub fn schema(&mut self) -> Result<&Schema, Box<dyn std::error::Error>> {
+        match &mut self.backend {
+            Backend::Cpp(backend) => backend.schema(),
+            Backend::ReadStat(backend) => backend.schema(),
+        }
+    }
+
+    pub fn schema_with_projection_pushdown(
+        &mut self
+    ) -> Result<Schema, Box<dyn std::error::Error>> {
+        // Get the full schema
+        let full_schema = self.schema().unwrap().clone();
+        
+        let filtered_schema = match &self.with_columns {
+            Some(selected_columns) => {
+                // Create new schema with only selected columns
+                Schema::from_iter(
+                    selected_columns
+                        .iter()
+                        .filter_map(|col_name| {
+                            full_schema.get(col_name).map(|dtype| {
+                                (PlSmallStr::from(col_name), dtype.clone())
+                            })
+                        })
+                )
+            }
+            None => full_schema, // Use full schema if no columns specified
+        };
+        
+        Ok(filtered_schema)
+    }
+
+    pub fn metadata(&mut self) -> Result<Option<Metadata>, Box<dyn std::error::Error>> {
+        match &mut self.backend {
+            Backend::Cpp(backend) => Ok(Some(backend.metadata().unwrap().clone())),
+            Backend::ReadStat(backend) => Ok(Some(backend.metadata().unwrap().clone())),
+        }
+    }
+
+    pub fn initialize_reader(&mut self, row_start: usize, row_end: usize) -> PolarsResult<()> {
+        match &mut self.backend {
+            Backend::Cpp(backend) => backend.initialize_reader(row_start, row_end),
+            Backend::ReadStat(backend) => backend.initialize_reader(row_start, row_end),
+        }
+    }
+
+    pub fn next(&mut self) -> PolarsResult<Option<DataFrame>> {
+        match &mut self.backend {
+            Backend::Cpp(backend) => backend.next(),
+            Backend::ReadStat(backend) => backend.next(),
+        }
+    }
+
+    pub fn copy_for_reading(&mut self) -> Reader {
+        match &mut self.backend {
+            Backend::Cpp(backend) => {
+                //  Make sure the schema/metadata has been retrieved
+                let schema = backend.schema().unwrap().clone();
+                Reader::new(
+                    self.path.clone(),
+                    self.size_hint.clone(),
+                    self.with_columns.clone(),
+                    self.threads,
+                    "cpp".to_string(),
+                    None,
+                    Some(schema),
+                    Some(backend.metadata().unwrap().clone())
+                )
+            },
+            Backend::ReadStat(backend) => {
+                //  Make sure the schema/metadata has been retrieved
+                let schema = backend.schema().unwrap().clone();
+                Reader::new(
+                    self.path.clone(),
+                    self.size_hint.clone(),
+                    self.with_columns.clone(),
+                    self.threads,
+                    "readstat".to_string(),
+                    backend.md.clone(),
+                    Some(schema),
+                    Some(backend.metadata().unwrap().clone())
+                )
+            },
+        }
+    }
+
+    pub fn cancel(&mut self) -> PolarsResult<()> {
+        match &mut self.backend {
+            Backend::Cpp(backend) => backend.cancel(),
+            Backend::ReadStat(backend) => backend.cancel(),
+        }
+    }
 }

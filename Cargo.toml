@@ -4,7 +4,6 @@ members = [
     "crates/readstat-sys",
     "crates/iconv-sys",
     "crates/cpp-sas7bdat",
-    "crates/streaming",
 ]
 resolver = "2"
 
