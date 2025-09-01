@@ -18,8 +18,6 @@ df_stata = (df_stata.head(1000)
 df_stata = df_stata.collect()
 
 
-md = scan_readstat_metadata("/path/file.sas7bdat")
-
 # For sas7bdat files, there are two "engines"
 #   1. readstat:  generally, but not always slower, but less likely to have errors
 #                 the default
@@ -39,7 +37,9 @@ reader = ScanReadstat(path=path)  # You can pass engine for sas7bdat files, as a
 metadata = reader.metadata  # Python dictionary with metadata information
 schema = reader.schema  # Polars schema
 df = reader.df  # LazyFrame
+
 # Then do any normal thing you'd do in polars
+
 # That's it
 ```
 
