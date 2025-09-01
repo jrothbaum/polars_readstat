@@ -17,7 +17,7 @@ df_stata = (df_stata.head(1000)
 ...
 df_stata = df_stata.collect()
 
-# You can also load the metadata
+
 md = scan_readstat_metadata("/path/file.sas7bdat")
 
 # For sas7bdat files, there are two "engines"
@@ -25,17 +25,21 @@ md = scan_readstat_metadata("/path/file.sas7bdat")
 #                 the default
 #   2. cpp:       faster, but more likely to fail loading a file
 #                 If it's going to throw an error, it usually does so quickly
+df = scan_readstat("/path/file.sas7bdat",
+                   engine="readstat")
 
-# The engine can be passed to both scan_readstat and scan_readstat_metadata
-md = scan_readstat_metadata("/path/file.sas7bdat",
-                            engine="cpp")
 df = scan_readstat("/path/file.sas7bdat",
                    engine="cpp")
 
-md = scan_readstat_metadata("/path/file.sas7bdat",
-                            engine="readstat")
-df = scan_readstat("/path/file.sas7bdat",
-                   engine="readstat")
+
+# If you want to get the metadata, use the ScanReadstat python class:
+
+from polars_readstat import ScanReadstat
+reader = ScanReadstat(path=path)  # You can pass engine for sas7bdat files, as above
+metadata = reader.metadata  # Python dictionary with metadata information
+schema = reader.schema  # Polars schema
+df = reader.df  # LazyFrame
+# Then do any normal thing you'd do in polars
 # That's it
 ```
 
