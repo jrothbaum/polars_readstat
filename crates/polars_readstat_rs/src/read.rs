@@ -1,5 +1,5 @@
 use polars::prelude::*;
-use crate::backends::{self, CppBackend, ReadStatBackend, ReaderBackend};
+use crate::backends::{CppBackend, ReadStatBackend, ReaderBackend};
 use readstat::ReadStatMetadata;
 
 use crate::metadata::{
@@ -112,6 +112,24 @@ impl Reader {
             Backend::Cpp(backend) => Ok(Some(backend.metadata().unwrap().clone())),
             Backend::ReadStat(backend) => Ok(Some(backend.metadata().unwrap().clone())),
         }
+    }
+
+    pub fn set_columns_to_read(
+        &mut self,
+        columns:Option<Vec<String>>,
+    ) -> PolarsResult<()> {
+        self.with_columns = columns.clone();
+    
+        let _ = match &mut self.backend {
+            Backend::Cpp(backend) => {
+                backend.set_columns_to_read(columns)
+            },
+            Backend::ReadStat(backend) => {
+                backend.set_columns_to_read(columns)
+            }
+        };
+
+        Ok(())
     }
 
     pub fn initialize_reader(&mut self, row_start: usize, row_end: usize) -> PolarsResult<()> {

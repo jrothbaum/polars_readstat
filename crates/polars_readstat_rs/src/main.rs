@@ -5,11 +5,16 @@ mod stream;
 #[cfg(feature = "python")]
 mod pybindings;
 
-use polars::prelude::{AnonymousScan, AnonymousScanArgs};
+use std::sync::Arc;
+use polars::prelude::{
+    AnonymousScan,
+    AnonymousScanArgs,
+    PlSmallStr
+};
 use stream::PolarsReadstat;
 
 
-use crate::{backends::{CppBackend, ReadStatBackend, ReaderBackend}, read::Reader};
+use crate::{backends::{CppBackend, ReadStatBackend}, read::Reader};
 fn main() {
     use std::time::Instant;
     use std::time::Duration;
@@ -21,16 +26,22 @@ fn main() {
     let path = "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/sample.sas7bdat";
     //  let path = "/home/jrothbaum/Downloads/sas_pil/psam_p17.sas7bdat";
     //  let path = "/home/jrothbaum/Coding/polars_readstat/crates/cpp-sas7bdat/vendor/test/data_pandas/test14.sas7bdat";
-    let rs = PolarsReadstat::new(
+    
+    let vec_strings: Vec<String> = vec![
+            String::from("mychar"), 
+            String::from("mynum")
+        ];
+    let mut rs = PolarsReadstat::new(
         path.to_string(), 
         10000, 
         None, 
         num_threads, 
-        "cpp".to_string()
+        "readstat".to_string()
     );
 
-    println!("schema: {:?}", rs.schema(None).clone());
-    println!("metadata: {:?}", rs.metadata().clone());
+    rs.set_columns_to_read(Some(vec_strings));
+
+
     let mut batch_count = 0;
     loop {
         let scan_opts = AnonymousScanArgs {
@@ -45,7 +56,7 @@ fn main() {
             
             Ok(Some(df)) => {
                 batch_count += 1;
-                println!("Batch {}: {:?}", batch_count, df);
+                println!("Batch {}: {:?},{:?}", batch_count, df,df.column_iter().count());
             },
             Ok(None) => {
                 println!("No more batches. Total batches: {}", batch_count);
@@ -101,8 +112,7 @@ fn main() {
         chunk_count += 1;
         // Test cancellation
         if chunk_count >= cancel_after_chunks {
-            println!("=== TEST: Cancelling after {} chunks ===", cancel_after_chunks);
-            reader.cancel(); // You'll need to add this method to your Reader
+            let _ = reader.cancel();
             break;
         }
     }

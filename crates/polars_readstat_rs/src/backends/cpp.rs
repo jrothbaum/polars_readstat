@@ -1,9 +1,4 @@
-use log::debug;
 use polars::prelude::*;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use path_abs::{PathAbs, PathInfo};
-
 
 use cpp_sas7bdat::{
     SasReader,
@@ -48,6 +43,16 @@ impl ReaderBackend for CppBackend {
             None => Err("Metadata not available".into()),
         }
     }
+
+    fn set_columns_to_read(
+        &mut self,
+        columns:Option<Vec<String>>,
+    ) -> PolarsResult<()> {
+        self.with_columns = columns;
+
+        Ok(())
+    }
+
 
     fn initialize_reader(
         &mut self,

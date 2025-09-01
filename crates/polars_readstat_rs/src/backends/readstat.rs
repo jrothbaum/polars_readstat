@@ -1,13 +1,8 @@
-use log::{
-    debug,
-    error
-};
+use log::error;
 use polars::prelude::*;
-use polars_core::schema;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use path_abs::{PathAbs, PathInfo};
 
 
 use readstat::{
@@ -67,18 +62,33 @@ impl ReaderBackend for ReadStatBackend {
             None => Err("Schema not available".into()),
         }
     }
+
+    fn set_columns_to_read(
+        &mut self,
+        columns:Option<Vec<String>>,
+    ) -> PolarsResult<()> {
+        self.with_columns = columns;
+        
+        Ok(())
+    }
     
     fn initialize_reader(
         &mut self,
         row_start:usize,
         row_end:usize,
     ) -> PolarsResult<()>{
-        let schema = self.schema();
+        let schema = self.schema().unwrap().clone();
         let (mut consumer, chunk_buffer, notifier, is_complete) = ReadStatStreamer::new();
         
         self.is_complete = Some(is_complete);
         self.notifier = Some(notifier.clone());
-        let mut rsd = ReadStatData::new(None)
+
+        let column_indices: Option<Vec<usize>> = self.with_columns.as_ref().map(|cols| {
+            cols.iter()
+                .filter_map(|col_name| schema.index_of(col_name))
+                .collect()
+        });
+        let mut rsd = ReadStatData::new(column_indices)
             .init(
                 self.md.as_ref().unwrap().clone(),
                 row_start as u32,

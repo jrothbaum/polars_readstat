@@ -1,15 +1,13 @@
 use std::sync::{Arc, Mutex, mpsc};
 use std::collections::{HashMap, BTreeMap};
 use std::thread;
-use std::any::Any;
 use std::cmp::min;
 use std::time::Duration;
 use polars::prelude::*;
 use polars::functions::concat_df_horizontal;
-use polars_core::utils::arrow::io::ipc::format::ipc::Schema;
 
-use crate::read::{Backend, Reader};
-use crate::metadata::{self, Metadata};
+use crate::read::Reader;
+use crate::metadata::Metadata;
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 struct ChunkCoordinate {
@@ -222,11 +220,6 @@ impl PolarsReadstat {
             None
         );
 
-        // if matches!(reader.backend, Backend::Cpp(_)) && threads > 1 {
-        //     reader.threads = 1;
-        //     println!("cpp engine currently only supports 1 thread.")
-        // }
-
         PolarsReadstat { 
             reader: Mutex::new(reader),
             thread_handle: Mutex::new(None),
@@ -236,6 +229,14 @@ impl PolarsReadstat {
         }
     }
 
+    pub fn set_columns_to_read(
+        &mut self,
+        columns:Option<Vec<String>>,
+    ) -> PolarsResult<()> {
+        let mut reader = self.reader.lock().unwrap();
+        let _ = reader.set_columns_to_read(columns);
+        Ok(())
+    }
     pub fn metadata(&self) -> PolarsResult<Arc<Metadata>> {
         let mut reader = self.reader.lock().unwrap();
         let _metadata = reader.metadata().unwrap().clone().unwrap();

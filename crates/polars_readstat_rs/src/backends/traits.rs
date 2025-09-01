@@ -17,6 +17,10 @@ pub trait ReaderBackend {
 
     fn metadata(&mut self) -> Result<&Metadata, Box<dyn std::error::Error>>;
 
+    fn set_columns_to_read(
+        &mut self,
+        columns:Option<Vec<String>>,
+    ) -> PolarsResult<()>;
     /// Start reading data
     fn initialize_reader(
         &mut self,

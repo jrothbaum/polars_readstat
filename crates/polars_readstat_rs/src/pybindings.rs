@@ -1,5 +1,3 @@
-use log::{info, error};
-
 use polars::prelude::*;
 use pyo3::prelude::*;
 use pyo3_polars::{
@@ -11,9 +9,7 @@ use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
 use num_cpus;
 use std::cmp::min;
-
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::sync::Arc;
 
 use crate::stream::PolarsReadstat;
 
@@ -43,10 +39,12 @@ impl PyPolarsReadstat {
         engine: String
     ) -> Self {
 
+        let max_useful_threads = num_cpus::get_physical();
+    
         let threads = if threads.is_none() {
             num_cpus::get_physical()
         } else {
-            threads.unwrap()
+            min(threads.unwrap(),max_useful_threads)
         };
         Self {
             prs:PolarsReadstat::new(

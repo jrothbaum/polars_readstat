@@ -1,5 +1,3 @@
-use regex::Regex;
-
 use crate::rs_var::ReadStatVarFormatClass;
 
 pub fn match_var_format(
