@@ -23,14 +23,17 @@ fn main() {
     let num_threads = num_cpus::get_physical();
     //  println!("{:?}",num_threads);
     let start = Instant::now();
-    let path = "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/sample.sas7bdat";
-    //  let path = "/home/jrothbaum/Downloads/sas_pil/psam_p17.sas7bdat";
-    //  let path = "/home/jrothbaum/Coding/polars_readstat/crates/cpp-sas7bdat/vendor/test/data_pandas/test14.sas7bdat";
+    //  let path = "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/sample.sas7bdat";
+    let path = "/home/jrothbaum/Downloads/sas_pil/psam_p17.sas7bdat";
+    let path = "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/ordered_category.sav";
     
-    let vec_strings: Vec<String> = vec![
-            String::from("mychar"), 
-            String::from("mynum")
-        ];
+    // let vec_strings: Vec<String> = vec![
+    //         String::from("mychar"), 
+    //         String::from("mynum")
+    //     ];
+    // let vec_strings: Vec<String> = vec![
+    //         String::from("WKL")
+    //     ];
     let mut rs = PolarsReadstat::new(
         path.to_string(), 
         10000, 
@@ -39,7 +42,10 @@ fn main() {
         "readstat".to_string()
     );
 
-    rs.set_columns_to_read(Some(vec_strings));
+    println!("{:?}", rs.metadata().clone().unwrap());
+    
+    
+    //  rs.set_columns_to_read(Some(vec_strings));
 
 
     let mut batch_count = 0;

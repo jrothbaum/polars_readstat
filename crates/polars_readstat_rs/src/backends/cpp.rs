@@ -220,6 +220,7 @@ impl CppBackend {
                         format: if sas_format.is_empty() { None } else { Some(sas_format) },
                         label: if sas_label.is_empty() { None } else { Some(sas_label) },
                         length: Some(length),
+                        value_labels:None,
                     });
                 }
                 Err(e) => {

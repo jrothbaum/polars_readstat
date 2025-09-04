@@ -7,14 +7,47 @@ use log::debug;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use serde::Serialize;
-use std::{collections::BTreeMap, error::Error, ffi::c_void, os::raw::c_int};
+use std::{collections::{BTreeMap,HashMap}, error::Error, ffi::c_void, os::raw::c_int};
 
 
-use crate::cb::{handle_metadata, handle_variable};
+use crate::cb::{handle_metadata, handle_variable, handle_value_label};
 use crate::err::ReadStatError;
 use crate::rs_parser::ReadStatParser;
 use crate::rs_path::ReadStatPath;
 use crate::rs_var::{ReadStatVarFormatClass, ReadStatVarType, ReadStatVarTypeClass};
+
+
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, Hash)]
+pub enum LabelValue {
+    String(String),
+    Int32(i32),
+    Int64(i64),
+    Float32Bits(u32),  // f32 stored as bits
+    Float64Bits(u64),  // f64 stored as bits
+    TaggedMissing(char), // For SAS/Stata tagged missing values
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ValueLabels {
+    pub labels: HashMap<LabelValue, String>,
+}
+
+impl ValueLabels {
+    pub fn new() -> Self {
+        Self {
+            labels: HashMap::new(),
+        }
+    }
+
+    pub fn insert(&mut self, value: LabelValue, label: String) {
+        self.labels.insert(value, label);
+    }
+
+    pub fn get(&self, value: &LabelValue) -> Option<&String> {
+        self.labels.get(value)
+    }
+}
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ReadStatMetadata {
@@ -33,6 +66,9 @@ pub struct ReadStatMetadata {
     #[serde(skip_serializing)]
     pub schema: Schema,
     pub extension: String,
+
+    pub value_labels: HashMap<String, ValueLabels>, // label_set_name -> ValueLabels
+
 }
 
 impl ReadStatMetadata {
@@ -52,6 +88,7 @@ impl ReadStatMetadata {
             vars: BTreeMap::new(),
             schema: Schema::default(),
             extension: String::new(),
+            value_labels: HashMap::new(),
         }
     }
 
@@ -139,6 +176,7 @@ impl ReadStatMetadata {
                 ReadStatParser::new()
                     .set_metadata_handler(Some(handle_metadata))?
                     .set_variable_handler(Some(handle_variable))?
+                    .set_value_label_handler(Some(handle_value_label))?
                     .set_row_limit(row_limit)?
                     .parse_sas7bdat(ppath, ctx)
             },
@@ -146,6 +184,7 @@ impl ReadStatMetadata {
                 ReadStatParser::new()
                     .set_metadata_handler(Some(handle_metadata))?
                     .set_variable_handler(Some(handle_variable))?
+                    .set_value_label_handler(Some(handle_value_label))?
                     .set_row_limit(row_limit)?
                     .parse_dta(ppath, ctx)
             },
@@ -153,6 +192,7 @@ impl ReadStatMetadata {
                 ReadStatParser::new()
                     .set_metadata_handler(Some(handle_metadata))?
                     .set_variable_handler(Some(handle_variable))?
+                    .set_value_label_handler(Some(handle_value_label))?
                     .set_row_limit(row_limit)?
                     .parse_sav(ppath, ctx)
             },
@@ -196,6 +236,16 @@ impl ReadStatMetadata {
             columns_to_read)
     }
     
+    pub fn get_value_labels_for_var(&self, var_name: &str) -> Option<&ValueLabels> {
+        // First check if the variable has a direct label set reference
+        if let Some(var_meta) = self.vars.values().find(|v| v.var_name == var_name) {
+            if let Some(ref label_set_name) = var_meta.value_label_set {
+                return self.value_labels.get(label_set_name);
+            }
+        }
+        // Fallback: check if there's a label set with the variable name
+        self.value_labels.get(var_name)
+    }
 }
 
 pub fn schema_with_filter_pushdown(
@@ -222,6 +272,8 @@ pub fn schema_with_filter_pushdown(
         }            
         sub_schema
     }
+
+    
 }
 
 
@@ -249,6 +301,7 @@ pub struct ReadStatVarMetadata {
     pub var_label: String,
     pub var_format: String,
     pub var_format_class: Option<ReadStatVarFormatClass>,
+    pub value_label_set: Option<String>
 }
 
 impl ReadStatVarMetadata {
@@ -267,6 +320,7 @@ impl ReadStatVarMetadata {
             var_label,
             var_format,
             var_format_class,
+            value_label_set:None,
         }
     }
 }

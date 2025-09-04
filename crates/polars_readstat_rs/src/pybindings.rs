@@ -150,6 +150,20 @@ impl PyPolarsReadstat {
                 var_dict.set_item("format", &col.format)?;
                 var_dict.set_item("label", &col.label)?;
                 var_dict.set_item("length", &col.length)?;
+
+                // Add value labels
+                match &col.value_labels {
+                    Some(labels) => {
+                        let labels_dict = PyDict::new(py);
+                        for (key, value) in labels {
+                            labels_dict.set_item(key, value)?;
+                        }
+                        var_dict.set_item("value_labels", labels_dict)?;
+                    },
+                    None => {
+                        var_dict.set_item("value_labels", py.None())?;
+                    }
+                }
                 vars_list.append(var_dict)?;
             }
             metadata_dict.set_item("variables", vars_list)?;
@@ -176,6 +190,20 @@ impl PyPolarsReadstat {
                 var_dict.set_item("format", &col.format)?;
                 var_dict.set_item("label", &col.label)?;
                 var_dict.set_item("length", &col.length)?;
+
+                // Add value labels
+                match &col.value_labels {
+                    Some(labels) => {
+                        let labels_dict = PyDict::new(py);
+                        for (key, value) in labels {
+                            labels_dict.set_item(key, value)?;
+                        }
+                        var_dict.set_item("value_labels", labels_dict)?;
+                    },
+                    None => {
+                        var_dict.set_item("value_labels", py.None())?;
+                    }
+                }
                 vars_list.append(var_dict)?;
             }
             Ok(vars_list.into())

@@ -98,6 +98,28 @@ impl ReadStatParser {
         }
     }
 
+    pub fn set_value_label_handler(
+        self,
+        value_label_handler: readstat_sys::readstat_value_label_handler,
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        let set_value_label_handler_error =
+            unsafe { readstat_sys::readstat_set_value_label_handler(self.parser, value_label_handler) };
+        debug!(
+            "After setting value label handler, error ==> {}",
+            &set_value_label_handler_error
+        );
+        #[allow(clippy::useless_conversion)]
+        match FromPrimitive::from_i32(set_value_label_handler_error.try_into().unwrap()) {
+            Some(ReadStatError::READSTAT_OK) => Ok(self),
+            Some(e) => Err(From::from(format!(
+                "Unable to set value label handler: {:#?}",
+                e
+            ))),
+            None => Err(From::from(
+                "Error when attempting to set value label handler: Unknown return value",
+            )),
+        }
+    }
     pub fn set_variable_handler(
         self,
         variable_handler: readstat_sys::readstat_variable_handler,

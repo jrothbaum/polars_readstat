@@ -12,7 +12,8 @@ use readstat::{
     ReadStatStreamer,
     ReadStatCompress,
     ReadStatVarTypeClass,
-    ReadStatVarFormatClass
+    ReadStatVarFormatClass,
+    LabelValue
 };
 use crate::backends::{ReaderBackend};
 use crate::metadata::{
@@ -181,7 +182,8 @@ impl ReadStatBackend {
 
         self.md = Some(md.clone());
 
-
+        let md_for_labels = md.clone();
+        
         let file_info = MetadataFileInfo {
             n_rows: md.row_count as u64,
             n_cols: md.var_count as u32,
@@ -217,29 +219,50 @@ impl ReadStatBackend {
 
         let mut column_info: Vec<MetadataColumnInfo> = md.vars
             .into_iter()
-            .map(|(index, var_meta)| MetadataColumnInfo {
-                name: var_meta.var_name,
-                index: index as u32,
-                type_class: Some(match var_meta.var_format_class {
-                    Some(ReadStatVarFormatClass::Date) => "date".to_string(),
-                    Some(ReadStatVarFormatClass::DateTime) => "datetime".to_string(), 
-                    Some(ReadStatVarFormatClass::Time) => "time".to_string(),
-                    None => match var_meta.var_type_class {
-                        ReadStatVarTypeClass::String => "string".to_string(),
-                        ReadStatVarTypeClass::Numeric => "number".to_string(),
-                    }
-                }),
-                format: if var_meta.var_format.is_empty() { 
-                    None 
-                } else { 
-                    Some(var_meta.var_format) 
-                },
-                label: if var_meta.var_label.is_empty() { 
-                    None 
-                } else { 
-                    Some(var_meta.var_label) 
-                },
-                length: None,
+            .map(|(index, var_meta)| {
+                // Get value labels for this variable if they exist
+                let value_labels = md_for_labels.get_value_labels_for_var(&var_meta.var_name)
+                    .map(|labels| {
+                        labels.labels.iter()
+                            .map(|(key, value)| {
+                                let key_str = match key {
+                                    LabelValue::String(s) => s.clone(),
+                                    LabelValue::Int32(i) => i.to_string(),
+                                    LabelValue::Int64(i) => i.to_string(),
+                                    LabelValue::Float32Bits(bits) => f32::from_bits(*bits).to_string(),
+                                    LabelValue::Float64Bits(bits) => f64::from_bits(*bits).to_string(),
+                                    LabelValue::TaggedMissing(c) => format!("MISSING_{}", c),
+                                };
+                                (key_str, value.clone())
+                            })
+                            .collect()
+                    });
+
+                MetadataColumnInfo {
+                    name: var_meta.var_name,
+                    index: index as u32,
+                    type_class: Some(match var_meta.var_format_class {
+                        Some(ReadStatVarFormatClass::Date) => "date".to_string(),
+                        Some(ReadStatVarFormatClass::DateTime) => "datetime".to_string(), 
+                        Some(ReadStatVarFormatClass::Time) => "time".to_string(),
+                        None => match var_meta.var_type_class {
+                            ReadStatVarTypeClass::String => "string".to_string(),
+                            ReadStatVarTypeClass::Numeric => "number".to_string(),
+                        }
+                    }),
+                    format: if var_meta.var_format.is_empty() { 
+                        None 
+                    } else { 
+                        Some(var_meta.var_format) 
+                    },
+                    label: if var_meta.var_label.is_empty() { 
+                        None 
+                    } else { 
+                        Some(var_meta.var_label) 
+                    },
+                    length: None,
+                    value_labels,
+                }
             })
             .collect();
 

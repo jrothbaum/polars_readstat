@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct Metadata {
@@ -45,4 +46,6 @@ pub struct MetadataColumnInfo {
     
     // Additional metadata
     pub length: Option<u32>,
+    pub value_labels: Option<HashMap<String, String>>
+
 }
