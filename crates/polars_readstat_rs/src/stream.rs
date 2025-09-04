@@ -282,14 +282,6 @@ impl PolarsReadstat {
             return Err(PolarsError::InvalidOperation("No rows to process".into()));
         }
 
-        let (p_col, p_row) = if n_cols >= threads {
-            (threads, 1)
-        } else if n_cols >= threads / 2 {
-            (n_cols, min(n_chunks, threads / n_cols))
-        } else {
-            (1, min(n_chunks, threads))
-        };
-
         let p_row = min(n_chunks, threads);
         let p_col = 1;
 
