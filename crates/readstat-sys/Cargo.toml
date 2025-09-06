@@ -9,6 +9,11 @@ repository = "https://github.com/curtisalexander/readstat-rs"
 links = "readstat"
 build = "build.rs"
 
+[dependencies]
+memmap2 = "0.9"
+libc = "0.2"
+
+
 [build-dependencies]
 bindgen = "0.71.1"
 cc = "1.0"

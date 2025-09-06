@@ -77,7 +77,7 @@ Cores: 16<br>
 RAM: 14Gi<br>
 OS: Linux Mint 22<br>
 Last Run: August 31, 2025
-Version: 0.6
+Version: 0.7 (with mmap in readstat)
 
 This is not intended to be a scientific benchmark, just a test of loading realistic files.  The Stata and SAS files used are different.  One is tall and narrow (lots of rows, few columns) and the other is shorter and wider (fewer rows, many more columns).
 
@@ -88,41 +88,41 @@ All reported times are in seconds using python's time.time() (I know...).
 ### Compared to Pandas and Pyreadstat (using read_file_multiprocessing for parallel processing in Pyreadstat)
 * SAS
   * Subset: False, Filter: False
-    * polars (readstat):  5.18
+    * polars (readstat):  5.27
     * polars (cpp):       1.31
     * pandas:             2.07
     * pyreadstat:        10.75
   * Subset: True, Filter: False
-    * polars (readstat):  0.66
+    * polars (readstat):  0.69
     * polars (cpp):       0.09
     * pandas:             2.06
     * pyreadstat:         0.46
   * Subset: False, Filter: True
-    * polars (readstat):  7.88
+    * polars (readstat):  7.62
     * polars (cpp):       1.56
     * pandas:             3.03
     * pyreadstat:        11.93
   * Subset: True, Filter: True
-    * polars (readstat):  0.73
+    * polars (readstat):  0.79
     * polars (cpp):       0.09
     * pandas:             2.09
     * pyreadstat:         0.50
 
 * Stata
   * Subset: False, Filter: False
-    * polars (readstat):  1.97
+    * polars (readstat):  1.80
     * pandas:             1.14
     * pyreadstat:         7.46
   * Subset: True, Filter: False
-    * polars (readstat):  0.95
+    * polars (readstat):  0.27
     * pandas:             1.18
     * pyreadstat:         2.18
   * Subset: False, Filter: True
-    * polars (readstat):  2.03
+    * polars (readstat):  1.31
     * pandas:             0.99
     * pyreadstat:         7.66
   * Subset: True, Filter: True
-    * polars (readstat):  0.98
+    * polars (readstat):  0.29
     * pandas:             0.96
     * pyreadstat:         2.24
 

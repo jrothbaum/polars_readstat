@@ -20,9 +20,14 @@ use crate::{
         ReadStatVarMetadata,
         schema_with_filter_pushdown
     },
-    rs_parser::ReadStatParser,
+    rs_parser::{
+        ReadStatParser,
+        create_parser
+    },
     rs_path::ReadStatPath
 };
+
+use readstat_sys::SharedMmap;
 
 pub enum Extensions  {
     sas7bdat,
@@ -80,6 +85,8 @@ pub struct ReadStatData {
     pub chunk_buffer: Arc<Mutex<Vec<DataFrame>>>,
     pub notifier: Option<Arc<Condvar>>,
     pub cancel_flag: Arc<AtomicBool>,
+
+    pub shared_mmap: Option<SharedMmap>,
 }
 
 impl ReadStatData {
@@ -116,6 +123,7 @@ impl ReadStatData {
             notifier: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
 
+            shared_mmap: None,
         }
     }
 
@@ -285,8 +293,14 @@ impl ReadStatData {
     
 
 
-    pub fn read_data(&mut self, rsp: &ReadStatPath) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub fn read_data(
+        &mut self, 
+        rsp: &ReadStatPath,
+        shared_mmap: Option<&SharedMmap>
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         // parse data and if successful then convert cols into a dataframe
+        self.shared_mmap = shared_mmap.cloned();
+
         self.parse_data(rsp)?;
         self.cols_to_df()?;
         Ok(())
@@ -300,7 +314,12 @@ impl ReadStatData {
     pub fn is_cancelled(&self) -> bool {
         self.cancel_flag.load(Ordering::Relaxed)
     }
-    fn parse_data(&mut self, rsp: &ReadStatPath) -> Result<(), Box<dyn Error + Send + Sync>> {
+
+
+    fn parse_data(
+        &mut self, 
+        rsp: &ReadStatPath
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         // path as pointer
         debug!("Path as C string is {:?}", &rsp.cstring_path);
         let ppath = rsp.cstring_path.as_ptr();
@@ -332,7 +351,7 @@ impl ReadStatData {
 
         let error = match rsp.extension.as_ref() {
             "sas7bdat" => {
-                ReadStatParser::new()
+                create_parser(self.shared_mmap.as_ref())?
                     // do not set metadata handler nor variable handler as already processed
                     .set_value_handler(Some(cb::handle_value))?
                     .set_row_limit(Some(self.rows_to_process.try_into().unwrap()))?
@@ -340,7 +359,7 @@ impl ReadStatData {
                     .parse_sas7bdat(ppath, ctx)
             },
             "dta" => {
-                ReadStatParser::new()
+                create_parser(self.shared_mmap.as_ref())?
                     // .set_metadata_handler(Some(cb::handle_metadata))?
                     .set_variable_handler(Some(cb::handle_variable_noop))?
                     .set_value_handler(Some(cb::handle_value))?
@@ -349,7 +368,7 @@ impl ReadStatData {
                     .parse_dta(ppath, ctx)
             },
             "sav" | "zsav" => {
-                ReadStatParser::new()
+                create_parser(self.shared_mmap.as_ref())?
                     // do not set metadata handler nor variable handler as already processed
                     .set_variable_handler(Some(cb::handle_variable_noop))?
                     .set_value_handler(Some(cb::handle_value))?

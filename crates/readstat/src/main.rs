@@ -22,6 +22,8 @@ use std::{
     path::PathBuf
 };
 
+use readstat_sys::SharedMmap; 
+
 fn main() {
     // let path_string = "/home/jrothbaum/Coding/polars_readstat/crates/cpp-sas7bdat/vendor/test/data/file1.sas7bdat";
     let path_string = "/home/jrothbaum/Downloads/sas_pil/psam_p17.sas7bdat";
@@ -50,11 +52,11 @@ fn main() {
     use std::time::Duration;
     let start = Instant::now();
 
-    let mut columns = Vec::new();
-    columns.push(1 as usize);
-    columns.push(2);
-    columns.push(3);
-    let mut rsd = ReadStatData::new(Some(columns))
+    // let mut columns = Vec::new();
+    // columns.push(1 as usize);
+    // columns.push(2);
+    // columns.push(3);
+    let mut rsd = ReadStatData::new(None)
             .init(
                 md.clone(),
                 0,
@@ -63,13 +65,23 @@ fn main() {
                 chunk_buffer,
                 notifier
             );
+
+
+    let shared_mmap = SharedMmap::new(&path_string).unwrap();
     // Background processing
     let is_complete_clone = is_complete.clone();
+    let shared_mmap_clone = shared_mmap.clone(); // Cheap clone
     std::thread::spawn(move || {
-        let result = rsd.read_data(&rsp);
+        let result = rsd.read_data(&rsp,Some(&shared_mmap_clone));
         *is_complete_clone.lock().unwrap() = true;
         result
     });
+
+    // std::thread::spawn(move || {
+    //     let result = rsd.read_data(&rsp,None);
+    //     *is_complete_clone.lock().unwrap() = true;
+    //     result
+    // });
 
     while let Some(df) = consumer.next() {
         println!("{:?}", df);

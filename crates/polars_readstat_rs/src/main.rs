@@ -13,7 +13,6 @@ use polars::prelude::{
 };
 use stream::PolarsReadstat;
 
-
 use crate::{backends::{CppBackend, ReadStatBackend}, read::Reader};
 fn main() {
     use std::time::Instant;
@@ -24,9 +23,11 @@ fn main() {
     //  println!("{:?}",num_threads);
     let start = Instant::now();
     //  let path = "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/sample.sas7bdat";
-    let path = "/home/jrothbaum/Downloads/sas_pil/psam_p17.sas7bdat";
-    let path = "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/ordered_category.sav";
+    //  let path = "/home/jrothbaum/Downloads/sas_pil/psam_p17.sas7bdat";
+    //  let path = "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/ordered_category.sav";
+    let path = "/home/jrothbaum/Downloads/usa_00009.dta";
     
+
     // let vec_strings: Vec<String> = vec![
     //         String::from("mychar"), 
     //         String::from("mynum")
@@ -41,6 +42,7 @@ fn main() {
         num_threads, 
         "readstat".to_string()
     );
+
 
     println!("{:?}", rs.metadata().clone().unwrap());
     
@@ -62,7 +64,7 @@ fn main() {
             
             Ok(Some(df)) => {
                 batch_count += 1;
-                println!("Batch {}: {:?},{:?}", batch_count, df,df.column_iter().count());
+                println!("Batch {}: {:?},{:?}", batch_count, df.height(),df.column_iter().count());
             },
             Ok(None) => {
                 println!("No more batches. Total batches: {}", batch_count);
@@ -93,16 +95,18 @@ fn main() {
 
 
     //  Use universal reader
+    let engine = "readstat";
     let mut reader = read::Reader::new(
         path.to_string(), 
         100_000,
         None,
-        10,
+        4,
         "readstat".to_string(),
         None,
         None,
         None,
     );
+
 
     let schema = reader.schema().unwrap().clone();
     let metadata = reader.metadata().unwrap().clone();

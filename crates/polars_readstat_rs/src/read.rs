@@ -5,6 +5,8 @@ use readstat::ReadStatMetadata;
 use crate::metadata::{
     Metadata,
 };
+
+use readstat::SharedMmap;
 enum Engine {
     CppSas7bdat,
     ReadStat,
@@ -165,7 +167,8 @@ impl Reader {
             Backend::ReadStat(backend) => {
                 //  Make sure the schema/metadata has been retrieved
                 let schema = backend.schema().unwrap().clone();
-                Reader::new(
+
+                let mut reader = Reader::new(
                     self.path.clone(),
                     self.size_hint.clone(),
                     self.with_columns.clone(),
@@ -174,7 +177,18 @@ impl Reader {
                     backend.md.clone(),
                     Some(schema),
                     Some(backend.metadata().unwrap().clone())
-                )
+                );
+
+                reader.set_mmap(backend.shared_mmap.clone());
+                // match &backend.shared_mmap {
+                //     Some(mmap) => {
+                //         println!("Copying reader with shared mmap at address: {:p}", 
+                //                 mmap.memory_address());
+                //         reader.set_mmap(backend.shared_mmap.clone());
+                //     },
+                //     None => println!("Copying reader with no shared mmap"),
+                // }
+                reader
             },
         }
     }
@@ -183,6 +197,18 @@ impl Reader {
         match &mut self.backend {
             Backend::Cpp(backend) => backend.cancel(),
             Backend::ReadStat(backend) => backend.cancel(),
+        }
+    }
+
+    pub fn set_mmap(&mut self, shared_mmap: Option<SharedMmap>) -> PolarsResult<()> {
+        match &mut self.backend {
+            Backend::ReadStat(backend) => {
+                backend.set_mmap(shared_mmap)
+            },
+            Backend::Cpp(backend) => {
+                // No mmap here
+                Ok(())
+            }
         }
     }
 }

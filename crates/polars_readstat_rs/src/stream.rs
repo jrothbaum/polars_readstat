@@ -8,6 +8,8 @@ use polars::functions::concat_df_horizontal;
 
 use crate::read::Reader;
 use crate::metadata::Metadata;
+use readstat::SharedMmap;
+
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 struct ChunkCoordinate {
@@ -210,15 +212,20 @@ impl PolarsReadstat {
         engine: String,
     ) -> Self {
         let mut reader = Reader::new(
-            path,
+            path.clone(),
             size_hint,
             with_columns,
             threads,
-            engine,
+            engine.clone(),
             None,
             None,
             None
         );
+
+        if engine == "readstat" {
+            let shared_mmap = SharedMmap::new(&path).unwrap();
+            reader.set_mmap(Some(shared_mmap));
+        }
 
         PolarsReadstat { 
             reader: Mutex::new(reader),

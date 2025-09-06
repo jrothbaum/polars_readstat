@@ -12,6 +12,7 @@ pub use rs_path::ReadStatPath;
 pub use rs_var::{ReadStatVar, ReadStatVarFormatClass, ReadStatVarType, ReadStatVarTypeClass};
 pub use rs_parser::ReadStatParser;
 pub use stream::ReadStatStreamer;
+pub use readstat_sys::SharedMmap;
 
 mod cb;
 mod common;

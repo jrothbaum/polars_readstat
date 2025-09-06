@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::err::ReadStatError;
+use readstat_sys::SharedMmap; 
 
 pub struct ReadStatParser {
     parser: *mut readstat_sys::readstat_parser_t,
@@ -17,6 +18,18 @@ impl ReadStatParser {
             unsafe { readstat_sys::readstat_parser_init() };
 
         Self { parser }
+    }
+
+    // Add new constructor for mmap
+    pub fn new_with_mmap(file_path: &str) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        let shared_mmap = SharedMmap::new(file_path)?;
+        let parser = shared_mmap.create_parser()?;
+        Ok(Self { parser })
+    }
+
+    pub fn new_from_shared_mmap(shared_mmap: &SharedMmap) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        let parser = shared_mmap.create_parser()?;
+        Ok(Self { parser })
     }
 
     pub fn set_metadata_handler(
@@ -220,5 +233,19 @@ impl Drop for ReadStatParser {
         debug!("Freeing parser");
 
         unsafe { readstat_sys::readstat_parser_free(self.parser) };
+    }
+}
+
+
+pub fn create_parser(shared_mmap: Option<&SharedMmap>) -> Result<ReadStatParser, Box<dyn Error + Send + Sync>> {
+    match shared_mmap {
+        Some(mmap) => {
+            //  println!("Using existing shared mmap");
+            ReadStatParser::new_from_shared_mmap(mmap)
+        },
+        None => {
+            //  println!("Using regular file-based parser");
+            Ok(ReadStatParser::new())
+        }
     }
 }

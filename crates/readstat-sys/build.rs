@@ -77,7 +77,10 @@ fn main() {
         .file(txt.join("readstat_schema.c"))
         .file(txt.join("readstat_stata_dictionary_read.c"))
         .file(txt.join("readstat_txt_read.c"))
-        .include(&src);
+        .file(txt.join("readstat_stata_dictionary_read.c"))
+        .file("csrc/readstat_io_shared_mmap.c")
+        .include(&src)
+        .include("csrc");
 
     // Common flags and definitions for all platforms
     cc.warnings(false);
@@ -156,6 +159,7 @@ fn main() {
 
     // Tell cargo to invalidate the built crate whenever the wrapper changes
     println!("cargo:rerun-if-changed=wrapper.h");
+    println!("cargo:rerun-if-changed=csrc/");
 
     // The bindgen::Builder is the main entry point
     // to bindgen, and lets you build up options for
@@ -246,6 +250,16 @@ fn main() {
         // Parsing
         .allowlist_type("readstat_parser_t")
 
+
+        //  Memory mapping
+        // .allowlist_function("create_shared_mmap")
+        // .allowlist_function("retain_shared_mmap")
+        // .allowlist_function("release_shared_mmap")
+        // .allowlist_function("get_mmap_size")
+        .allowlist_function("shared_mmap_io_init")
+
+        .allowlist_type("shared_mmap_t")
+        .allowlist_type("shared_mmap_io_ctx_t")
 
         .clang_arg("-I/usr/include/clang")
         .clang_arg("-I/usr/include")

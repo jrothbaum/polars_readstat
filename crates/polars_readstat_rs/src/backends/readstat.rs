@@ -13,7 +13,8 @@ use readstat::{
     ReadStatCompress,
     ReadStatVarTypeClass,
     ReadStatVarFormatClass,
-    LabelValue
+    LabelValue,
+    SharedMmap
 };
 use crate::backends::{ReaderBackend};
 use crate::metadata::{
@@ -39,6 +40,8 @@ pub struct ReadStatBackend {
 
     // Cancellation flag
     cancel_flag: Arc<AtomicBool>,
+
+    pub shared_mmap: Option<SharedMmap>,
 }
 
 
@@ -166,7 +169,9 @@ impl ReadStatBackend {
             is_started: false,
             is_complete: None,
             notifier: None,
-            cancel_flag: Arc::new(AtomicBool::new(false))
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+
+            shared_mmap: None,
         }
     }
 
@@ -284,10 +289,19 @@ impl ReadStatBackend {
         let is_complete_clone = Arc::clone(self.is_complete.as_ref().unwrap());
         let notifier_clone = Arc::clone(self.notifier.as_ref().unwrap());
 
+        let shared_mmap = SharedMmap::new(&rsp_clone.path.to_str().unwrap()).unwrap();
+        
+    
+
         std::thread::spawn(move || {
             // Give consumer time to be called
             let mut data_guard = rsd_clone.lock().unwrap();
-            match data_guard.read_data(&rsp_clone) {
+            match data_guard.read_data(
+                &rsp_clone,
+                //  None    
+                Some(&shared_mmap.clone())
+            ) {
+            //  match data_guard.read_data(&rsp_clone,None) {   
                 Ok(_) => {
                     //  println!("Background thread: read_data completed successfully");   
                     ()
@@ -304,6 +318,15 @@ impl ReadStatBackend {
         Ok(())
     }
 
+
+    pub fn set_mmap(
+        &mut self,
+        shared_mmap: Option<SharedMmap>
+    ) -> PolarsResult<()> {
+        self.shared_mmap = shared_mmap;
+
+        Ok(())
+    }
 }
 
 impl Drop for ReadStatBackend {
