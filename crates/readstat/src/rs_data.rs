@@ -349,6 +349,7 @@ impl ReadStatData {
             }
         };
 
+        
         let error = match rsp.extension.as_ref() {
             "sas7bdat" => {
                 create_parser(self.shared_mmap.as_ref())?

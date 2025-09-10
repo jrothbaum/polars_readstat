@@ -1,6 +1,6 @@
 [package]
 name = "polars_readstat_rs"
-version = "0.7.0" 
+version = "0.7.1" 
 authors = ["Jonathan Rothbaum <jon.rothbaum@gmail.com"]
 edition = "2021"
 description = "Streaming crate for polars-readstat"

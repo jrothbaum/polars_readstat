@@ -8,6 +8,7 @@ class ScanReadstat:
     def __init__(self,
                  path:str,
                  engine:str="readstat",
+                 use_mmap:bool=False,
                  threads:int | None=None):
         self.path = path
         self.engine = self._validation_check(path,
@@ -20,6 +21,7 @@ class ScanReadstat:
         self._metadata = None
         self._df = None
         self._schema = None
+        self.use_mmap = use_mmap
 
     @property
     def df(self) -> pl.LazyFrame:
@@ -52,7 +54,8 @@ class ScanReadstat:
                                size_hint=10_000,
                                n_rows=1,
                                threads=self.threads,
-                               engine=self.engine)
+                               engine=self.engine,
+                               use_mmap=self.use_mmap)
 
         self._schema = src.schema()
         self._metadata = src.get_metadata()
@@ -84,11 +87,13 @@ class ScanReadstat:
 def scan_readstat(path:str,
                   engine:str="readstat",
                   threads:int|None=None,
+                  use_mmap:bool=False,
                   reader:PyPolarsReadstat | None=None) -> pl.LazyFrame:
     if reader is None:
         reader = ScanReadstat(path=path,
                             engine=engine,
-                            threads=threads)
+                            threads=threads,
+                            use_mmap=use_mmap)
 
     def schema() -> pl.Schema:
         return reader.schema
@@ -111,7 +116,8 @@ def scan_readstat(path:str,
                                size_hint=batch_size,
                                n_rows=n_rows,
                                threads=reader.threads,
-                               engine=engine)
+                               engine=engine,
+                               use_mmap=use_mmap)
         
         if with_columns is not None: 
             src.set_with_columns(with_columns)

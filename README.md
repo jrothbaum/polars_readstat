@@ -38,6 +38,13 @@ metadata = reader.metadata  # Python dictionary with metadata information, inclu
 schema = reader.schema  # Polars schema
 df = reader.df  # LazyFrame
 
+# You can also use memory mapping to speed up reads with the readstat engine
+#   Some caveats, 
+#     1)it can use a LOT of ram)
+#     2) It doesn't really speed up reads for sas files (and I haven't tested SPSS)
+df = scan_readstat("/path/file.dta",
+                   use_mmap=True) # default is False 
+                   
 # Then do any normal thing you'd do in polars
 
 # That's it

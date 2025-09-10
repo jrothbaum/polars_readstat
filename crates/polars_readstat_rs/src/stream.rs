@@ -210,6 +210,7 @@ impl PolarsReadstat {
         with_columns: Option<Vec<String>>,
         threads: usize,
         engine: String,
+        use_mmap:bool,
     ) -> Self {
         let mut reader = Reader::new(
             path.clone(),
@@ -219,10 +220,11 @@ impl PolarsReadstat {
             engine.clone(),
             None,
             None,
-            None
+            None,
+            use_mmap
         );
 
-        if engine == "readstat" {
+        if engine == "readstat" && use_mmap {
             let shared_mmap = SharedMmap::new(&path).unwrap();
             reader.set_mmap(Some(shared_mmap));
         }

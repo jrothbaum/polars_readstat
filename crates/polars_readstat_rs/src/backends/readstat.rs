@@ -41,6 +41,7 @@ pub struct ReadStatBackend {
     // Cancellation flag
     cancel_flag: Arc<AtomicBool>,
 
+    use_mmap:bool,
     pub shared_mmap: Option<SharedMmap>,
 }
 
@@ -156,6 +157,7 @@ impl ReadStatBackend {
         threads: usize,
         md: Option<ReadStatMetadata>,
         _metadata: Option<Metadata>,
+        use_mmap:bool,
     ) -> Self {
         return ReadStatBackend { 
             rsp: ReadStatPath::new(PathBuf::from(path.clone())).unwrap(), 
@@ -172,6 +174,7 @@ impl ReadStatBackend {
             cancel_flag: Arc::new(AtomicBool::new(false)),
 
             shared_mmap: None,
+            use_mmap:use_mmap,
         }
     }
 
@@ -289,7 +292,11 @@ impl ReadStatBackend {
         let is_complete_clone = Arc::clone(self.is_complete.as_ref().unwrap());
         let notifier_clone = Arc::clone(self.notifier.as_ref().unwrap());
 
-        let shared_mmap = SharedMmap::new(&rsp_clone.path.to_str().unwrap()).unwrap();
+        let shared_mmap = if self.use_mmap {
+            Some(SharedMmap::new(&rsp_clone.path.to_str().unwrap()).unwrap())
+        } else {
+            None
+        };
         
     
 
@@ -299,7 +306,7 @@ impl ReadStatBackend {
             match data_guard.read_data(
                 &rsp_clone,
                 //  None    
-                Some(&shared_mmap.clone())
+                shared_mmap.clone().as_ref()
             ) {
             //  match data_guard.read_data(&rsp_clone,None) {   
                 Ok(_) => {

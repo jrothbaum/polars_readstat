@@ -29,14 +29,15 @@ pub struct PyPolarsReadstat {
 #[pymethods]
 impl PyPolarsReadstat {
     #[new]
-    #[pyo3(signature = (path, size_hint, n_rows, threads, engine
+    #[pyo3(signature = (path, size_hint, n_rows, threads, engine, use_mmap
     ))]
     fn new_source(
         path:String,
         size_hint: usize,
         n_rows: Option<usize>,
         threads: Option<usize>,
-        engine: String
+        engine: String,
+        use_mmap:bool,
     ) -> Self {
 
         let max_useful_threads = num_cpus::get_physical();
@@ -52,7 +53,8 @@ impl PyPolarsReadstat {
                 size_hint,
                 None,
                 threads,
-                engine
+                engine,
+                use_mmap
             ),
             n_rows
         }

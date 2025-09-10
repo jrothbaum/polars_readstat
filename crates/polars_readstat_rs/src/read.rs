@@ -22,7 +22,8 @@ pub struct Reader {
     pub path: String,
     pub size_hint: usize,
     pub with_columns: Option<Vec<String>>,
-    pub threads: usize
+    pub threads: usize,
+    pub use_mmap: bool,
 }
 unsafe impl Send for Reader {}
 impl Reader {
@@ -35,6 +36,7 @@ impl Reader {
         md: Option<ReadStatMetadata>,
         schema: Option<Schema>,
         _metadata: Option<Metadata>,
+        use_mmap:bool,
     ) -> Self {
 
         let engine_enum = if path.ends_with(".sas7bdat") & (engine == "cpp") {
@@ -64,6 +66,7 @@ impl Reader {
                     threads,
                     md,
                     _metadata,
+                    use_mmap,
                 ))
             }
         };
@@ -73,7 +76,8 @@ impl Reader {
             backend,
             size_hint,
             with_columns,
-            threads
+            threads,
+            use_mmap,
          }
     }
 
@@ -161,7 +165,8 @@ impl Reader {
                     "cpp".to_string(),
                     None,
                     Some(schema),
-                    Some(backend.metadata().unwrap().clone())
+                    Some(backend.metadata().unwrap().clone()),
+                    self.use_mmap,
                 )
             },
             Backend::ReadStat(backend) => {
@@ -176,10 +181,13 @@ impl Reader {
                     "readstat".to_string(),
                     backend.md.clone(),
                     Some(schema),
-                    Some(backend.metadata().unwrap().clone())
+                    Some(backend.metadata().unwrap().clone()),
+                    self.use_mmap
                 );
 
-                reader.set_mmap(backend.shared_mmap.clone());
+                if self.use_mmap {
+                    reader.set_mmap(backend.shared_mmap.clone());
+                }
                 // match &backend.shared_mmap {
                 //     Some(mmap) => {
                 //         println!("Copying reader with shared mmap at address: {:p}", 

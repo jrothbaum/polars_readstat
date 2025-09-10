@@ -40,12 +40,13 @@ fn main() {
         10000, 
         None, 
         num_threads, 
-        "readstat".to_string()
+        "readstat".to_string(),
+        true,
     );
 
 
     println!("{:?}", rs.metadata().clone().unwrap());
-    
+
     
     //  rs.set_columns_to_read(Some(vec_strings));
 
@@ -94,46 +95,46 @@ fn main() {
     
 
 
-    //  Use universal reader
-    let engine = "readstat";
-    let mut reader = read::Reader::new(
-        path.to_string(), 
-        100_000,
-        None,
-        4,
-        "readstat".to_string(),
-        None,
-        None,
-        None,
-    );
+    // //  Use universal reader
+    // let engine = "readstat";
+    // let mut reader = read::Reader::new(
+    //     path.to_string(), 
+    //     100_000,
+    //     None,
+    //     4,
+    //     "readstat".to_string(),
+    //     None,
+    //     None,
+    //     None,
+    // );
 
 
-    let schema = reader.schema().unwrap().clone();
-    let metadata = reader.metadata().unwrap().clone();
-    println!("schema: {:?}", schema);
-    println!("Metadata: {:?}",metadata);
+    // let schema = reader.schema().unwrap().clone();
+    // let metadata = reader.metadata().unwrap().clone();
+    // println!("schema: {:?}", schema);
+    // println!("Metadata: {:?}",metadata);
 
-    reader.initialize_reader(0, 500_000);
+    // reader.initialize_reader(0, 500_000);
 
-    let mut chunk_count = 0;
-    let cancel_after_chunks = 2;
-    while let Ok(Some(df)) = reader.next() {
-        println!("{:?}",df);
-        chunk_count += 1;
-        // Test cancellation
-        if chunk_count >= cancel_after_chunks {
-            let _ = reader.cancel();
-            break;
-        }
-    }
-
-    //  println!("{:?}", reader.metadata());
-    
-    // let mut reader_2 = reader.copy_for_reading();
-    // reader_2.initialize_reader(0, 5);
-
-    // while let Ok(Some(df)) = reader_2.next() {
+    // let mut chunk_count = 0;
+    // let cancel_after_chunks = 2;
+    // while let Ok(Some(df)) = reader.next() {
     //     println!("{:?}",df);
+    //     chunk_count += 1;
+    //     // Test cancellation
+    //     if chunk_count >= cancel_after_chunks {
+    //         let _ = reader.cancel();
+    //         break;
+    //     }
+    // }
+
+    // //  println!("{:?}", reader.metadata());
+    
+    // // let mut reader_2 = reader.copy_for_reading();
+    // // reader_2.initialize_reader(0, 5);
+
+    // // while let Ok(Some(df)) = reader_2.next() {
+    // //     println!("{:?}",df);
     // }
 
     // return ();

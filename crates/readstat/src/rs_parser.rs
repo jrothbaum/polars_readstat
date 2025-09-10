@@ -28,6 +28,7 @@ impl ReadStatParser {
     }
 
     pub fn new_from_shared_mmap(shared_mmap: &SharedMmap) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        //  println!("NEW WITH MMAP");
         let parser = shared_mmap.create_parser()?;
         Ok(Self { parser })
     }
