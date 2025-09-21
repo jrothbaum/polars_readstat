@@ -42,6 +42,7 @@ class CppSAS7BDATProject(ConanFile):
         tc = CMakeToolchain(self)
         tc.cache_variables["ENABLE_COVERAGE"] = self.options.ENABLE_COVERAGE
         tc.cache_variables["ENABLE_TESTING"] = self.options.ENABLE_TESTING
+        tc.variables["CMAKE_POLICY_VERSION_MINIMUM"] = "3.5"
         tc.generate()
         deps = CMakeDeps(self)
         deps.generate()
