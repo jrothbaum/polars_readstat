@@ -148,8 +148,10 @@ jobs:
       - name: Install older CMake (macOS)
         if: startsWith(matrix.os, 'macos-')
         run: |
-          brew install cmake@3.25
-          echo "$(brew --prefix cmake@3.25)/bin" >> $GITHUB_PATH
+          # Install specific CMake version via pip
+          pip3 install cmake==3.25.2
+          
+          # Verify version
           cmake --version
 
           
