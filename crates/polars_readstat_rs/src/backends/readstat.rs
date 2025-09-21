@@ -210,6 +210,11 @@ impl ReadStatBackend {
             } else { 
                 Some(md.table_name) 
             },
+            file_label: if md.file_label.is_empty() {
+                None 
+            } else { 
+                Some(md.file_label) 
+            },
             encoding: if md.file_encoding.is_empty() { 
                 None 
             } else { 

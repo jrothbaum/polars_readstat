@@ -127,6 +127,10 @@ impl PyPolarsReadstat {
             metadata_dict.set_item("compression", &md.file_info.compression)?;
             
             // Optional fields that might be None
+            metadata_dict.set_item("file_label", match &md.file_info.file_label {
+                Some(label) => label.into_py(py),
+                None => py.None(),
+            })?;
             metadata_dict.set_item("created_date", match md.file_info.created_date {
                 Some(date) => date.into_py(py),
                 None => py.None(),
@@ -227,6 +231,10 @@ impl PyPolarsReadstat {
             info_dict.set_item("table_name", &md.file_info.name)?;
             info_dict.set_item("encoding", &md.file_info.encoding)?;
             info_dict.set_item("file_type", &md.file_info.file_type)?;
+            info_dict.set_item("file_label", match &md.file_info.file_label {
+                Some(label) => label.into_py(py),
+                None => py.None(),
+            })?;
             info_dict.set_item("created", match md.file_info.created_date {
                 Some(date) => date.into_py(py),
                 None => py.None(),

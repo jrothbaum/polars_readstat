@@ -19,6 +19,7 @@ pub struct MetadataFileInfo {
     
     // File metadata
     pub name: Option<String>,
+    pub file_label: Option<String>,
     pub encoding: Option<String>,
     pub file_type: Option<String>,
     pub sas_release: Option<String>,

@@ -169,6 +169,12 @@ impl CppBackend {
             } else { 
                 Some(file_strings.dataset_name) 
             },
+            // file_label: if file_strings.dataset_label.is_empty() {
+            //     None 
+            // } else { 
+            //     Some(file_strings.dataset_label) 
+            // },
+            file_label: None,
             encoding: if file_strings.encoding.is_empty() { 
                 None 
             } else { 
