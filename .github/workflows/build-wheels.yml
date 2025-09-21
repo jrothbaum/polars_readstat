@@ -190,6 +190,7 @@ jobs:
           RUST_BACKTRACE: full
           BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/include/clang"
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos-target }}
+          CMAKE_ARGS: "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
         shell: bash
 
       - name: Build wheels (Windows)
