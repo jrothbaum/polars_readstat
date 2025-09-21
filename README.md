@@ -34,9 +34,15 @@ df = scan_readstat("/path/file.sas7bdat",
 
 from polars_readstat import ScanReadstat
 reader = ScanReadstat(path=path)  # You can pass engine for sas7bdat files, as above
-metadata = reader.metadata  # Python dictionary with metadata information, including value labels
-schema = reader.schema  # Polars schema
-df = reader.df  # LazyFrame
+
+# Python dictionary with metadata information, including value labels
+metadata = reader.metadata  
+
+# Polars schema
+schema = reader.schema  
+
+# LazyFrame
+df = reader.df  
 
 # You can also use memory mapping to speed up reads with the readstat engine
 #   Some caveats, 
