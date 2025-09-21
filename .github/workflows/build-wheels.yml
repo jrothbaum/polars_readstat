@@ -145,6 +145,14 @@ jobs:
         run: |
           brew install autoconf automake libtool
 
+      - name: Install older CMake (macOS)
+        if: startsWith(matrix.os, 'macos-')
+        run: |
+          brew install cmake@3.25
+          echo "$(brew --prefix cmake@3.25)/bin" >> $GITHUB_PATH
+          cmake --version
+
+          
       - name: Install ReadStat dependencies (Windows)
         if: matrix.os == 'windows-latest'
         run: |
