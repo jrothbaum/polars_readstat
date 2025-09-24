@@ -153,11 +153,11 @@ fn link_prebuilt_library(manifest_dir: &PathBuf) {
     }
 
     // Debug: Check if main library exists in the selected directory
-    let main_lib_path = if cfg!(target_os = "windows") {
-        lib_dir.join("cppsas7bdat.lib")
-    } else {
-        lib_dir.join("libcppsas7bdat.a")
-    };
+    // let main_lib_path = if cfg!(target_os = "windows") {
+    //     lib_dir.join("cppsas7bdat.lib")
+    // } else {
+    //     lib_dir.join("libcppsas7bdat.a")
+    // };
 
     
     if arrow_lib_dir.exists() {

@@ -315,6 +315,11 @@ impl PolarsReadstat {
         for row_i in 0..p_row {
             let chunk_start = chunks_per_partition * row_i;
             let row_start = row_i * row_per_chunk;
+
+            // Skip if we've already processed all rows
+            if row_start >= n_rows {
+                continue;
+            }
             let row_end = min(row_start + row_per_chunk, n_rows);
 
             for col_i in 0..p_col {

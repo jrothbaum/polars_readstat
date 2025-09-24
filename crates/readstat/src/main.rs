@@ -84,7 +84,7 @@ fn main() {
     // });
 
     while let Some(df) = consumer.next() {
-        println!("{:?}", df);
+        println!("{:?}", df.height());
     }
     let elapsed = start.elapsed();
     println!("Time elapsed: {:?}", elapsed);

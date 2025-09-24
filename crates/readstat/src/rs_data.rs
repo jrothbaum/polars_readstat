@@ -21,7 +21,6 @@ use crate::{
         schema_with_filter_pushdown
     },
     rs_parser::{
-        ReadStatParser,
         create_parser
     },
     rs_path::ReadStatPath

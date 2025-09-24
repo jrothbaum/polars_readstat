@@ -217,7 +217,7 @@ pub extern "C" fn handle_variable_noop(
 
 
 pub extern "C" fn handle_value(
-    obs_index: c_int,
+    _obs_index: c_int,
     variable: *mut readstat_sys::readstat_variable_t,
     value: readstat_sys::readstat_value_t,
     ctx: *mut c_void,
