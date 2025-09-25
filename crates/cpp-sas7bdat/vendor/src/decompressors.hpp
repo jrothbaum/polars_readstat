@@ -19,6 +19,8 @@ constexpr uint8_t C_AT = 0x40;    /**< '@' */
 
 // ReadStat RLE command constants
 #define SAS_RLE_COMMAND_COPY64         0x00
+#define SAS_RLE_COMMAND_COPY64_PLUS_4096 0x01
+#define SAS_RLE_COMMAND_COPY96         0x02
 #define SAS_RLE_COMMAND_INSERT_BYTE18  0x04
 #define SAS_RLE_COMMAND_INSERT_AT17    0x05
 #define SAS_RLE_COMMAND_INSERT_BLANK17 0x06
@@ -243,6 +245,17 @@ struct RLE : public DST_VALUES<_endian, _format> {
       const uint8_t end_of_first_byte = control_byte & 0x0F;
 
       switch (command) {
+        case SAS_RLE_COMMAND_COPY64_PLUS_4096: {
+          if (!src.has_bytes(1)) goto done;
+          size_t count = src.pop() + 64 + (static_cast<size_t>(end_of_first_byte) * 256) + 4096;
+          copy_bytes(src, count);
+          break;
+        }
+        case SAS_RLE_COMMAND_COPY96: {
+          size_t count = end_of_first_byte + 96;
+          copy_bytes(src, count);
+          break;
+        }
         case SAS_RLE_COMMAND_COPY64: {
           if (!src.has_bytes(1)) goto done;
           size_t count = (static_cast<size_t>(end_of_first_byte) << 8) + src.pop() + 64;
