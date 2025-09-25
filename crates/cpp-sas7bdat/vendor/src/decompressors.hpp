@@ -17,6 +17,12 @@ constexpr uint8_t C_NULL = 0x00;  /**< '\0' */
 constexpr uint8_t C_SPACE = 0x20; /**< ' ' */
 constexpr uint8_t C_AT = 0x40;    /**< '@' */
 
+// RDC command constant
+#define SAS_RDC_COMMAND_SHORT_RLE    0
+#define SAS_RDC_COMMAND_LONG_RLE     1
+#define SAS_RDC_COMMAND_LONG_PATTERN 2
+// RDC commands 3-15 are short patterns with length = cmd
+
 // ReadStat RLE command constants
 #define SAS_RLE_COMMAND_COPY64         0x00
 #define SAS_RLE_COMMAND_COPY64_PLUS_4096 0x01
@@ -140,7 +146,6 @@ struct RDC : public DST_VALUES<_endian, _format> {
     uint32_t ctrl_mask = 0;
 
     while (src.has_bytes(1) && check()) {
-      // Check if we need more control bits
       if (ctrl_mask == 0) {
         if (!src.has_bytes(2)) {
           break;
@@ -152,36 +157,34 @@ struct RDC : public DST_VALUES<_endian, _format> {
       }
       
       if ((ctrl_bits & ctrl_mask) == 0) {
-        // Copy literal byte
         if (!src.has_bytes(1)) break;
         uint8_t literal = src.pop();
         store_value(literal, 1);
       } else {
-        // Compressed data
         if (!src.has_bytes(1)) break;
         uint8_t command_byte = src.pop();
         uint8_t cmd = (command_byte >> 4) & 0x0F;
         uint8_t cnt = command_byte & 0x0F;
         
-        if (cmd == 0) { // short RLE
+        if (cmd == SAS_RDC_COMMAND_SHORT_RLE) {
           if (!src.has_bytes(1)) break;
           uint8_t repeat_byte = src.pop();
           size_t count = cnt + 3;
           store_value(repeat_byte, count);
-        } else if (cmd == 1) { // long RLE  
+        } else if (cmd == SAS_RDC_COMMAND_LONG_RLE) {
           if (!src.has_bytes(2)) break;
           uint8_t extra = src.pop();
           uint8_t repeat_byte = src.pop();
           size_t count = cnt + ((static_cast<size_t>(extra) << 4) + 19);
           store_value(repeat_byte, count);
-        } else if (cmd == 2) { // long pattern
+        } else if (cmd == SAS_RDC_COMMAND_LONG_PATTERN) {
           if (!src.has_bytes(2)) break;
           uint8_t extra = src.pop();
           uint8_t count_byte = src.pop();
           size_t offset = cnt + 3 + (static_cast<size_t>(extra) << 4);
           size_t count = count_byte + 16;
           store_pattern(offset, count);
-        } else if (cmd >= 3 && cmd <= 15) { // short pattern
+        } else if (cmd >= 3 && cmd <= 15) {
           if (!src.has_bytes(1)) break;
           uint8_t extra = src.pop();
           size_t offset = cnt + 3 + (static_cast<size_t>(extra) << 4);
@@ -193,7 +196,6 @@ struct RDC : public DST_VALUES<_endian, _format> {
         }
       }
       
-      // Shift control mask for next iteration
       ctrl_mask >>= 1;
     }
     
