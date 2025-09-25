@@ -245,7 +245,10 @@ struct RLE : public DST_VALUES<_endian, _format> {
       const uint8_t control_byte = src.pop();
       const uint8_t command = (control_byte >> 4) & 0x0F;
       const uint8_t end_of_first_byte = control_byte & 0x0F;
-
+      spdlog::info("RLE: control_byte=0x{:02X}, command=0x{:X}, end_of_first_byte=0x{:X}", 
+              control_byte, command, end_of_first_byte);
+      spdlog::info("Constants: COPY64_PLUS_4096=0x{:X}, COPY96=0x{:X}", 
+              SAS_RLE_COMMAND_COPY64_PLUS_4096, SAS_RLE_COMMAND_COPY96);
       switch (command) {
         case SAS_RLE_COMMAND_COPY64_PLUS_4096: {
           if (!src.has_bytes(1)) goto done;
