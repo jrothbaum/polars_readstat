@@ -253,10 +253,10 @@ struct READ_METADATA : public READ_PAGE<_DataSource, _endian, _format>,
                    _subheader.offset, _subheader.length));
     _metadata->column_count = buf.template get_uinteger<ASSERT::YES>(
         _subheader.offset + integer_size);
-    D(spdlog::info("column_count={}\n", _metadata->column_count));
-    if (_metadata->col_count_p1 + _metadata->col_count_p2 !=
-        _metadata->column_count)
-      spdlog::warn("Column count mismatch\n");
+    // D(spdlog::info("column_count={}\n", _metadata->column_count));
+    // if (_metadata->col_count_p1 + _metadata->col_count_p2 !=
+    //     _metadata->column_count)
+    //   spdlog::warn("Column count mismatch\n");
   }
 
   void process_SUBHEADER_COUNTS_SUBHEADER(
@@ -418,6 +418,13 @@ struct READ_METADATA : public READ_PAGE<_DataSource, _endian, _format>,
     const size_t ncols = _metadata->column_count;
     _metadata->columns.reserve(ncols);
 
+    // // Add diagnostic logging
+    // spdlog::info("Creating columns: expected={}, names={}, labels={}, formats={}, "
+    //              "offsets={}, lengths={}, types={}, col_count_p1={}, col_count_p2={}\n",
+    //              ncols, column_names.size(), column_labels.size(), 
+    //              column_formats.size(), column_data_offsets.size(),
+    //              column_data_lengths.size(), column_data_types.size(),
+    //              _metadata->col_count_p1, _metadata->col_count_p2);
     auto get_value = [&](auto arg, auto vals, const size_t icol) {
       const auto n = std::min(ncols, vals.size());
       if (n != ncols)
