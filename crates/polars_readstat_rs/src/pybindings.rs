@@ -10,6 +10,8 @@ use pyo3::exceptions::PyValueError;
 use num_cpus;
 use std::cmp::min;
 use std::sync::Arc;
+use std::collections::HashMap;
+
 
 use crate::stream::PolarsReadstat;
 
@@ -157,12 +159,24 @@ impl PyPolarsReadstat {
                 var_dict.set_item("label", &col.label)?;
                 var_dict.set_item("length", &col.length)?;
 
-                // Add value labels
                 match &col.value_labels {
                     Some(labels) => {
                         let labels_dict = PyDict::new(py);
+                        let is_numeric = col.type_class
+                            .as_ref()
+                            .map(|t| t == "number" || t == "numeric")
+                            .unwrap_or(false);
+                        
                         for (key, value) in labels {
-                            labels_dict.set_item(key, value)?;
+                            let parsed_key = if is_numeric {
+                                key.parse::<i64>()
+                                    .map(|v| v.into_py(py))
+                                    .or_else(|_| key.parse::<f64>().map(|v| v.into_py(py)))
+                                    .unwrap_or_else(|_| key.into_py(py))
+                            } else {
+                                key.into_py(py)
+                            };
+                            labels_dict.set_item(parsed_key, value)?;
                         }
                         var_dict.set_item("value_labels", labels_dict)?;
                     },
@@ -197,12 +211,24 @@ impl PyPolarsReadstat {
                 var_dict.set_item("label", &col.label)?;
                 var_dict.set_item("length", &col.length)?;
 
-                // Add value labels
                 match &col.value_labels {
                     Some(labels) => {
                         let labels_dict = PyDict::new(py);
+                        let is_numeric = col.type_class
+                            .as_ref()
+                            .map(|t| t == "number" || t == "numeric")
+                            .unwrap_or(false);
+                        
                         for (key, value) in labels {
-                            labels_dict.set_item(key, value)?;
+                            let parsed_key = if is_numeric {
+                                key.parse::<i64>()
+                                    .map(|v| v.into_py(py))
+                                    .or_else(|_| key.parse::<f64>().map(|v| v.into_py(py)))
+                                    .unwrap_or_else(|_| key.into_py(py))
+                            } else {
+                                key.into_py(py)
+                            };
+                            labels_dict.set_item(parsed_key, value)?;
                         }
                         var_dict.set_item("value_labels", labels_dict)?;
                     },
@@ -249,5 +275,24 @@ impl PyPolarsReadstat {
             Err(PyValueError::new_err("Metadata not available for this file."))
         }
     }
+
+
 }
 
+
+fn parse_value_label_key(key: &str, type_class: &str) -> PyObject {
+    Python::with_gil(|py| {
+        if type_class == "number" || type_class == "numeric" {
+            // Try to parse as integer first
+            if let Ok(int_val) = key.parse::<i64>() {
+                return int_val.into_py(py);
+            }
+            // If that fails, try as float
+            if let Ok(float_val) = key.parse::<f64>() {
+                return float_val.into_py(py);
+            }
+        }
+        // Fall back to string if not numeric type or parsing fails
+        key.into_py(py)
+    })
+}
