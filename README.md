@@ -1,6 +1,12 @@
 # polars_readstat
 Polars IO plugin to read SAS (sas7bdat), Stata (dta), and SPSS (sav) files
 
+## Install
+
+```
+pip install polars-readstat
+```
+
 ## Basic usage
 ```
 import polars as pl
