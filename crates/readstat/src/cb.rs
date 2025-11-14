@@ -247,6 +247,8 @@ pub extern "C" fn handle_value(
             TypedColumn::StringColumn(vec) => vec.push(None),
             TypedColumn::F64Column(vec) => vec.push(None),
             TypedColumn::F32Column(vec) => vec.push(None),
+            TypedColumn::I8Column(vec) => vec.push(None),
+            TypedColumn::I16Column(vec) => vec.push(None),
             TypedColumn::I32Column(vec) => vec.push(None),
             TypedColumn::I64Column(vec) => vec.push(None),
             TypedColumn::DateColumn(vec) => vec.push(None),
@@ -269,12 +271,12 @@ pub extern "C" fn handle_value(
         TypedColumn::StringColumn(vec) => {
             vec.push(Some(ReadStatVar::get_value_string(value)));
         },
-        // TypedColumn::I8Column(vec) => {
-        //     vec[obs_index as usize] = Some(ReadStatVar::get_value_i8(value));
-        // },
-        // TypedColumn::I16Column(vec) => {
-        //     vec[obs_index as usize] = Some(ReadStatVar::get_value_i16(value));
-        // },
+        TypedColumn::I8Column(vec) => {
+            vec.push(Some(ReadStatVar::get_value_i32(value)));
+        },
+        TypedColumn::I16Column(vec) => {
+            vec.push(Some(ReadStatVar::get_value_i32(value)));
+        },
         TypedColumn::I32Column(vec) => {
             vec.push(Some(ReadStatVar::get_value_i32(value)));
         },

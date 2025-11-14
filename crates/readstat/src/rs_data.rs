@@ -44,8 +44,8 @@ impl Default for Extensions {
 
 pub enum TypedColumn {
     StringColumn(Vec<Option<String>>),
-    // I8Column(Vec<Option<i8>>),
-    // I16Column(Vec<Option<i16>>),
+    I8Column(Vec<Option<i32>>),
+    I16Column(Vec<Option<i32>>),
     I32Column(Vec<Option<i32>>),
     I64Column(Vec<Option<i64>>),
     F32Column(Vec<Option<f32>>),
@@ -158,12 +158,12 @@ impl ReadStatData {
                 DataType::Float32 => {
                     TypedColumn::F32Column(Vec::with_capacity(n_row_builder))
                 },
-                // DataType::Int8 => {
-                //     TypedColumn::I8Column(Vec::with_capacity(n_row_builder))
-                // },
-                // DataType::Int16 => {
-                //     TypedColumn::I16Column(Vec::with_capacity(n_row_builder))
-                // },
+                DataType::Int8 => {
+                    TypedColumn::I8Column(Vec::with_capacity(n_row_builder))
+                },
+                DataType::Int16 => {
+                    TypedColumn::I16Column(Vec::with_capacity(n_row_builder))
+                },
                 DataType::Int32 => {
                     TypedColumn::I32Column(Vec::with_capacity(n_row_builder))
                 },
@@ -218,14 +218,14 @@ impl ReadStatData {
                     let values = std::mem::take(vec);
                     Series::new(name.clone(), values)
                 },
-                // TypedColumn::I16Column(vec) => {
-                //     let values = std::mem::take(vec);
-                //     Series::new(name.clone(), values)
-                // },
-                // TypedColumn::I8Column(vec) => {
-                //     let values = std::mem::take(vec);
-                //     Series::new(name.clone(), values)
-                // },
+                TypedColumn::I16Column(vec) => {
+                    let values = std::mem::take(vec);
+                    Series::new(name.clone(), values)
+                },
+                TypedColumn::I8Column(vec) => {
+                    let values = std::mem::take(vec);
+                    Series::new(name.clone(), values)
+                },
                 TypedColumn::F64Column(vec) => {
                     let values = std::mem::take(vec);
                     Series::new(name.clone(), values)
