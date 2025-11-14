@@ -23,10 +23,6 @@ class ScanReadstat:
         self._schema = None
         self.use_mmap = use_mmap
 
-    @property
-    def df(self) -> pl.LazyFrame:
-        return scan_readstat(self.path,
-                             self.df)
 
     @property
     def schema(self) -> pl.Schema:
