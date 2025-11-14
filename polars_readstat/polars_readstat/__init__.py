@@ -80,11 +80,14 @@ class ScanReadstat:
             engine = "readstat"
 
         return engine
-def scan_readstat(path:str,
+def scan_readstat(path:Any,
                   engine:str="readstat",
                   threads:int|None=None,
                   use_mmap:bool=False,
                   reader:PyPolarsReadstat | None=None) -> pl.LazyFrame:
+
+    path = str(path)
+
     if reader is None:
         reader = ScanReadstat(path=path,
                             engine=engine,
@@ -131,26 +134,4 @@ def scan_readstat(path:str,
     
     return out
 
-def _validation_check(path:str,
-                      engine:str) -> str:
-    valid_files = [".sas7bdat",
-                   ".dta",
-                   ".sav"]
-    is_valid = False
-    for fi in valid_files:
-        is_valid = is_valid or path.endswith(fi)
 
-    if not is_valid:
-        message = f"{path} is not a valid file for polars_readstat.  It must be one of these: {valid_files} ( is not a valid file )"
-        raise Exception(message)
-    
-    if path.endswith(".sas7bdat") and engine not in ["cpp","readstat"]:
-        print(f"{engine} is not a valid reader for sas7bdat files.  Defaulting to cpp.",
-                flush=True)
-        engine = "cpp"
-    if not path.endswith(".sas7bdat") and engine == "cpp":
-        print(f"{engine} is not a valid reader for anything but sas7bdat files.  Defaulting to readstat.",
-                flush=True)
-        engine = "readstat"
-
-    return engine
