@@ -1,16 +1,17 @@
 from __future__ import annotations
 from typing import Any, Iterator, Optional
+from pathlib import Path
 from polars.io.plugins import register_io_source
 import polars as pl
 from polars_readstat.polars_readstat_rs import PyPolarsReadstat
 
 class ScanReadstat:
     def __init__(self,
-                 path:str,
+                 path:str | Path,
                  engine:str="readstat",
                  use_mmap:bool=False,
                  threads:int | None=None):
-        self.path = path
+        self.path = Path(path)
         self.engine = self._validation_check(path,
                                              engine)
         if threads is None:
@@ -46,7 +47,7 @@ class ScanReadstat:
         
     
     def _get_schema(self) -> None:
-        src = PyPolarsReadstat(path=self.path,
+        src = PyPolarsReadstat(path=str(self.path),
                                size_hint=10_000,
                                n_rows=1,
                                threads=self.threads,
@@ -57,14 +58,14 @@ class ScanReadstat:
         self._metadata = src.get_metadata()
 
     def _validation_check(self,
-                          path:str,
+                          path: Path,
                           engine:str) -> str:
         valid_files = [".sas7bdat",
                         ".dta",
                         ".sav"]
         is_valid = False
         for fi in valid_files:
-            is_valid = is_valid or path.endswith(fi)
+            is_valid = is_valid or (path.suffix == fi)
 
         if not is_valid:
             message = f"{path} is not a valid file for polars_readstat.  It must be one of these: {valid_files} ( is not a valid file )"
@@ -80,16 +81,15 @@ class ScanReadstat:
             engine = "readstat"
 
         return engine
-def scan_readstat(path:Any,
+def scan_readstat(path: str | Path,
                   engine:str="readstat",
                   threads:int|None=None,
                   use_mmap:bool=False,
                   reader:PyPolarsReadstat | None=None) -> pl.LazyFrame:
 
-    path = str(path)
 
     if reader is None:
-        reader = ScanReadstat(path=path,
+        reader = ScanReadstat(path=str(path),
                             engine=engine,
                             threads=threads,
                             use_mmap=use_mmap)
