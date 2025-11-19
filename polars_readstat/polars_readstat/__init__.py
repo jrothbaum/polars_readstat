@@ -89,7 +89,7 @@ def scan_readstat(path: str | Path,
 
 
     if reader is None:
-        reader = ScanReadstat(path=str(path),
+        reader = ScanReadstat(path=path,
                             engine=engine,
                             threads=threads,
                             use_mmap=use_mmap)
