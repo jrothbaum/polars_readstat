@@ -11,7 +11,7 @@ class ScanReadstat:
                  engine:str="readstat",
                  use_mmap:bool=False,
                  threads:int | None=None):
-        self.path = Path(path)
+        self.path = str(path)
         self.engine = self._validation_check(path,
                                              engine)
         if threads is None:
@@ -58,14 +58,14 @@ class ScanReadstat:
         self._metadata = src.get_metadata()
 
     def _validation_check(self,
-                          path: Path,
+                          path: str,
                           engine:str) -> str:
         valid_files = [".sas7bdat",
                         ".dta",
                         ".sav"]
         is_valid = False
         for fi in valid_files:
-            is_valid = is_valid or (path.suffix == fi)
+            is_valid = is_valid or (Path(path).suffix == fi)
 
         if not is_valid:
             message = f"{path} is not a valid file for polars_readstat.  It must be one of these: {valid_files} ( is not a valid file )"
