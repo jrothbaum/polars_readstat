@@ -7,12 +7,12 @@ from polars_readstat.polars_readstat_rs import PyPolarsReadstat
 
 class ScanReadstat:
     def __init__(self,
-                 path:str | Path,
+                 path:Any,
                  engine:str="readstat",
                  use_mmap:bool=False,
                  threads:int | None=None):
-        if isinstance(path,Path):
-            path = str(path.as_posix())
+
+        path = str(path)
 
         self.path = path
         self.engine = self._validation_check(self.path,
@@ -84,14 +84,13 @@ class ScanReadstat:
             engine = "readstat"
 
         return engine
-def scan_readstat(path: str | Path,
+def scan_readstat(path:Any,
                   engine:str="readstat",
                   threads:int|None=None,
                   use_mmap:bool=False,
                   reader:PyPolarsReadstat | None=None) -> pl.LazyFrame:
 
-    if isinstance(path,Path):
-        path = str(path.as_posix())
+    path = str(path)
 
     if reader is None:
         reader = ScanReadstat(path=path,
