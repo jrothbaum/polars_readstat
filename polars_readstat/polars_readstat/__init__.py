@@ -11,8 +11,11 @@ class ScanReadstat:
                  engine:str="readstat",
                  use_mmap:bool=False,
                  threads:int | None=None):
-        self.path = str(path)
-        self.engine = self._validation_check(path,
+        if isinstance(path,Path):
+            path = str(path.as_posix())
+
+        self.path = path
+        self.engine = self._validation_check(self.path,
                                              engine)
         if threads is None:
             threads = pl.thread_pool_size()
@@ -87,6 +90,8 @@ def scan_readstat(path: str | Path,
                   use_mmap:bool=False,
                   reader:PyPolarsReadstat | None=None) -> pl.LazyFrame:
 
+    if isinstance(path,Path):
+        path = str(path.as_posix())
 
     if reader is None:
         reader = ScanReadstat(path=path,
