@@ -306,22 +306,42 @@ struct READ_METADATA : public READ_PAGE<_DataSource, _endian, _format>,
   }
 
   std::string get_column_text_substr(const size_t _idx, size_t _offset,
-                                     size_t _length) const noexcept {
+                                   size_t _length) const noexcept {
     if (_idx < column_texts.size()) {
       const auto ct = column_texts[std::min(_idx, column_texts.size() - 1)];
       const auto n = ct.size();
       _offset = std::min(_offset, n);
       _length = std::min(_length, n - _offset);
-      if (_length && std::isprint(ct[_offset])) {
-        while (_length && std::isspace(ct[_offset])) {
-          ++_offset;
-          --_length;
-        }
-        while (_length && (!std::isprint(ct[_offset + _length - 1]) ||
-                           std::isspace(ct[_offset + _length - 1]))) {
-          --_length;
-        }
-        return ct.substr(_offset, _length);
+      
+      if (_length == 0) return {};
+      
+      // Extract substring first
+      std::string result = ct.substr(_offset, _length);
+      
+      // Trim leading whitespace (ASCII only to be safe)
+      size_t start = 0;
+      while (start < result.size() && 
+            static_cast<unsigned char>(result[start]) <= 127 && 
+            std::isspace(result[start])) {
+        ++start;
+      }
+      
+      // Trim trailing whitespace (ASCII only to be safe)
+      size_t end = result.size();
+      while (end > start && 
+            static_cast<unsigned char>(result[end-1]) <= 127 && 
+            std::isspace(result[end-1])) {
+        --end;
+      }
+      
+      // Also trim trailing nulls/unprintable ASCII
+      while (end > start && 
+            static_cast<unsigned char>(result[end-1]) < 32) {
+        --end;
+      }
+      
+      if (end > start) {
+        return result.substr(start, end - start);
       }
     }
     return {};
