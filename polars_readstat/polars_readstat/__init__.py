@@ -9,9 +9,10 @@ class ScanReadstat:
     def __init__(
         self,
         path: str,
-        engine: str = "readstat",
+        engine: str = "cpp",
         use_mmap: bool = False,
-        threads: int | None = None
+        threads: int | None = None,
+        schema_overrides: Dict[Any, Any] | None = None,
     ):
         self.path = str(path)
         self.engine = self._validation_check(self.path, engine)
@@ -23,6 +24,7 @@ class ScanReadstat:
         self._metadata = None
         self._schema = None
         self.use_mmap = use_mmap
+        self.schema_overrides = schema_overrides
 
     @property
     def schema(self) -> pl.Schema:
@@ -38,7 +40,7 @@ class ScanReadstat:
     
     @property
     def df(self) -> pl.LazyFrame:
-        return scan_readstat(self.path, engine=self.engine)
+        return scan_readstat(self.path, engine=self.engine, schema_overrides=self.schema_overrides)
         
     def _get_schema(self) -> None:
         src = PyPolarsReadstat(
@@ -63,18 +65,25 @@ class ScanReadstat:
             raise Exception(message)
         
         if path.endswith(".sas7bdat") and engine not in ["cpp", "readstat"]:
-            print(f"{engine} is not a valid reader for sas7bdat files. Defaulting to cpp.", flush=True)
+            if engine == "":
+                pass
+                # print("Defaulting to cpp engine for reading sas file")
+            else:
+                print(f"{engine} is not a valid reader for sas7bdat files. Defaulting to cpp.", flush=True)
             engine = "cpp"
         
         if not path.endswith(".sas7bdat") and engine == "cpp":
             print(f"{engine} is not a valid reader for anything but sas7bdat files. Defaulting to readstat.", flush=True)
+            engine = "readstat"
+        if not path.endswith(".sas7bdat") and engine == "":
+            # print("Defaulting to readstat engine")
             engine = "readstat"
 
         return engine
 
 def scan_readstat(
     path: Any,
-    engine: str = "readstat",
+    engine: str = "",
     threads: int | None = None,
     use_mmap: bool = False,
     reader: ScanReadstat | None = None,
@@ -107,8 +116,10 @@ def scan_readstat(
             path=path,
             engine=engine,
             threads=threads,
-            use_mmap=use_mmap
+            use_mmap=use_mmap,
+            schema_overrides=schema_overrides
         )
+        engine = reader.engine
 
     def schema_generator() -> pl.Schema:
         base_schema = reader.schema
