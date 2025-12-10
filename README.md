@@ -96,7 +96,7 @@ For each file, I compared 4 different scenarios: 1) load the full file, 2) load 
 
 ### Compared to Pandas and Pyreadstat (using read_file_multiprocessing for parallel processing in Pyreadstat)
 #### SAS
-(speedup relative to pandas in parenthesis below each)
+all times in seconds (speedup relative to pandas in parenthesis below each)
 | Library | Full File | Subset: True | Filter: True | Subset: True, Filter: True |
 |---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
 | polars_readstat<br>engine="cpp"<br>(the default option) | 1.31<br>(1.6×) | 0.09<br>(22.9×) | 1.56<br>(1.9×) | 0.09<br>(23.2×) |
@@ -105,7 +105,7 @@ For each file, I compared 4 different scenarios: 1) load the full file, 2) load 
 | pyreadstat | 10.75<br>(0.2×) | 0.46<br>(4.5×) | 11.93<br>(0.3×) | 0.50<br>(4.2×) |
 
 #### Stata
-(speedup relative to pandas in parenthesis below each)
+all times in seconds (speedup relative to pandas in parenthesis below each)
 | Library | Full File | Subset: True | Filter: True | Subset: True, Filter: True |
 |---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
 | polars_readstat<br>engine="readstat"<br>(the only option) | 1.80<br>(0.6×) | 0.27<br>(4.4×) | 1.31<br>(0.8×) | 0.29<br>(3.3×) |
