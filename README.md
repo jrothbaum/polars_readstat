@@ -97,8 +97,8 @@ Pending tasks:
 (speedup relative to pandas in parenthesis below each)
 | Library | Subset: False, Filter: False | Subset: True, Filter: False | Subset: False, Filter: True | Subset: True, Filter: True |
 |---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
-| polars (cpp, default) | 1.31<br>(1.6×) | 0.09<br>(22.9×) | 1.56<br>(1.9×) | 0.09<br>(23.2×) |
-| polars (readstat) | 5.27<br>(0.4×) | 0.69<br>(3.0×) | 7.62<br>(0.4×) | 0.79<br>(2.6×) |
+| polars_readstat<br>engine="cpp"<br>(the default option) | 1.31<br>(1.6×) | 0.09<br>(22.9×) | 1.56<br>(1.9×) | 0.09<br>(23.2×) |
+| polars_readstat<br>engine="readstat" | 5.27<br>(0.4×) | 0.69<br>(3.0×) | 7.62<br>(0.4×) | 0.79<br>(2.6×) |
 | pandas | 2.07 | 2.06 | 3.03 | 2.09 |
 | pyreadstat | 10.75<br>(0.2×) | 0.46<br>(4.5×) | 11.93<br>(0.3×) | 0.50<br>(4.2×) |
 
@@ -106,7 +106,7 @@ Pending tasks:
 (speedup relative to pandas in parenthesis below each)
 | Library | Subset: False, Filter: False | Subset: True, Filter: False | Subset: False, Filter: True | Subset: True, Filter: True |
 |---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
-| polars (readstat) | 1.80<br>(0.6×) | 0.27<br>(4.4×) | 1.31<br>(0.8×) | 0.29<br>(3.3×) |
+| polars_readstat<br>engine="readstat"<br>(the only option) | 1.80<br>(0.6×) | 0.27<br>(4.4×) | 1.31<br>(0.8×) | 0.29<br>(3.3×) |
 | pandas | 1.14 | 1.18 | 0.99 | 0.96 |
 | pyreadstat | 7.46<br>(0.2×) | 2.18<br>(0.5×) | 7.66<br>(0.1×) | 2.24<br>(0.4×) |
 
