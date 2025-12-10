@@ -91,6 +91,28 @@ Pending tasks:
 - Unit tests on the data sets used by [pyreadstat](https://github.com/Roche/pyreadstat) to confirm that my output matches theirs
 
 ## Benchmark
+
+### Compared to Pandas and Pyreadstat (using read_file_multiprocessing for parallel processing in Pyreadstat)
+#### SAS
+(speedup relative to pandas in parenthesis below each)
+| Library | Subset: False, Filter: False | Subset: True, Filter: False | Subset: False, Filter: True | Subset: True, Filter: True |
+|---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
+| polars (cpp, default) | 1.31<br>(1.6×) | 0.09<br>(22.9×) | 1.56<br>(1.9×) | 0.09<br>(23.2×) |
+| polars (readstat) | 5.27<br>(0.4×) | 0.69<br>(3.0×) | 7.62<br>(0.4×) | 0.79<br>(2.6×) |
+| pandas | 2.07 | 2.06 | 3.03 | 2.09 |
+| pyreadstat | 10.75<br>(0.2×) | 0.46<br>(4.5×) | 11.93<br>(0.3×) | 0.50<br>(4.18×) |
+
+#### Stata
+(speedup relative to pandas in parenthesis below each)
+| Library | Subset: False, Filter: False | Subset: True, Filter: False | Subset: False, Filter: True | Subset: True, Filter: True |
+|---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
+| polars (readstat) | 1.80<br>(0.6×) | 0.27<br>(4.4×) | 1.31<br>(0.8×) | 0.29<br>(3.3×) |
+| pandas | 1.14 | 1.18 | 0.99 | 0.96 |
+| pyreadstat | 7.46<br>(0.2×) | 2.18<br>(0.5×) | 7.66<br>(0.1×) | 2.24<br>(0.4×) |
+
+
+
+#### Details
 This was run on my computer, with the following specs (and reading the data from an external SSD):<br>
 CPU: AMD Ryzen 7 8845HS w/ Radeon 780M Graphics<br>
 Cores: 16<br>
@@ -104,26 +126,6 @@ This is not intended to be a scientific benchmark, just a test of loading realis
 For each file, I compared 4 different scenarios: 1) load the full file, 2) load a subset of columns, 3) filter to a subet of rows, 4) load a subset of columns and filter to a subset of rows.
 
 All reported times are in seconds using python's time.time() (I know...).
-
-### Compared to Pandas and Pyreadstat (using read_file_multiprocessing for parallel processing in Pyreadstat)
-#### SAS
-(time relative to pandas in parenthesis below each)
-
-| Library | Subset: False, Filter: False | Subset: True, Filter: False | Subset: False, Filter: True | Subset: True, Filter: True |
-|---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
-| polars (cpp, default) | 1.31<br>(0.63) | 0.09<br>(0.04) | 1.56<br>(0.51) | 0.09<br>(0.04) |
-| polars (readstat) | 5.27<br>(2.55) | 0.69<br>(0.33) | 7.62<br>(2.51) | 0.79<br>(0.38) |
-| pandas | 2.07 | 2.06 | 3.03 | 2.09 |
-| pyreadstat | 10.75<br>(5.19) | 0.46<br>(0.22) | 11.93<br>(3.94) | 0.50<br>(0.24) |
-
-#### Stata
-(time relative to pandas in parenthesis below each)
-
-| Library | Subset: False, Filter: False | Subset: True, Filter: False | Subset: False, Filter: True | Subset: True, Filter: True |
-|---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
-| polars (readstat) | 1.80<br>(1.58) | 0.27<br>(0.23) | 1.31<br>(1.32) | 0.29<br>(0.30) |
-| pandas | 1.14 | 1.18 | 0.99 | 0.96 |
-| pyreadstat | 7.46<br>(6.54) | 2.18<br>(1.85) | 7.66<br>(7.74) | 2.24<br>(2.33) |
 
 
 
