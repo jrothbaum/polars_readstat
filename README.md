@@ -106,45 +106,24 @@ For each file, I compared 4 different scenarios: 1) load the full file, 2) load 
 All reported times are in seconds using python's time.time() (I know...).
 
 ### Compared to Pandas and Pyreadstat (using read_file_multiprocessing for parallel processing in Pyreadstat)
-* SAS
-  * Subset: False, Filter: False
-    * polars (readstat):  5.27
-    * polars (cpp):       1.31
-    * pandas:             2.07
-    * pyreadstat:        10.75
-  * Subset: True, Filter: False
-    * polars (readstat):  0.69
-    * polars (cpp):       0.09
-    * pandas:             2.06
-    * pyreadstat:         0.46
-  * Subset: False, Filter: True
-    * polars (readstat):  7.62
-    * polars (cpp):       1.56
-    * pandas:             3.03
-    * pyreadstat:        11.93
-  * Subset: True, Filter: True
-    * polars (readstat):  0.79
-    * polars (cpp):       0.09
-    * pandas:             2.09
-    * pyreadstat:         0.50
+#### SAS
+(time relative to pandas in parenthesis below each)
 
-* Stata
-  * Subset: False, Filter: False
-    * polars (readstat):  1.80
-    * pandas:             1.14
-    * pyreadstat:         7.46
-  * Subset: True, Filter: False
-    * polars (readstat):  0.27
-    * pandas:             1.18
-    * pyreadstat:         2.18
-  * Subset: False, Filter: True
-    * polars (readstat):  1.31
-    * pandas:             0.99
-    * pyreadstat:         7.66
-  * Subset: True, Filter: True
-    * polars (readstat):  0.29
-    * pandas:             0.96
-    * pyreadstat:         2.24
+| Library | Subset: False, Filter: False | Subset: True, Filter: False | Subset: False, Filter: True | Subset: True, Filter: True |
+|---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
+| polars (cpp, default) | 1.31<br>(0.63) | 0.09<br>(0.04) | 1.56<br>(0.51) | 0.09<br>(0.04) |
+| polars (readstat) | 5.27<br>(2.55) | 0.69<br>(0.33) | 7.62<br>(2.51) | 0.79<br>(0.38) |
+| pandas | 2.07 | 2.06 | 3.03 | 2.09 |
+| pyreadstat | 10.75<br>(5.19) | 0.46<br>(0.22) | 11.93<br>(3.94) | 0.50<br>(0.24) |
+
+#### Stata
+(time relative to pandas in parenthesis below each)
+
+| Library | Subset: False, Filter: False | Subset: True, Filter: False | Subset: False, Filter: True | Subset: True, Filter: True |
+|---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
+| polars (readstat) | 1.80<br>(1.58) | 0.27<br>(0.23) | 1.31<br>(1.32) | 0.29<br>(0.30) |
+| pandas | 1.14 | 1.18 | 0.99 | 0.96 |
+| pyreadstat | 7.46<br>(6.54) | 2.18<br>(1.85) | 7.66<br>(7.74) | 2.24<br>(2.33) |
 
 
 
