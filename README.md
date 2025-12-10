@@ -92,10 +92,12 @@ Pending tasks:
 
 ## Benchmark
 
+For each file, I compared 4 different scenarios: 1) load the full file, 2) load a subset of columns (Subset:True), 3) filter to a subet of rows (Filter: True), 4) load a subset of columns and filter to a subset of rows (Subset:True, Filter: True).
+
 ### Compared to Pandas and Pyreadstat (using read_file_multiprocessing for parallel processing in Pyreadstat)
 #### SAS
 (speedup relative to pandas in parenthesis below each)
-| Library | Subset: False, Filter: False | Subset: True, Filter: False | Subset: False, Filter: True | Subset: True, Filter: True |
+| Library | Full File | Subset: True | Filter: True | Subset: True, Filter: True |
 |---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
 | polars_readstat<br>engine="cpp"<br>(the default option) | 1.31<br>(1.6×) | 0.09<br>(22.9×) | 1.56<br>(1.9×) | 0.09<br>(23.2×) |
 | polars_readstat<br>engine="readstat" | 5.27<br>(0.4×) | 0.69<br>(3.0×) | 7.62<br>(0.4×) | 0.79<br>(2.6×) |
@@ -104,7 +106,7 @@ Pending tasks:
 
 #### Stata
 (speedup relative to pandas in parenthesis below each)
-| Library | Subset: False, Filter: False | Subset: True, Filter: False | Subset: False, Filter: True | Subset: True, Filter: True |
+| Library | Full File | Subset: True | Filter: True | Subset: True, Filter: True |
 |---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
 | polars_readstat<br>engine="readstat"<br>(the only option) | 1.80<br>(0.6×) | 0.27<br>(4.4×) | 1.31<br>(0.8×) | 0.29<br>(3.3×) |
 | pandas | 1.14 | 1.18 | 0.99 | 0.96 |
@@ -122,8 +124,6 @@ Last Run: August 31, 2025
 Version: 0.7 (with mmap in readstat)
 
 This is not intended to be a scientific benchmark, just a test of loading realistic files.  The Stata and SAS files used are different.  One is tall and narrow (lots of rows, few columns) and the other is shorter and wider (fewer rows, many more columns).
-
-For each file, I compared 4 different scenarios: 1) load the full file, 2) load a subset of columns, 3) filter to a subet of rows, 4) load a subset of columns and filter to a subset of rows.
 
 All reported times are in seconds using python's time.time() (I know...).
 
