@@ -1,5 +1,5 @@
 # polars_readstat
-Polars IO plugin to read SAS (sas7bdat), Stata (dta), and SPSS (sav) files.  It's competitive with pandas and pyreadstat for Stata and SPSS files, and can be ***much*** faster for SAS files, see some basic [benchmarks](#benchmark) below.
+Polars IO plugin to read SAS (sas7bdat), Stata (dta), and SPSS (sav) files.  It's competitive with pandas and pyreadstat for Stata and SPSS files, and can be ***much*** faster for SAS files.  See some basic [benchmarks](#benchmark) below.
 
 ## Install
 
