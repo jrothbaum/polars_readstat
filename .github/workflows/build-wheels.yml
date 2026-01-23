@@ -34,16 +34,20 @@ jobs:
               # OpenSSL 3.x build via Conan requires several Perl modules
               yum install -y autoconf automake libtool zlib-devel wget perl scl-utils
               
-              # Install Perl modules required for OpenSSL 3.x build
-              # perl-IPC-Cmd and perl-Time-Piece are needed by OpenSSL Configure script
-              # Use "|| true" to prevent set -e from exiting if packages not found
-              yum install -y perl-IPC-Cmd perl-Time-Piece || true
+              # Install Perl modules required for OpenSSL 3.x build (especially FIPS)
+              # These are needed by various OpenSSL build/configure scripts
+              yum install -y perl-IPC-Cmd perl-Time-Piece perl-Digest-SHA perl-Pod-Html || true
               
-              # Verify modules are available, install via CPAN if not
-              if ! perl -e "use IPC::Cmd;" 2>/dev/null || ! perl -e "use Time::Piece;" 2>/dev/null; then
-                echo "Some Perl modules not available via yum, installing via CPAN..."
-                yum install -y perl-CPAN || true
-                cpan -T IPC::Cmd Time::Piece
+              # Verify critical modules are available, install via CPAN if not
+              MISSING_MODULES=""
+              perl -e "use IPC::Cmd;" 2>/dev/null || MISSING_MODULES="$MISSING_MODULES IPC::Cmd"
+              perl -e "use Time::Piece;" 2>/dev/null || MISSING_MODULES="$MISSING_MODULES Time::Piece"
+              perl -e "use Digest::SHA;" 2>/dev/null || MISSING_MODULES="$MISSING_MODULES Digest::SHA"
+              
+              if [ -n "$MISSING_MODULES" ]; then
+                echo "Installing missing Perl modules via CPAN:$MISSING_MODULES"
+                yum install -y perl-CPAN perl-App-cpanminus || true
+                cpanm --notest $MISSING_MODULES || cpan -T $MISSING_MODULES
               fi
               
               # =========================================================
