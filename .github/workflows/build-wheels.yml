@@ -28,22 +28,17 @@ jobs:
               # Install basic dependencies
               yum install -y autoconf automake libtool zlib-devel wget perl
               
-              # Install centos-release-scl first
-              yum install -y centos-release-scl
-              
-              # Fix SCL repos to use vault.centos.org (CentOS 7 is EOL)
-              sed -i \
-                -e "s/^mirrorlist/#mirrorlist/" \
-                -e "s/^#baseurl/baseurl/" \
-                -e "s/mirror\.centos\.org/vault.centos.org/" \
-                /etc/yum.repos.d/CentOS-SCLo-scl*.repo
-              
-              # Now install LLVM toolset (newer clang for bindgen)
-              yum install -y llvm-toolset-7.0-clang llvm-toolset-7.0-llvm-devel
+              # Install EPEL for newer LLVM (llvm7.0 from EPEL works on CentOS 7)
+              yum install -y epel-release
+              yum install -y llvm7.0 llvm7.0-devel clang7.0 clang7.0-devel clang7.0-libs
               
               # Set up LLVM paths for bindgen
-              export LIBCLANG_PATH=/opt/rh/llvm-toolset-7.0/root/usr/lib64
-              export CLANG_PATH=/opt/rh/llvm-toolset-7.0/root/usr/bin/clang
+              # EPEL installs to /usr/lib64/llvm7.0
+              export LIBCLANG_PATH=/usr/lib64/llvm7.0/lib
+              export PATH="/usr/lib64/llvm7.0/bin:$PATH"
+              
+              # Verify clang version
+              clang --version || /usr/lib64/llvm7.0/bin/clang --version
               
               # Install modern CMake
               wget -qO- "https://cmake.org/files/v3.26/cmake-3.26.4-linux-x86_64.tar.gz" | tar --strip-components=1 -xz -C /usr/local
@@ -78,6 +73,8 @@ jobs:
         with:
           name: wheels-linux-rhel7
           path: dist
+
+          
   build-linux-rhel8:
     name: Build wheels on Linux (RHEL 8 / manylinux_2_28)
     runs-on: ubuntu-latest
