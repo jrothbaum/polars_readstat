@@ -134,7 +134,18 @@ jobs:
               export CMAKE_CXX_FLAGS="-std=c++17 -fPIC"
               export CMAKE_CXX_STANDARD="17"
               export RUST_BACKTRACE=full
-              export MAKEFLAGS="-j2"
+              
+              # Memory-saving options to prevent OOM on GitHub Actions (7GB RAM)
+              # Limit parallel jobs for make/cmake
+              export MAKEFLAGS="-j1"
+              export CMAKE_BUILD_PARALLEL_LEVEL=1
+              
+              # Limit Rust parallelism (codegen units and parallel compiler jobs)
+              export CARGO_BUILD_JOBS=1
+              export RUSTFLAGS="-C codegen-units=1"
+              
+              # Limit Conan parallelism (for building dependencies like OpenSSL, Arrow)
+              export CONAN_CPU_COUNT=1
               
               maturin build --release --strip --out dist \
                 --interpreter /opt/python/cp39-cp39/bin/python \
