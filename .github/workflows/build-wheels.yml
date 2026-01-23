@@ -10,8 +10,10 @@ jobs:
   # Linux builds using manylinux containers
   # =============================================================================
   
-  build-linux-rhel7:
-    name: Build wheels on Linux (RHEL 7 / manylinux2014)
+  name: Build wheels on Linux (RHEL 7 / manylinux2014)
+    # NOTE: We use docker run instead of container: directive because
+    # actions/checkout@v4 requires Node 20, which needs glibc 2.28+,
+    # but manylinux2014 is based on CentOS 7 with glibc 2.17.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,76 +27,114 @@ jobs:
             bash -c '
               set -ex
               
+              # =========================================================
               # Install basic dependencies
-              yum install -y autoconf automake libtool zlib-devel wget perl
+              # =========================================================
+              yum install -y autoconf automake libtool zlib-devel wget perl scl-utils
               
-              # Download LLVM toolset RPMs from a working mirror
+              # =========================================================
+              # Install LLVM/Clang toolset for bindgen
+              # The llvm-toolset-7 packages provide libclang.so needed by bindgen.
+              # CentOS 7 is EOL, so we try multiple mirrors.
+              # =========================================================
               cd /tmp
-              MIRROR="https://vault.centos.org/7.9.2009/sclo/x86_64/rh"
               
-              # Download llvm-toolset-7 packages (version 5.0.1)
-              wget -q ${MIRROR}/llvm-toolset-7-runtime-5.0.1-4.el7.x86_64.rpm
-              wget -q ${MIRROR}/llvm-toolset-7-5.0.1-4.el7.x86_64.rpm
-              wget -q ${MIRROR}/llvm-toolset-7-clang-libs-5.0.1-4.el7.x86_64.rpm
-              wget -q ${MIRROR}/llvm-toolset-7-llvm-libs-5.0.1-8.el7.x86_64.rpm
-              wget -q ${MIRROR}/llvm-toolset-7-clang-5.0.1-4.el7.x86_64.rpm
-              wget -q ${MIRROR}/llvm-toolset-7-llvm-5.0.1-8.el7.x86_64.rpm
+              # List of mirrors to try (in order of preference)
+              MIRRORS=(
+                "https://vault.centos.org/7.9.2009/sclo/x86_64/rh/llvm-toolset-7"
+                "https://repo.cloudlinux.com/cloudlinux/7/sclo/llvm-toolset-7/x86_64"
+                "http://centos.mirror.cdnetworks.com/7/sclo/x86_64/rh/llvm-toolset-7"
+              )
               
-              # Install the RPMs (order matters for dependencies)
-              rpm -ivh --nodeps llvm-toolset-7-runtime-5.0.1-4.el7.x86_64.rpm || true
-              rpm -ivh llvm-toolset-7-llvm-libs-5.0.1-8.el7.x86_64.rpm
-              rpm -ivh llvm-toolset-7-llvm-5.0.1-8.el7.x86_64.rpm
-              rpm -ivh llvm-toolset-7-clang-libs-5.0.1-4.el7.x86_64.rpm
-              rpm -ivh llvm-toolset-7-clang-5.0.1-4.el7.x86_64.rpm
-              rpm -ivh llvm-toolset-7-5.0.1-4.el7.x86_64.rpm || true
+              # Packages needed (in dependency order)
+              PACKAGES=(
+                "llvm-toolset-7-runtime-5.0.1-4.el7.x86_64.rpm"
+                "llvm-toolset-7-llvm-libs-5.0.1-8.el7.x86_64.rpm"
+                "llvm-toolset-7-llvm-5.0.1-8.el7.x86_64.rpm"
+                "llvm-toolset-7-clang-libs-5.0.1-4.el7.x86_64.rpm"
+                "llvm-toolset-7-clang-5.0.1-4.el7.x86_64.rpm"
+              )
               
-              # Find where libclang was installed
+              # Try to download each package from any available mirror
+              for pkg in "${PACKAGES[@]}"; do
+                downloaded=false
+                for mirror in "${MIRRORS[@]}"; do
+                  echo "Trying to download $pkg from $mirror..."
+                  if wget -q --timeout=30 "${mirror}/${pkg}"; then
+                    echo "  SUCCESS: Downloaded $pkg"
+                    downloaded=true
+                    break
+                  else
+                    echo "  FAILED: Could not download from this mirror"
+                  fi
+                done
+                if [ "$downloaded" = false ]; then
+                  echo "ERROR: Could not download $pkg from any mirror"
+                  exit 1
+                fi
+              done
+              
+              # List downloaded files
+              echo "=== Downloaded RPMs ==="
+              ls -la *.rpm
+              
+              # Install all RPMs together (yum resolves dependencies)
+              yum install -y ./*.rpm
+              
+              # Find and verify libclang.so
+              echo "=== Finding libclang ==="
               find /opt/rh -name "libclang*" 2>/dev/null || true
               
-              # Set up environment
+              # Set up LLVM environment
               export LIBCLANG_PATH=/opt/rh/llvm-toolset-7/root/usr/lib64
               export PATH="/opt/rh/llvm-toolset-7/root/usr/bin:$PATH"
               export LD_LIBRARY_PATH="/opt/rh/llvm-toolset-7/root/usr/lib64:${LD_LIBRARY_PATH:-}"
               
-              # Verify
-              clang --version
-              ls -la /opt/rh/llvm-toolset-7/root/usr/lib64/libclang* || true
+              # Verify clang
+              which clang && clang --version || echo "WARNING: clang not found in PATH"
+              ls -la ${LIBCLANG_PATH}/libclang* || echo "WARNING: libclang not found"
               
-              cd /io
-              
+              # =========================================================
               # Install modern CMake
+              # =========================================================
               wget -qO- "https://cmake.org/files/v3.26/cmake-3.26.4-linux-x86_64.tar.gz" | tar --strip-components=1 -xz -C /usr/local
+              cmake --version
               
+              # =========================================================
               # Install Rust
+              # =========================================================
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
               source ~/.cargo/env
+              rustup target add x86_64-unknown-linux-gnu
               
-              # Install maturin and conan via pip, then add to PATH
+              # =========================================================
+              # Install Python tools
+              # =========================================================
               /opt/python/cp39-cp39/bin/pip install maturin conan
               export PATH="/opt/python/cp39-cp39/bin:$PATH"
-              
-              # Verify conan is accessible
-              which conan
-              conan --version
               
               # Configure Conan
               conan profile detect --force
               
-              # Build wheel
+              # =========================================================
+              # Build the wheel
+              # =========================================================
+              cd /io
+              
               export CXXFLAGS="-std=c++17 -fPIC"
               export CMAKE_CXX_FLAGS="-std=c++17 -fPIC"
               export CMAKE_CXX_STANDARD="17"
+              export RUST_BACKTRACE=full
+              export MAKEFLAGS="-j2"
               
               maturin build --release --strip --out dist \
                 --interpreter /opt/python/cp39-cp39/bin/python \
+                --target x86_64-unknown-linux-gnu \
                 --compatibility manylinux2014
+              
+              echo "=== Build complete ==="
+              ls -la dist/
             '
-      
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-linux-rhel7
-          path: dist
       
       - name: Upload wheels
         uses: actions/upload-artifact@v4
