@@ -11,7 +11,11 @@ class SharedConfig:
         # Common boost settings
         if "boost" in str(conanfile.requires):
             conanfile.options["boost"].without_python = True
-            
+
+        # Disable OpenSSL FIPS module to reduce build memory usage
+        # FIPS is not needed for data file reading operations
+        conanfile.options["openssl"].no_fips = True
+        
         # Common spdlog settings  
         if "spdlog" in str(conanfile.requires):
             conanfile.options["spdlog"].shared = False
