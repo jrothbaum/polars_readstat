@@ -28,32 +28,37 @@ jobs:
               # Install basic dependencies
               yum install -y autoconf automake libtool zlib-devel wget perl
               
-              # Download and install LLVM toolset RPMs directly from vault.centos.org
-              # These are the SCL packages that include libclang.so
+              # Download LLVM toolset RPMs from a working mirror
               cd /tmp
+              MIRROR="https://vault.centos.org/7.9.2009/sclo/x86_64/rh"
               
-              # llvm-toolset-7.0 packages from vault
-              VAULT_URL="https://vault.centos.org/centos/7/sclo/x86_64/rh"
+              # Download llvm-toolset-7 packages (version 5.0.1)
+              wget -q ${MIRROR}/llvm-toolset-7-runtime-5.0.1-4.el7.x86_64.rpm
+              wget -q ${MIRROR}/llvm-toolset-7-5.0.1-4.el7.x86_64.rpm
+              wget -q ${MIRROR}/llvm-toolset-7-clang-libs-5.0.1-4.el7.x86_64.rpm
+              wget -q ${MIRROR}/llvm-toolset-7-llvm-libs-5.0.1-8.el7.x86_64.rpm
+              wget -q ${MIRROR}/llvm-toolset-7-clang-5.0.1-4.el7.x86_64.rpm
+              wget -q ${MIRROR}/llvm-toolset-7-llvm-5.0.1-8.el7.x86_64.rpm
               
-              wget -q ${VAULT_URL}/llvm-toolset-7.0-runtime-7.0-23.el7.x86_64.rpm
-              wget -q ${VAULT_URL}/llvm-toolset-7.0-llvm-7.0.1-3.el7.x86_64.rpm
-              wget -q ${VAULT_URL}/llvm-toolset-7.0-llvm-libs-7.0.1-3.el7.x86_64.rpm
-              wget -q ${VAULT_URL}/llvm-toolset-7.0-clang-7.0.1-3.el7.x86_64.rpm
-              wget -q ${VAULT_URL}/llvm-toolset-7.0-clang-libs-7.0.1-3.el7.x86_64.rpm
+              # Install the RPMs (order matters for dependencies)
+              rpm -ivh --nodeps llvm-toolset-7-runtime-5.0.1-4.el7.x86_64.rpm || true
+              rpm -ivh llvm-toolset-7-llvm-libs-5.0.1-8.el7.x86_64.rpm
+              rpm -ivh llvm-toolset-7-llvm-5.0.1-8.el7.x86_64.rpm
+              rpm -ivh llvm-toolset-7-clang-libs-5.0.1-4.el7.x86_64.rpm
+              rpm -ivh llvm-toolset-7-clang-5.0.1-4.el7.x86_64.rpm
+              rpm -ivh llvm-toolset-7-5.0.1-4.el7.x86_64.rpm || true
               
-              # Install the RPMs
-              yum install -y ./*.rpm
+              # Find where libclang was installed
+              find /opt/rh -name "libclang*" 2>/dev/null || true
               
-              # Verify libclang exists
-              find /opt/rh -name "libclang*" 2>/dev/null
-              ls -la /opt/rh/llvm-toolset-7.0/root/usr/lib64/libclang* || true
+              # Set up environment
+              export LIBCLANG_PATH=/opt/rh/llvm-toolset-7/root/usr/lib64
+              export PATH="/opt/rh/llvm-toolset-7/root/usr/bin:$PATH"
+              export LD_LIBRARY_PATH="/opt/rh/llvm-toolset-7/root/usr/lib64:${LD_LIBRARY_PATH:-}"
               
-              # Set up environment for llvm-toolset-7.0
-              export LIBCLANG_PATH=/opt/rh/llvm-toolset-7.0/root/usr/lib64
-              export PATH="/opt/rh/llvm-toolset-7.0/root/usr/bin:$PATH"
-              export LD_LIBRARY_PATH="/opt/rh/llvm-toolset-7.0/root/usr/lib64:$LD_LIBRARY_PATH"
-              
+              # Verify
               clang --version
+              ls -la /opt/rh/llvm-toolset-7/root/usr/lib64/libclang* || true
               
               cd /io
               
@@ -84,6 +89,12 @@ jobs:
                 --interpreter /opt/python/cp39-cp39/bin/python \
                 --compatibility manylinux2014
             '
+      
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-rhel7
+          path: dist
       
       - name: Upload wheels
         uses: actions/upload-artifact@v4
