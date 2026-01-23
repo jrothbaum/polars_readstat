@@ -28,20 +28,34 @@ jobs:
               # Install basic dependencies
               yum install -y autoconf automake libtool zlib-devel wget perl
               
-              # Install clang and llvm from extras repo
-              yum install -y clang llvm llvm-devel clang-devel
+              # Download and install LLVM toolset RPMs directly from vault.centos.org
+              # These are the SCL packages that include libclang.so
+              cd /tmp
               
-              # Check what we got
+              # llvm-toolset-7.0 packages from vault
+              VAULT_URL="https://vault.centos.org/centos/7/sclo/x86_64/rh"
+              
+              wget -q ${VAULT_URL}/llvm-toolset-7.0-runtime-7.0-23.el7.x86_64.rpm
+              wget -q ${VAULT_URL}/llvm-toolset-7.0-llvm-7.0.1-3.el7.x86_64.rpm
+              wget -q ${VAULT_URL}/llvm-toolset-7.0-llvm-libs-7.0.1-3.el7.x86_64.rpm
+              wget -q ${VAULT_URL}/llvm-toolset-7.0-clang-7.0.1-3.el7.x86_64.rpm
+              wget -q ${VAULT_URL}/llvm-toolset-7.0-clang-libs-7.0.1-3.el7.x86_64.rpm
+              
+              # Install the RPMs
+              yum install -y ./*.rpm
+              
+              # Verify libclang exists
+              find /opt/rh -name "libclang*" 2>/dev/null
+              ls -la /opt/rh/llvm-toolset-7.0/root/usr/lib64/libclang* || true
+              
+              # Set up environment for llvm-toolset-7.0
+              export LIBCLANG_PATH=/opt/rh/llvm-toolset-7.0/root/usr/lib64
+              export PATH="/opt/rh/llvm-toolset-7.0/root/usr/bin:$PATH"
+              export LD_LIBRARY_PATH="/opt/rh/llvm-toolset-7.0/root/usr/lib64:$LD_LIBRARY_PATH"
+              
               clang --version
               
-              # Find libclang
-              find /usr -name "libclang*" 2>/dev/null || true
-              rpm -ql clang | grep -i libclang || true
-              rpm -ql clang-devel | grep -i libclang || true
-              rpm -ql llvm-libs | grep -i lib || true
-              
-              # Set LIBCLANG_PATH (adjust based on where we find it)
-              export LIBCLANG_PATH=/usr/lib64
+              cd /io
               
               # Install modern CMake
               wget -qO- "https://cmake.org/files/v3.26/cmake-3.26.4-linux-x86_64.tar.gz" | tar --strip-components=1 -xz -C /usr/local
