@@ -28,15 +28,19 @@ jobs:
               # Install basic dependencies
               yum install -y autoconf automake libtool zlib-devel wget perl
               
-              # Install clang and llvm from extras repo (clang 3.4.2)
-              # This is old but should work for basic bindgen needs
+              # Install clang and llvm from extras repo
               yum install -y clang llvm llvm-devel clang-devel
               
               # Check what we got
               clang --version
-              ls -la /usr/lib64/libclang*
               
-              # Set LIBCLANG_PATH
+              # Find libclang
+              find /usr -name "libclang*" 2>/dev/null || true
+              rpm -ql clang | grep -i libclang || true
+              rpm -ql clang-devel | grep -i libclang || true
+              rpm -ql llvm-libs | grep -i lib || true
+              
+              # Set LIBCLANG_PATH (adjust based on where we find it)
               export LIBCLANG_PATH=/usr/lib64
               
               # Install modern CMake
