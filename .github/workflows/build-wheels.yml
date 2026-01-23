@@ -13,7 +13,6 @@ jobs:
   build-linux-rhel7:
     name: Build wheels on Linux (RHEL 7 / manylinux2014)
     runs-on: ubuntu-latest
-    # Don't use container: - instead we'll run docker commands manually
     steps:
       - uses: actions/checkout@v4
       
@@ -27,7 +26,15 @@ jobs:
               set -ex
               
               # Install dependencies
-              yum install -y autoconf automake libtool zlib-devel clang wget perl
+              yum install -y autoconf automake libtool zlib-devel wget perl
+              
+              # Install a newer LLVM/Clang (the system one is too old for bindgen)
+              yum install -y centos-release-scl
+              yum install -y llvm-toolset-7.0-clang llvm-toolset-7.0-llvm-devel
+              
+              # Set up LLVM paths
+              export LIBCLANG_PATH=/opt/rh/llvm-toolset-7.0/root/usr/lib64
+              export CLANG_PATH=/opt/rh/llvm-toolset-7.0/root/usr/bin/clang
               
               # Install modern CMake
               wget -qO- "https://cmake.org/files/v3.26/cmake-3.26.4-linux-x86_64.tar.gz" | tar --strip-components=1 -xz -C /usr/local
@@ -36,22 +43,23 @@ jobs:
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
               source ~/.cargo/env
               
-              # Install uv and maturin
-              curl -LsSf https://astral.sh/uv/install.sh | sh
-              source ~/.cargo/env
-              
-              # Install build tools
+              # Install maturin and conan via pip, then add to PATH
               /opt/python/cp39-cp39/bin/pip install maturin conan
+              export PATH="/opt/python/cp39-cp39/bin:$PATH"
+              
+              # Verify conan is accessible
+              which conan
+              conan --version
               
               # Configure Conan
-              /opt/python/cp39-cp39/bin/conan profile detect --force
+              conan profile detect --force
               
               # Build wheel
               export CXXFLAGS="-std=c++17 -fPIC"
               export CMAKE_CXX_FLAGS="-std=c++17 -fPIC"
               export CMAKE_CXX_STANDARD="17"
               
-              /opt/python/cp39-cp39/bin/maturin build --release --strip --out dist \
+              maturin build --release --strip --out dist \
                 --interpreter /opt/python/cp39-cp39/bin/python \
                 --compatibility manylinux2014
             '
