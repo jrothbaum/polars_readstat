@@ -25,14 +25,23 @@ jobs:
             bash -c '
               set -ex
               
-              # Install dependencies
+              # Install basic dependencies
               yum install -y autoconf automake libtool zlib-devel wget perl
               
-              # Install a newer LLVM/Clang (the system one is too old for bindgen)
+              # Install centos-release-scl first
               yum install -y centos-release-scl
+              
+              # Fix SCL repos to use vault.centos.org (CentOS 7 is EOL)
+              sed -i \
+                -e "s/^mirrorlist/#mirrorlist/" \
+                -e "s/^#baseurl/baseurl/" \
+                -e "s/mirror\.centos\.org/vault.centos.org/" \
+                /etc/yum.repos.d/CentOS-SCLo-scl*.repo
+              
+              # Now install LLVM toolset (newer clang for bindgen)
               yum install -y llvm-toolset-7.0-clang llvm-toolset-7.0-llvm-devel
               
-              # Set up LLVM paths
+              # Set up LLVM paths for bindgen
               export LIBCLANG_PATH=/opt/rh/llvm-toolset-7.0/root/usr/lib64
               export CLANG_PATH=/opt/rh/llvm-toolset-7.0/root/usr/bin/clang
               
@@ -69,7 +78,6 @@ jobs:
         with:
           name: wheels-linux-rhel7
           path: dist
-
   build-linux-rhel8:
     name: Build wheels on Linux (RHEL 8 / manylinux_2_28)
     runs-on: ubuntu-latest
