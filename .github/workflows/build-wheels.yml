@@ -13,85 +13,49 @@ jobs:
   build-linux-rhel7:
     name: Build wheels on Linux (RHEL 7 / manylinux2014)
     runs-on: ubuntu-latest
-    container: quay.io/pypa/manylinux2014_x86_64:latest
+    # Don't use container: - instead we'll run docker commands manually
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install dependencies and check toolchain
+      - name: Build wheels in manylinux2014 container
         run: |
-          # Note: manylinux2014 images have been updated to use vault.centos.org
-          # after CentOS 7 EOL (June 2024). The devtoolset provides GCC 10 with
-          # full C++17 support.
-          
-          # Install basic dependencies
-          yum install -y autoconf automake libtool zlib-devel clang wget perl
-          
-          # Install modern CMake
-          wget -qO- "https://cmake.org/files/v3.26/cmake-3.26.4-linux-x86_64.tar.gz" | tar --strip-components=1 -xz -C /usr/local
-          
-          # Check what we have
-          echo "=== System info ==="
-          cat /etc/os-release
-          echo "=== Toolchain versions ==="
-          gcc --version
-          g++ --version
-          cmake --version
-  
-      - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-        shell: bash
-  
-      - name: Add uv to PATH
-        run: |
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-        shell: bash
-  
-      - name: Verify uv installation
-        run: |
-          uv --version
-        shell: bash
-  
-      - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          source ~/.cargo/env
-          rustup target add x86_64-unknown-linux-gnu
-  
-      - name: Install Python dependencies with uv (no local build)
-        run: |
-          uv sync --group build --no-install-project
-        shell: bash
-  
-      - name: Install Python tools
-        run: |
-          /opt/python/cp39-cp39/bin/pip install maturin conan
-  
-      - name: Add Python tools to PATH
-        run: |
-          echo "/opt/python/cp39-cp39/bin" >> $GITHUB_PATH
-  
-      - name: Configure Conan profile
-        run: |
-          source ~/.cargo/env
-          /opt/python/cp39-cp39/bin/conan profile detect --force
-  
-      - name: Build wheels
-        run: |
-          source ~/.cargo/env
-          /opt/python/cp39-cp39/bin/maturin build --release --strip --out dist \
-            --interpreter /opt/python/cp39-cp39/bin/python \
-            --target x86_64-unknown-linux-gnu \
-            --compatibility manylinux2014
-        env:
-          RUST_BACKTRACE: full
-          BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/include/clang"
-          CXXFLAGS: "-std=c++17 -fPIC"
-          CMAKE_CXX_FLAGS: "-std=c++17 -fPIC"
-          CMAKE_CXX_STANDARD: "17"
-          MAKEFLAGS: "-j2"
-        shell: bash
-  
+          docker run --rm \
+            -v "${{ github.workspace }}:/io" \
+            -w /io \
+            quay.io/pypa/manylinux2014_x86_64:latest \
+            bash -c '
+              set -ex
+              
+              # Install dependencies
+              yum install -y autoconf automake libtool zlib-devel clang wget perl
+              
+              # Install modern CMake
+              wget -qO- "https://cmake.org/files/v3.26/cmake-3.26.4-linux-x86_64.tar.gz" | tar --strip-components=1 -xz -C /usr/local
+              
+              # Install Rust
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              source ~/.cargo/env
+              
+              # Install uv and maturin
+              curl -LsSf https://astral.sh/uv/install.sh | sh
+              source ~/.cargo/env
+              
+              # Install build tools
+              /opt/python/cp39-cp39/bin/pip install maturin conan
+              
+              # Configure Conan
+              /opt/python/cp39-cp39/bin/conan profile detect --force
+              
+              # Build wheel
+              export CXXFLAGS="-std=c++17 -fPIC"
+              export CMAKE_CXX_FLAGS="-std=c++17 -fPIC"
+              export CMAKE_CXX_STANDARD="17"
+              
+              /opt/python/cp39-cp39/bin/maturin build --release --strip --out dist \
+                --interpreter /opt/python/cp39-cp39/bin/python \
+                --compatibility manylinux2014
+            '
+      
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
