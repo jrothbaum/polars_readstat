@@ -6,8 +6,100 @@ on:
   workflow_dispatch: # Allows manual triggering
 
 jobs:
-  build-linux:
-    name: Build wheels on Linux (RHEL 8 compatible)
+  # =============================================================================
+  # Linux builds using manylinux containers
+  # =============================================================================
+  
+  build-linux-rhel7:
+    name: Build wheels on Linux (RHEL 7 / manylinux2014)
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux2014_x86_64:latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install dependencies and check toolchain
+        run: |
+          # Note: manylinux2014 images have been updated to use vault.centos.org
+          # after CentOS 7 EOL (June 2024). The devtoolset provides GCC 10 with
+          # full C++17 support.
+          
+          # Install basic dependencies
+          yum install -y autoconf automake libtool zlib-devel clang wget perl
+          
+          # Install modern CMake
+          wget -qO- "https://cmake.org/files/v3.26/cmake-3.26.4-linux-x86_64.tar.gz" | tar --strip-components=1 -xz -C /usr/local
+          
+          # Check what we have
+          echo "=== System info ==="
+          cat /etc/os-release
+          echo "=== Toolchain versions ==="
+          gcc --version
+          g++ --version
+          cmake --version
+  
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+        shell: bash
+  
+      - name: Add uv to PATH
+        run: |
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        shell: bash
+  
+      - name: Verify uv installation
+        run: |
+          uv --version
+        shell: bash
+  
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source ~/.cargo/env
+          rustup target add x86_64-unknown-linux-gnu
+  
+      - name: Install Python dependencies with uv (no local build)
+        run: |
+          uv sync --group build --no-install-project
+        shell: bash
+  
+      - name: Install Python tools
+        run: |
+          /opt/python/cp39-cp39/bin/pip install maturin conan
+  
+      - name: Add Python tools to PATH
+        run: |
+          echo "/opt/python/cp39-cp39/bin" >> $GITHUB_PATH
+  
+      - name: Configure Conan profile
+        run: |
+          source ~/.cargo/env
+          /opt/python/cp39-cp39/bin/conan profile detect --force
+  
+      - name: Build wheels
+        run: |
+          source ~/.cargo/env
+          /opt/python/cp39-cp39/bin/maturin build --release --strip --out dist \
+            --interpreter /opt/python/cp39-cp39/bin/python \
+            --target x86_64-unknown-linux-gnu \
+            --compatibility manylinux2014
+        env:
+          RUST_BACKTRACE: full
+          BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/include/clang"
+          CXXFLAGS: "-std=c++17 -fPIC"
+          CMAKE_CXX_FLAGS: "-std=c++17 -fPIC"
+          CMAKE_CXX_STANDARD: "17"
+          MAKEFLAGS: "-j2"
+        shell: bash
+  
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-rhel7
+          path: dist
+
+  build-linux-rhel8:
+    name: Build wheels on Linux (RHEL 8 / manylinux_2_28)
     runs-on: ubuntu-latest
     container: quay.io/pypa/manylinux_2_28_x86_64:latest
     steps:
@@ -87,34 +179,47 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-linux
+          name: wheels-linux-rhel8
           path: dist
-    
+
+  # =============================================================================
+  # macOS and Windows builds
+  # =============================================================================
 
   build-others:
-    name: Build wheels on ${{ matrix.os }}
+    name: Build wheels on ${{ matrix.os }} (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-13, macos-14]
-        python-version: ["3.9"]
         include:
+          # Windows
           - os: windows-latest
+            arch: x64
             rust-target: x86_64-pc-windows-msvc
-          - os: macos-13  # Intel runner
-            rust-target: x86_64-apple-darwin
-            macos-target: "10.15"
-          - os: macos-14  # ARM runner  
+            python-version: "3.9"
+          
+          # macOS ARM (native build)
+          - os: macos-14
+            arch: arm64
             rust-target: aarch64-apple-darwin
             macos-target: "11.0"
+            python-version: "3.9"
+          
+          # macOS Intel (cross-compiled from ARM runner)
+          # Note: macos-13 is deprecated, so we cross-compile from ARM
+          - os: macos-14
+            arch: x64
+            rust-target: x86_64-apple-darwin
+            macos-target: "10.15"
+            python-version: "3.9"
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python ${{ matrix.python-version }}
         id: setup-python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -153,7 +258,6 @@ jobs:
           
           # Verify version
           cmake --version
-
           
       - name: Install ReadStat dependencies (Windows)
         if: matrix.os == 'windows-latest'
@@ -189,7 +293,6 @@ jobs:
       - name: Configure Conan profile
         run: conan profile detect --force
 
-      
       - name: Build wheels (macOS)
         if: startsWith(matrix.os, 'macos-')
         run: |
@@ -200,7 +303,6 @@ jobs:
           RUST_BACKTRACE: full
           BINDGEN_EXTRA_CLANG_ARGS: "-I/usr/include/clang"
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos-target }}
-          
         shell: bash
 
       - name: Build wheels (Windows)
@@ -210,6 +312,7 @@ jobs:
             --interpreter ${{ steps.setup-python.outputs.python-path }} `
             --target ${{ matrix.rust-target }}
         shell: powershell
+
       - name: Debug build output (Windows)
         if: matrix.os == 'windows-latest'
         run: |
@@ -234,25 +337,32 @@ jobs:
             Get-ChildItem "target" -Recurse | Where-Object {$_.Name -like "*cppsas7bdat*"} | Format-Table FullName, Length
           }
         shell: powershell
+
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
+          name: wheels-${{ matrix.os }}-${{ matrix.arch }}
           path: dist
       
+  # =============================================================================
+  # Release job
+  # =============================================================================
+
   release:
     name: Create GitHub Release
-    needs: [build-linux, build-others]
+    needs: [build-linux-rhel7, build-linux-rhel8, build-others]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write 
     steps:
       - uses: actions/checkout@v4
+
       - name: Download all workflow artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
