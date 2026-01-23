@@ -10,7 +10,8 @@ jobs:
   # Linux builds using manylinux containers
   # =============================================================================
   
-  name: Build wheels on Linux (RHEL 7 / manylinux2014)
+  build-linux-rhel7:
+    name: Build wheels on Linux (RHEL 7 / manylinux2014)
     # NOTE: We use docker run instead of container: directive because
     # actions/checkout@v4 requires Node 20, which needs glibc 2.28+,
     # but manylinux2014 is based on CentOS 7 with glibc 2.17.
