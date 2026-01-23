@@ -25,9 +25,8 @@ df_stata = df_stata.collect()
 
 
 # For sas7bdat files, there are two "engines"
-#   1. readstat:  generally, but not always slower, but less likely to have errors
-#                 the default
-#   2. cpp:       faster, but more likely to fail loading a file
+#   1. readstat:  generally, but not always slower
+#   2. cpp:       faster, the default, used to be more likely to have errors, but not the case anymore in my testing
 #                 If it's going to throw an error, it usually does so quickly
 df = scan_readstat("/path/file.sas7bdat",
                    engine="readstat")
