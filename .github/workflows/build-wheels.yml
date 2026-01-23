@@ -35,12 +35,16 @@ jobs:
               yum install -y autoconf automake libtool zlib-devel wget perl scl-utils
               
               # Install Perl modules required for OpenSSL 3.x build
-              # perl-IPC-Cmd and perl-Time-Piece are needed by OpenSSL's Configure script
-              yum install -y perl-IPC-Cmd perl-Time-Piece || {
+              # perl-IPC-Cmd and perl-Time-Piece are needed by OpenSSL Configure script
+              # Use "|| true" to prevent set -e from exiting if packages not found
+              yum install -y perl-IPC-Cmd perl-Time-Piece || true
+              
+              # Verify modules are available, install via CPAN if not
+              if ! perl -e "use IPC::Cmd;" 2>/dev/null || ! perl -e "use Time::Piece;" 2>/dev/null; then
                 echo "Some Perl modules not available via yum, installing via CPAN..."
-                yum install -y perl-CPAN
+                yum install -y perl-CPAN || true
                 cpan -T IPC::Cmd Time::Piece
-              }
+              fi
               
               # =========================================================
               # Install LLVM/Clang toolset for bindgen
