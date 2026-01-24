@@ -38,10 +38,10 @@ fn build_cpp_project(manifest_dir: &PathBuf) {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        panic!(
-            "C++ build failed!\nSTDOUT:\n{}\nSTDERR:\n{}", 
-            stdout, stderr
-        );
+        // Print first so it's visible even if panic message is truncated
+        eprintln!("=== MAKE STDOUT ===\n{}", stdout);
+        eprintln!("=== MAKE STDERR ===\n{}", stderr);
+        panic!("C++ build failed! See output above.");
     }
     
     println!("cargo:warning=C++ build completed successfully");
