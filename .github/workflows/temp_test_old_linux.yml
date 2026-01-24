@@ -145,12 +145,7 @@ jobs:
               
               # Configure Conan
               conan profile detect --force
-
-              # Force single-threaded builds for memory-constrained CI
-              mkdir -p ~/.conan2
-              echo "tools.build:jobs=1" >> ~/.conan2/global.conf
-              echo "tools.cmake:jobs=1" >> ~/.conan2/global.conf
-              echo "tools.ninja:jobs=1" >> ~/.conan2/global.conf
+        
               
               # =========================================================
               # Build the wheel
@@ -164,10 +159,13 @@ jobs:
               export CMAKE_CXX_STANDARD="17"
               export RUST_BACKTRACE=full
               
+              
               # Memory-saving options to prevent OOM on GitHub Actions (7GB RAM)
               # Limit parallel jobs for make/cmake
               export MAKEFLAGS="-j1"
               export CMAKE_BUILD_PARALLEL_LEVEL=1
+              export CARGO_BUILD_JOBS=1
+              export CONAN_CPU_COUNT=1
               
               # Limit Rust parallelism (codegen units and parallel compiler jobs)
               export CARGO_BUILD_JOBS=1
