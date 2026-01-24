@@ -1,0 +1,186 @@
+name: test old many linux polars_readstat
+on:
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  # =============================================================================
+  # Linux builds using manylinux containers
+  # =============================================================================
+  
+  build-linux-rhel7:
+    name: Build wheels on Linux (RHEL 7 / manylinux2014)
+    # NOTE: We use docker run instead of container: directive because
+    # actions/checkout@v4 requires Node 20, which needs glibc 2.28+,
+    # but manylinux2014 is based on CentOS 7 with glibc 2.17.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Build wheels in manylinux2014 container
+        run: |
+          docker run --rm \
+            --memory=6g \
+            --memory-swap=10g \
+            -v "${{ github.workspace }}:/io" \
+            -w /io \
+            quay.io/pypa/manylinux2014_x86_64:latest \
+            bash -c '
+              set -ex
+              
+              # =========================================================
+              # Try to add swap space for memory-intensive builds
+              # =========================================================
+              if [ -w /swapfile ] || dd if=/dev/zero of=/swapfile bs=1M count=4096 2>/dev/null; then
+                chmod 600 /swapfile
+                mkswap /swapfile 2>/dev/null || true
+                swapon /swapfile 2>/dev/null || true
+                echo "Swap space configured"
+                free -h
+              else
+                echo "Could not create swap (expected in unprivileged container)"
+              fi
+              
+              # =========================================================
+              # Install basic dependencies
+              # =========================================================
+              # OpenSSL 3.x build via Conan requires several Perl modules
+              yum install -y autoconf automake libtool zlib-devel wget perl scl-utils
+              
+              # Install Perl modules required for OpenSSL 3.x build (especially FIPS)
+              # These are needed by various OpenSSL build/configure scripts
+              yum install -y perl-IPC-Cmd perl-Time-Piece perl-Digest-SHA perl-Pod-Html || true
+              
+              # Verify critical modules are available, install via CPAN if not
+              MISSING_MODULES=""
+              perl -e "use IPC::Cmd;" 2>/dev/null || MISSING_MODULES="$MISSING_MODULES IPC::Cmd"
+              perl -e "use Time::Piece;" 2>/dev/null || MISSING_MODULES="$MISSING_MODULES Time::Piece"
+              perl -e "use Digest::SHA;" 2>/dev/null || MISSING_MODULES="$MISSING_MODULES Digest::SHA"
+              
+              if [ -n "$MISSING_MODULES" ]; then
+                echo "Installing missing Perl modules via CPAN:$MISSING_MODULES"
+                yum install -y perl-CPAN perl-App-cpanminus || true
+                cpanm --notest $MISSING_MODULES || cpan -T $MISSING_MODULES
+              fi
+              
+              # =========================================================
+              # Install LLVM/Clang toolset for bindgen
+              # The llvm-toolset-7 packages provide libclang.so needed by bindgen.
+              # CentOS 7 is EOL, so we try multiple mirrors.
+              # =========================================================
+              cd /tmp
+              
+              # List of mirrors to try (in order of preference)
+              MIRRORS=(
+                "https://vault.centos.org/7.9.2009/sclo/x86_64/rh/llvm-toolset-7"
+                "https://repo.cloudlinux.com/cloudlinux/7/sclo/llvm-toolset-7/x86_64"
+                "http://centos.mirror.cdnetworks.com/7/sclo/x86_64/rh/llvm-toolset-7"
+              )
+              
+              # Packages needed (in dependency order)
+              PACKAGES=(
+                "llvm-toolset-7-runtime-5.0.1-4.el7.x86_64.rpm"
+                "llvm-toolset-7-llvm-libs-5.0.1-8.el7.x86_64.rpm"
+                "llvm-toolset-7-llvm-5.0.1-8.el7.x86_64.rpm"
+                "llvm-toolset-7-clang-libs-5.0.1-4.el7.x86_64.rpm"
+                "llvm-toolset-7-clang-5.0.1-4.el7.x86_64.rpm"
+              )
+              
+              # Try to download each package from any available mirror
+              for pkg in "${PACKAGES[@]}"; do
+                downloaded=false
+                for mirror in "${MIRRORS[@]}"; do
+                  echo "Trying to download $pkg from $mirror..."
+                  if wget -q --timeout=30 "${mirror}/${pkg}"; then
+                    echo "  SUCCESS: Downloaded $pkg"
+                    downloaded=true
+                    break
+                  else
+                    echo "  FAILED: Could not download from this mirror"
+                  fi
+                done
+                if [ "$downloaded" = false ]; then
+                  echo "ERROR: Could not download $pkg from any mirror"
+                  exit 1
+                fi
+              done
+              
+              # List downloaded files
+              echo "=== Downloaded RPMs ==="
+              ls -la *.rpm
+              
+              # Install all RPMs together (yum resolves dependencies)
+              yum install -y ./*.rpm
+              
+              # Find and verify libclang.so
+              echo "=== Finding libclang ==="
+              find /opt/rh -name "libclang*" 2>/dev/null || true
+              
+              # Set up LLVM environment
+              export LIBCLANG_PATH=/opt/rh/llvm-toolset-7/root/usr/lib64
+              export PATH="/opt/rh/llvm-toolset-7/root/usr/bin:$PATH"
+              export LD_LIBRARY_PATH="/opt/rh/llvm-toolset-7/root/usr/lib64:${LD_LIBRARY_PATH:-}"
+              
+              # Verify clang
+              which clang && clang --version || echo "WARNING: clang not found in PATH"
+              ls -la ${LIBCLANG_PATH}/libclang* || echo "WARNING: libclang not found"
+              
+              # =========================================================
+              # Install modern CMake
+              # =========================================================
+              wget -qO- "https://cmake.org/files/v3.26/cmake-3.26.4-linux-x86_64.tar.gz" | tar --strip-components=1 -xz -C /usr/local
+              cmake --version
+              
+              # =========================================================
+              # Install Rust
+              # =========================================================
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              source ~/.cargo/env
+              rustup target add x86_64-unknown-linux-gnu
+              
+              # =========================================================
+              # Install Python tools
+              # =========================================================
+              /opt/python/cp39-cp39/bin/pip install maturin conan
+              export PATH="/opt/python/cp39-cp39/bin:$PATH"
+              
+              # Configure Conan
+              conan profile detect --force
+              
+              # =========================================================
+              # Build the wheel
+              # =========================================================
+              cd /io
+              
+              # -Wno-useless-cast: GCC complains about size_t casts that are needed
+              # for 32-bit compatibility but "useless" on 64-bit Linux
+              export CXXFLAGS="-std=c++17 -fPIC -Wno-useless-cast"
+              export CMAKE_CXX_FLAGS="-std=c++17 -fPIC -Wno-useless-cast"
+              export CMAKE_CXX_STANDARD="17"
+              export RUST_BACKTRACE=full
+              
+              # Memory-saving options to prevent OOM on GitHub Actions (7GB RAM)
+              # Limit parallel jobs for make/cmake
+              export MAKEFLAGS="-j1"
+              export CMAKE_BUILD_PARALLEL_LEVEL=1
+              
+              # Limit Rust parallelism (codegen units and parallel compiler jobs)
+              export CARGO_BUILD_JOBS=1
+              export RUSTFLAGS="-C codegen-units=1"
+              
+              # Limit Conan parallelism (for building dependencies like OpenSSL, Arrow)
+              export CONAN_CPU_COUNT=1
+              
+              maturin build --release --strip --out dist \
+                --interpreter /opt/python/cp39-cp39/bin/python \
+                --target x86_64-unknown-linux-gnu \
+                --compatibility manylinux2014
+              
+              echo "=== Build complete ==="
+              ls -la dist/
+            '
+      
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-rhel7
+          path: dist
