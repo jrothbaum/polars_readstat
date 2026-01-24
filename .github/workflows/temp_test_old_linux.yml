@@ -148,12 +148,10 @@ jobs:
 
               # Force single-threaded builds for memory-constrained CI
               mkdir -p ~/.conan2
-              cat >> ~/.conan2/global.conf <<EOF
-              tools.build:jobs=1
-              tools.cmake:jobs=1
-              tools.ninja:jobs=1
-              tools.gnu:make_jobs=1
-              EOF
+              echo "tools.build:jobs=1" >> ~/.conan2/global.conf
+              echo "tools.cmake:jobs=1" >> ~/.conan2/global.conf
+              echo "tools.ninja:jobs=1" >> ~/.conan2/global.conf
+              echo "tools.gnu:make_jobs=1" >> ~/.conan2/global.conf
               
               # =========================================================
               # Build the wheel
