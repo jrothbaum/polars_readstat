@@ -145,6 +145,12 @@ jobs:
               
               # Configure Conan
               conan profile detect --force
+              # Force single-threaded builds and disable useless-cast warnings
+              mkdir -p ~/.conan2
+              echo "tools.build:jobs=1" >> ~/.conan2/global.conf
+              echo "tools.cmake:jobs=1" >> ~/.conan2/global.conf
+              echo "tools.build:cxxflags=[\"-Wno-useless-cast\", \"-Wno-error=useless-cast\"]" >> ~/.conan2/global.conf
+              echo "tools.build:cflags=[\"-Wno-useless-cast\", \"-Wno-error=useless-cast\"]" >> ~/.conan2/global.confClaude is AI and can make mistakes. Please double-check responses.
         
               
               # =========================================================
