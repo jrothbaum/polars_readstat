@@ -146,12 +146,7 @@ jobs:
               # Configure Conan
               conan profile detect --force
               # Force single-threaded builds and disable useless-cast warnings
-              mkdir -p ~/.conan2
-              echo "tools.build:jobs=1" >> ~/.conan2/global.conf
-              echo "tools.cmake:jobs=1" >> ~/.conan2/global.conf
-              echo "tools.build:cxxflags=[\"-Wno-useless-cast\", \"-Wno-error=useless-cast\"]" >> ~/.conan2/global.conf
-              echo "tools.build:cflags=[\"-Wno-useless-cast\", \"-Wno-error=useless-cast\"]" >> ~/.conan2/global.confClaude is AI and can make mistakes. Please double-check responses.
-        
+              conan config list | head -50 || true
               
               # =========================================================
               # Build the wheel
@@ -171,7 +166,8 @@ jobs:
               export MAKEFLAGS="-j1"
               export CMAKE_BUILD_PARALLEL_LEVEL=1
               export CARGO_BUILD_JOBS=1
-              export CONAN_CPU_COUNT=1
+              export CXXFLAGS="-std=c++17 -fPIC -Wno-useless-cast -Wno-error=useless-cast"
+              export CFLAGS="-fPIC -Wno-useless-cast -Wno-error=useless-cast"
               
               # Limit Rust parallelism (codegen units and parallel compiler jobs)
               export CARGO_BUILD_JOBS=1
