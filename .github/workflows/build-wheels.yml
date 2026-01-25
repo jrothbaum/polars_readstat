@@ -22,11 +22,26 @@ jobs:
       - name: Build wheels in manylinux2014 container
         run: |
           docker run --rm \
+            --memory=6g \
+            --memory-swap=10g \
             -v "${{ github.workspace }}:/io" \
             -w /io \
             quay.io/pypa/manylinux2014_x86_64:latest \
             bash -c '
               set -ex
+              
+              # =========================================================
+              # Try to add swap space for memory-intensive builds
+              # =========================================================
+              if [ -w /swapfile ] || dd if=/dev/zero of=/swapfile bs=1M count=4096 2>/dev/null; then
+                chmod 600 /swapfile
+                mkswap /swapfile 2>/dev/null || true
+                swapon /swapfile 2>/dev/null || true
+                echo "Swap space configured"
+                free -h
+              else
+                echo "Could not create swap (expected in unprivileged container)"
+              fi
               
               # =========================================================
               # Install basic dependencies
@@ -133,21 +148,29 @@ jobs:
               
               # Configure Conan
               conan profile detect --force
+              # Force single-threaded builds and disable useless-cast warnings
+              conan config list | head -50 || true
               
               # =========================================================
               # Build the wheel
               # =========================================================
               cd /io
               
-              export CXXFLAGS="-std=c++17 -fPIC"
-              export CMAKE_CXX_FLAGS="-std=c++17 -fPIC"
+              # -Wno-useless-cast: GCC complains about size_t casts that are needed
+              # for 32-bit compatibility but "useless" on 64-bit Linux
+              export CXXFLAGS="-std=c++17 -fPIC -Wno-useless-cast"
+              export CMAKE_CXX_FLAGS="-std=c++17 -fPIC -Wno-useless-cast"
               export CMAKE_CXX_STANDARD="17"
               export RUST_BACKTRACE=full
+              
               
               # Memory-saving options to prevent OOM on GitHub Actions (7GB RAM)
               # Limit parallel jobs for make/cmake
               export MAKEFLAGS="-j1"
               export CMAKE_BUILD_PARALLEL_LEVEL=1
+              export CARGO_BUILD_JOBS=1
+              export CXXFLAGS="-std=c++17 -fPIC -Wno-useless-cast -Wno-error=useless-cast"
+              export CFLAGS="-fPIC -Wno-useless-cast -Wno-error=useless-cast"
               
               # Limit Rust parallelism (codegen units and parallel compiler jobs)
               export CARGO_BUILD_JOBS=1
@@ -170,7 +193,6 @@ jobs:
         with:
           name: wheels-linux-rhel7
           path: dist
-
           
   build-linux-rhel8:
     name: Build wheels on Linux (RHEL 8 / manylinux_2_28)
