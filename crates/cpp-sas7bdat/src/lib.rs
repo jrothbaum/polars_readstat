@@ -510,26 +510,27 @@ impl SasReader {
     
     /// Convert Arrow schema to Polars schema
     unsafe fn arrow_schema_to_polars_schema(&self, c_schema: &CArrowSchema) -> PolarsResult<(Schema, polars_arrow::datatypes::Field)> {
-        // Read the schema data directly (taking ownership)
         let schema_ptr = c_schema as *const CArrowSchema as *const polars_arrow::ffi::ArrowSchema;
         let arrow_schema = std::ptr::read_unaligned(schema_ptr);
         
         let field = polars_arrow::ffi::import_field_from_c(&arrow_schema)
             .map_err(|e| PolarsError::ComputeError(format!("Failed to import schema: {}", e).into()))?;
         
-        // SAS data is always a struct with multiple columns
         let struct_fields = match &field.dtype {
             polars_arrow::datatypes::ArrowDataType::Struct(fields) => fields,
             _ => return Err(PolarsError::ComputeError("Expected struct data type from SAS data".into())),
         };
         
-        let mut schema_map = std::collections::BTreeMap::new();
-        for struct_field in struct_fields {
-            let polars_dtype = self.arrow_dtype_to_polars(&struct_field.dtype)?;
-            schema_map.insert(struct_field.name.clone(), polars_dtype);
-        }
+        // Use Vec to preserve order, then build Schema from iterator
+        let fields: Vec<_> = struct_fields
+            .iter()
+            .map(|f| {
+                let polars_dtype = self.arrow_dtype_to_polars(&f.dtype)?;
+                Ok(polars::prelude::Field::new(f.name.clone().into(), polars_dtype))
+            })
+            .collect::<PolarsResult<Vec<_>>>()?;
         
-        let polars_schema = Schema::from_iter(schema_map);
+        let polars_schema = Schema::from_iter(fields);
         Ok((polars_schema, field))
     }
     
