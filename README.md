@@ -7,6 +7,46 @@ Polars IO plugin to read SAS (sas7bdat), Stata (dta), and SPSS (sav) files.  It'
 pip install polars-readstat
 ```
 
+## Local test workflow
+
+Run the Python integration tests in this repo against a freshly built extension:
+
+```
+./scripts/test_after_maturin.sh
+```
+
+These tests use fixture files from the sibling rust-only repository at `../polars_readstat_rs/tests/`.
+
+
+## Regression check against 0.11.1
+
+Run a full non-huge fixture comparison between `polars-readstat==0.11.1` and your current local code:
+
+```
+./scripts/compare_against_0111.sh
+```
+
+This writes parquet snapshots and a JSON summary report to `.tmp/compare_0111/report.json`, including temporal-type improvements vs regressions.
+
+## Full 4-way non-huge comparison
+
+Compare all non-huge fixtures from `../polars_readstat_rs/tests` across:
+- current local `polars_readstat`
+- `polars-readstat==0.11.1`
+- `pyreadstat`
+- `pandas`
+
+```
+./scripts/compare_non_huge_matrix.sh
+```
+
+Outputs:
+- `.tmp/compare_matrix/current_py_pd.json`
+- `.tmp/compare_matrix/old0111.json`
+- `.tmp/compare_matrix/summary.json`
+
+`summary.json` includes read success deltas, dtype/null mismatches, and temporal improvements/regressions by format.
+
 ## Basic usage
 ```
 import polars as pl

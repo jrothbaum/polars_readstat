@@ -1,35 +1,24 @@
+use num_cpus;
 use polars::prelude::*;
 use polars_readstat_rs::{
-    readstat_metadata_json,
-    readstat_schema,
-    readstat_scan,
-    Sas7bdatReader,
-    ScanOptions,
-    SpssReader,
-    SpssWriter,
-    StataReader,
-    StataWriter,
+    readstat_metadata_json, readstat_scan, readstat_schema, Sas7bdatReader, ScanOptions,
+    SpssReader, SpssWriter, StataReader, StataWriter,
 };
-use num_cpus;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::wrap_pyfunction;
 use pyo3::types::{PyDict, PyList};
+use pyo3::wrap_pyfunction;
 use pyo3_polars::{PyDataFrame, PyLazyFrame, PySchema};
 use std::cmp::min;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::sync::{mpsc, Mutex};
 
+#[derive(Clone, Copy)]
 enum ReadstatFormat {
     Sas,
     Stata,
     Spss,
-}
-
-enum ReadstatReader {
-    Sas(Sas7bdatReader),
-    Stata(StataReader),
-    Spss(SpssReader),
 }
 
 fn detect_format(path: &str) -> PyResult<ReadstatFormat> {
@@ -47,11 +36,27 @@ fn detect_format(path: &str) -> PyResult<ReadstatFormat> {
     }
 }
 
+enum ChunkMessage {
+    Data { idx: usize, df: DataFrame },
+    Done,
+    Err(String),
+}
+
+struct StreamState {
+    rx: mpsc::Receiver<ChunkMessage>,
+    buffer: BTreeMap<usize, DataFrame>,
+    next_idx: usize,
+    completed: usize,
+    total_workers: usize,
+    handles: Vec<std::thread::JoinHandle<()>>,
+}
+
 #[pymodule]
 pub fn polars_readstat_bindings(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyPolarsReadstat>()?;
     m.add_function(wrap_pyfunction!(readstat_schema_rs, m)?)?;
     m.add_function(wrap_pyfunction!(readstat_metadata_json_rs, m)?)?;
+    m.add_function(wrap_pyfunction!(read_readstat_rs, m)?)?;
     m.add_function(wrap_pyfunction!(write_stata, m)?)?;
     m.add_function(wrap_pyfunction!(write_spss, m)?)?;
     m.add_function(wrap_pyfunction!(scan_readstat_rs, m)?)?;
@@ -60,76 +65,83 @@ pub fn polars_readstat_bindings(m: &Bound<PyModule>) -> PyResult<()> {
 
 #[pyclass]
 pub struct PyPolarsReadstat {
-    reader: ReadstatReader,
     path: String,
+    format: ReadstatFormat,
     batch_size: usize,
-    threads: Option<usize>,
+    threads: usize,
     missing_string_as_null: bool,
     value_labels_as_strings: bool,
+    preserve_order: bool,
     with_columns: Option<Vec<String>>,
-    offset: usize,
-    remaining: usize,
+    total_rows: usize,
+    total_chunks: usize,
+    stream: Option<Mutex<StreamState>>,
 }
 
 #[pymethods]
 impl PyPolarsReadstat {
     #[new]
-    #[pyo3(signature = (path, size_hint, n_rows, threads, missing_string_as_null, value_labels_as_strings=false))]
+    #[pyo3(signature = (path, size_hint, n_rows, threads, missing_string_as_null, value_labels_as_strings=false, preserve_order=false))]
     fn new_source(
-        path:String,
+        path: String,
         size_hint: usize,
         n_rows: Option<usize>,
         threads: Option<usize>,
         missing_string_as_null: bool,
         value_labels_as_strings: bool,
+        preserve_order: bool,
     ) -> PyResult<Self> {
         let max_useful_threads = num_cpus::get_physical();
         let threads = if threads.is_none() {
-            Some(num_cpus::get_physical())
+            num_cpus::get_physical()
         } else {
-            Some(min(threads.unwrap(),max_useful_threads))
+            min(threads.unwrap(), max_useful_threads)
         };
 
         let format = detect_format(&path)?;
-        let reader = match format {
-            ReadstatFormat::Sas => Sas7bdatReader::open(&path)
-                .map(ReadstatReader::Sas)
-                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
-            ReadstatFormat::Stata => StataReader::open(&path)
-                .map(ReadstatReader::Stata)
-                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
-            ReadstatFormat::Spss => SpssReader::open(&path)
-                .map(ReadstatReader::Spss)
-                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+        let total_rows = match format {
+            ReadstatFormat::Sas => {
+                let reader = Sas7bdatReader::open(&path)
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                reader.metadata().row_count
+            }
+            ReadstatFormat::Stata => {
+                let reader =
+                    StataReader::open(&path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                reader.metadata().row_count as usize
+            }
+            ReadstatFormat::Spss => {
+                let reader =
+                    SpssReader::open(&path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                reader.metadata().row_count as usize
+            }
         };
-
-        let total_rows = match &reader {
-            ReadstatReader::Sas(r) => r.metadata().row_count,
-            ReadstatReader::Stata(r) => r.metadata().row_count as usize,
-            ReadstatReader::Spss(r) => r.metadata().row_count as usize,
-        };
-        let remaining = n_rows.unwrap_or(total_rows).min(total_rows);
+        let total_rows = n_rows.unwrap_or(total_rows).min(total_rows);
         let batch_size = size_hint.max(1);
+        let total_chunks = (total_rows + batch_size - 1) / batch_size;
 
         Ok(Self {
-            reader,
             path,
+            format,
             batch_size,
             threads,
             missing_string_as_null,
             value_labels_as_strings,
+            preserve_order,
             with_columns: None,
-            offset: 0,
-            remaining,
+            total_rows,
+            total_chunks,
+            stream: None,
         })
     }
 
     fn schema(&self) -> PyResult<PySchema> {
         let opts = ScanOptions {
-            threads: self.threads,
+            threads: Some(self.threads),
             chunk_size: Some(self.batch_size),
             missing_string_as_null: Some(self.missing_string_as_null),
             value_labels_as_strings: Some(self.value_labels_as_strings),
+            ..Default::default()
         };
         let schema = readstat_schema(&self.path, Some(opts), None)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
@@ -141,83 +153,26 @@ impl PyPolarsReadstat {
     }
 
     fn next(&mut self) -> PyResult<Option<PyDataFrame>> {
-        if self.remaining == 0 {
+        if self.total_chunks == 0 {
             return Ok(None);
         }
 
-        let offset = self.offset;
-        let take = self.batch_size.min(self.remaining);
-        let columns = self.with_columns.clone();
-        let threads = self.threads;
-        let batch_size = self.batch_size;
-        let missing_string_as_null = self.missing_string_as_null;
-        let value_labels_as_strings = self.value_labels_as_strings;
+        if self.stream.is_none() {
+            self.start_stream()?;
+        }
 
-        let result: Result<DataFrame, String> = Python::with_gil(|py| {
-            py.allow_threads(|| match &self.reader {
-                ReadstatReader::Sas(reader) => {
-                    let mut builder = reader
-                        .read()
-                        .with_offset(offset)
-                        .with_limit(take)
-                        .missing_string_as_null(missing_string_as_null)
-                        .with_chunk_size(batch_size);
-                    if let Some(cols) = columns {
-                        builder = builder.with_columns(cols);
-                    }
-                    if let Some(n) = threads {
-                        builder = builder.with_n_threads(n);
-                    }
-                    builder.finish().map_err(|e| e.to_string())
-                }
-                ReadstatReader::Stata(reader) => {
-                    let mut builder = reader
-                        .read()
-                        .with_offset(offset)
-                        .with_limit(take)
-                        .missing_string_as_null(missing_string_as_null)
-                        .value_labels_as_strings(value_labels_as_strings)
-                        .with_chunk_size(batch_size);
-                    if let Some(cols) = columns {
-                        builder = builder.with_columns(cols);
-                    }
-                    if let Some(n) = threads {
-                        builder = builder.with_n_threads(n);
-                    }
-                    builder.finish().map_err(|e| e.to_string())
-                }
-                ReadstatReader::Spss(reader) => {
-                    let mut builder = reader
-                        .read()
-                        .with_offset(offset)
-                        .with_limit(take)
-                        .missing_string_as_null(missing_string_as_null)
-                        .value_labels_as_strings(value_labels_as_strings)
-                        .with_chunk_size(batch_size);
-                    if let Some(cols) = columns {
-                        builder = builder.with_columns(cols);
-                    }
-                    if let Some(n) = threads {
-                        builder = builder.with_n_threads(n);
-                    }
-                    builder.finish().map_err(|e| e.to_string())
-                }
-            })
-        });
+        let result: Result<Option<DataFrame>, String> =
+            Python::with_gil(|py| py.allow_threads(|| self.next_batch()));
 
         match result {
-            Ok(df) => {
-                self.offset += take;
-                self.remaining -= take;
-                Ok(Some(PyDataFrame(df)))
-            }
+            Ok(Some(df)) => Ok(Some(PyDataFrame(df))),
+            Ok(None) => Ok(None),
             Err(e) => Err(PyRuntimeError::new_err(e)),
         }
     }
 
     fn get_metadata(&self, py: Python) -> PyResult<PyObject> {
-        let json = readstat_metadata_json(&self.path, None)
-            .map_err(PyValueError::new_err)?;
+        let json = readstat_metadata_json(&self.path, None).map_err(PyValueError::new_err)?;
         let json_mod = py.import("json")?;
         let obj = json_mod.call_method1("loads", (json,))?;
         Ok(obj.into())
@@ -269,6 +224,234 @@ impl PyPolarsReadstat {
     }
 }
 
+impl PyPolarsReadstat {
+    fn start_stream(&mut self) -> PyResult<()> {
+        let total_chunks = self.total_chunks;
+        let n_workers = min(self.threads.max(1), total_chunks.max(1));
+        let window_chunks = 8usize;
+        let batch_size = self.batch_size;
+        let total_rows = self.total_rows;
+        let path = self.path.clone();
+        let format = self.format;
+        let columns = self.with_columns.clone();
+        let missing_string_as_null = self.missing_string_as_null;
+        let value_labels_as_strings = self.value_labels_as_strings;
+
+        let (tx, rx) = mpsc::channel::<ChunkMessage>();
+        let mut handles = Vec::with_capacity(n_workers);
+
+        let base_chunks = total_chunks / n_workers;
+        let extra_chunks = total_chunks % n_workers;
+        let mut worker_ranges: Vec<(usize, usize)> = Vec::with_capacity(n_workers);
+        let mut next_chunk = 0usize;
+        for worker_idx in 0..n_workers {
+            let worker_chunk_count = base_chunks + usize::from(worker_idx < extra_chunks);
+            if worker_chunk_count == 0 {
+                continue;
+            }
+            let start_chunk = next_chunk;
+            let end_chunk = start_chunk + worker_chunk_count;
+            worker_ranges.push((start_chunk, end_chunk));
+            next_chunk = end_chunk;
+        }
+
+        for (start_chunk, end_chunk) in worker_ranges {
+            let tx = tx.clone();
+            let path = path.clone();
+            let columns = columns.clone();
+            let total_rows = total_rows;
+            let batch_size = batch_size;
+            let format = format;
+            let missing_string_as_null = missing_string_as_null;
+            let value_labels_as_strings = value_labels_as_strings;
+            let window_chunks = window_chunks;
+
+            let handle = std::thread::spawn(move || {
+                enum WorkerReader {
+                    Sas(Sas7bdatReader),
+                    Stata(StataReader),
+                    Spss(SpssReader),
+                }
+
+                let reader = match format {
+                    ReadstatFormat::Sas => match Sas7bdatReader::open(&path) {
+                        Ok(r) => WorkerReader::Sas(r),
+                        Err(e) => {
+                            let _ = tx.send(ChunkMessage::Err(e.to_string()));
+                            return;
+                        }
+                    },
+                    ReadstatFormat::Stata => match StataReader::open(&path) {
+                        Ok(r) => WorkerReader::Stata(r),
+                        Err(e) => {
+                            let _ = tx.send(ChunkMessage::Err(e.to_string()));
+                            return;
+                        }
+                    },
+                    ReadstatFormat::Spss => match SpssReader::open(&path) {
+                        Ok(r) => WorkerReader::Spss(r),
+                        Err(e) => {
+                            let _ = tx.send(ChunkMessage::Err(e.to_string()));
+                            return;
+                        }
+                    },
+                };
+
+                let mut chunk_idx = start_chunk;
+                while chunk_idx < end_chunk {
+                    let window_end = (chunk_idx + window_chunks).min(end_chunk);
+                    let offset = chunk_idx * batch_size;
+                    if offset >= total_rows {
+                        break;
+                    }
+                    let window_rows = (window_end - chunk_idx) * batch_size;
+                    let take = (total_rows - offset).min(window_rows);
+
+                    let result: Result<DataFrame, String> = match &reader {
+                        WorkerReader::Sas(reader) => {
+                            let mut builder = reader
+                                .read()
+                                .with_offset(offset)
+                                .with_limit(take)
+                                .missing_string_as_null(missing_string_as_null)
+                                .sequential();
+                            if let Some(cols) = columns.as_ref() {
+                                builder = builder.with_columns(cols.clone());
+                            }
+                            builder.finish().map_err(|e| e.to_string())
+                        }
+                        WorkerReader::Stata(reader) => {
+                            let mut builder = reader
+                                .read()
+                                .with_offset(offset)
+                                .with_limit(take)
+                                .missing_string_as_null(missing_string_as_null)
+                                .value_labels_as_strings(value_labels_as_strings)
+                                .sequential();
+                            if let Some(cols) = columns.as_ref() {
+                                builder = builder.with_columns(cols.clone());
+                            }
+                            builder.finish().map_err(|e| e.to_string())
+                        }
+                        WorkerReader::Spss(reader) => {
+                            let mut builder = reader
+                                .read()
+                                .with_offset(offset)
+                                .with_limit(take)
+                                .missing_string_as_null(missing_string_as_null)
+                                .value_labels_as_strings(value_labels_as_strings)
+                                .sequential();
+                            if let Some(cols) = columns.as_ref() {
+                                builder = builder.with_columns(cols.clone());
+                            }
+                            builder.finish().map_err(|e| e.to_string())
+                        }
+                    };
+
+                    match result {
+                        Ok(window_df) => {
+                            let mut sent = 0usize;
+                            for out_idx in chunk_idx..window_end {
+                                let local_offset = (out_idx - chunk_idx) * batch_size;
+                                if local_offset >= window_df.height() {
+                                    break;
+                                }
+                                let local_take = batch_size.min(window_df.height() - local_offset);
+                                let df = window_df.slice(local_offset as i64, local_take);
+                                let _ = tx.send(ChunkMessage::Data { idx: out_idx, df });
+                                sent += 1;
+                            }
+                            if sent == 0 {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(ChunkMessage::Err(e));
+                            return;
+                        }
+                    }
+
+                    chunk_idx = window_end;
+                }
+                let _ = tx.send(ChunkMessage::Done);
+            });
+
+            handles.push(handle);
+        }
+
+        self.stream = Some(Mutex::new(StreamState {
+            rx,
+            buffer: BTreeMap::new(),
+            next_idx: 0,
+            completed: 0,
+            total_workers: n_workers,
+            handles,
+        }));
+
+        Ok(())
+    }
+
+    fn next_batch(&mut self) -> Result<Option<DataFrame>, String> {
+        let stream = self.stream.as_ref().ok_or("stream not initialized")?;
+        let mut state = stream
+            .lock()
+            .map_err(|_| "stream mutex poisoned".to_string())?;
+
+        if !self.preserve_order {
+            loop {
+                if state.completed == state.total_workers {
+                    return Ok(None);
+                }
+                match state.rx.recv() {
+                    Ok(ChunkMessage::Data { df, .. }) => return Ok(Some(df)),
+                    Ok(ChunkMessage::Done) => state.completed += 1,
+                    Ok(ChunkMessage::Err(e)) => return Err(e),
+                    Err(_) => return Ok(None),
+                }
+            }
+        }
+
+        loop {
+            let next_idx = state.next_idx;
+            if let Some(df) = state.buffer.remove(&next_idx) {
+                state.next_idx += 1;
+                return Ok(Some(df));
+            }
+
+            if state.completed == state.total_workers {
+                return Ok(None);
+            }
+
+            match state.rx.recv() {
+                Ok(ChunkMessage::Data { idx, df }) => {
+                    state.buffer.insert(idx, df);
+                }
+                Ok(ChunkMessage::Done) => {
+                    state.completed += 1;
+                }
+                Ok(ChunkMessage::Err(e)) => {
+                    return Err(e);
+                }
+                Err(_) => {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+}
+
+impl Drop for PyPolarsReadstat {
+    fn drop(&mut self) {
+        if let Some(state) = self.stream.take() {
+            if let Ok(state) = state.into_inner() {
+                for handle in state.handles {
+                    let _ = handle.join();
+                }
+            }
+        }
+    }
+}
+
 fn _ignore_compress_opts(_opts: Option<&Bound<PyDict>>) {}
 
 #[pyfunction]
@@ -277,7 +460,6 @@ fn _ignore_compress_opts(_opts: Option<&Bound<PyDict>>) {}
     threads=None,
     chunk_size=None,
     missing_string_as_null=false,
-    user_missing_as_null=false,
     value_labels_as_strings=false,
     preserve_order=false,
     compress=None
@@ -287,19 +469,18 @@ fn scan_readstat_rs(
     threads: Option<usize>,
     chunk_size: Option<usize>,
     missing_string_as_null: bool,
-    user_missing_as_null: bool,
     value_labels_as_strings: bool,
     preserve_order: bool,
     compress: Option<&Bound<PyDict>>,
 ) -> PyResult<PyLazyFrame> {
-    let _ = user_missing_as_null;
-    let _ = preserve_order;
     _ignore_compress_opts(compress);
+    let _ = preserve_order;
     let opts = ScanOptions {
         threads,
         chunk_size,
         missing_string_as_null: Some(missing_string_as_null),
         value_labels_as_strings: Some(value_labels_as_strings),
+        ..Default::default()
     };
     let lf = readstat_scan(&path, Some(opts), None)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
@@ -312,7 +493,6 @@ fn scan_readstat_rs(
     threads=None,
     chunk_size=None,
     missing_string_as_null=false,
-    user_missing_as_null=false,
     value_labels_as_strings=false,
     preserve_order=false,
     compress=None
@@ -322,19 +502,18 @@ fn readstat_schema_rs(
     threads: Option<usize>,
     chunk_size: Option<usize>,
     missing_string_as_null: bool,
-    user_missing_as_null: bool,
     value_labels_as_strings: bool,
     preserve_order: bool,
     compress: Option<&Bound<PyDict>>,
 ) -> PyResult<PySchema> {
-    let _ = user_missing_as_null;
-    let _ = preserve_order;
     _ignore_compress_opts(compress);
+    let _ = preserve_order;
     let opts = ScanOptions {
         threads,
         chunk_size,
         missing_string_as_null: Some(missing_string_as_null),
         value_labels_as_strings: Some(value_labels_as_strings),
+        ..Default::default()
     };
     let schema = readstat_schema(&path, Some(opts), None)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
@@ -344,6 +523,75 @@ fn readstat_schema_rs(
 #[pyfunction]
 fn readstat_metadata_json_rs(path: String) -> PyResult<String> {
     readstat_metadata_json(&path, None).map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+#[pyo3(signature = (
+    path,
+    threads=None,
+    missing_string_as_null=false,
+    value_labels_as_strings=false,
+    columns=None
+))]
+fn read_readstat_rs(
+    path: String,
+    threads: Option<usize>,
+    missing_string_as_null: bool,
+    value_labels_as_strings: bool,
+    columns: Option<Vec<String>>,
+) -> PyResult<PyDataFrame> {
+    let format = detect_format(&path)?;
+    let df = match format {
+        ReadstatFormat::Sas => {
+            let reader =
+                Sas7bdatReader::open(&path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let mut builder = reader.read().missing_string_as_null(missing_string_as_null);
+            if let Some(cols) = columns.clone() {
+                builder = builder.with_columns(cols);
+            }
+            if let Some(n) = threads {
+                builder = builder.with_n_threads(n);
+            }
+            builder
+                .finish()
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        }
+        ReadstatFormat::Stata => {
+            let reader =
+                StataReader::open(&path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let mut builder = reader
+                .read()
+                .missing_string_as_null(missing_string_as_null)
+                .value_labels_as_strings(value_labels_as_strings);
+            if let Some(cols) = columns.clone() {
+                builder = builder.with_columns(cols);
+            }
+            if let Some(n) = threads {
+                builder = builder.with_n_threads(n);
+            }
+            builder
+                .finish()
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        }
+        ReadstatFormat::Spss => {
+            let reader =
+                SpssReader::open(&path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let mut builder = reader
+                .read()
+                .missing_string_as_null(missing_string_as_null)
+                .value_labels_as_strings(value_labels_as_strings);
+            if let Some(cols) = columns {
+                builder = builder.with_columns(cols);
+            }
+            if let Some(n) = threads {
+                builder = builder.with_n_threads(n);
+            }
+            builder
+                .finish()
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        }
+    };
+    Ok(PyDataFrame(df))
 }
 
 #[pyfunction]

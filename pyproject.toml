@@ -21,9 +21,6 @@ dependencies = [
     "polars>=1.25.2",
 ]
 
-
-
-
 [tool.maturin]
 manifest-path = "crates/polars_readstat_bindings/Cargo.toml"
 module-name = "polars_readstat.polars_readstat_bindings"
@@ -40,10 +37,15 @@ test = [
     "pandas>=2.2.3",
     "pyarrow>=19.0.1",
     "pyreadstat>=1.2.8",
+    "pytest>=8.0.0",
 ]
 build = [
     "maturin>=1.8.3",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
 
 [project.urls]
 Homepage = "https://github.com/jrothbaum/polars_readstat"

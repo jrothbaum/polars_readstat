@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from polars.io.plugins import register_io_source
 from polars_readstat.polars_readstat_bindings import (
     PyPolarsReadstat,
+    read_readstat_rs,
     write_stata,
     write_spss,
 )
@@ -18,7 +19,6 @@ class ScanReadstat:
         use_mmap: bool = False,
         threads: int | None = None,
         missing_string_as_null: bool = False,
-        user_missing_as_null: bool = False,
         value_labels_as_strings: bool = False,
         preserve_order: bool = False,
         compress: "CompressOptions | dict | None" = None,
@@ -42,7 +42,6 @@ class ScanReadstat:
         self._metadata = None
         self._schema = None
         self.missing_string_as_null = missing_string_as_null
-        self.user_missing_as_null = user_missing_as_null
         self.value_labels_as_strings = value_labels_as_strings
         self.preserve_order = preserve_order
         self.compress = compress
@@ -67,7 +66,6 @@ class ScanReadstat:
             engine=self.engine,
             use_mmap=self.use_mmap,
             missing_string_as_null=self.missing_string_as_null,
-            user_missing_as_null=self.user_missing_as_null,
             value_labels_as_strings=self.value_labels_as_strings,
             preserve_order=self.preserve_order,
             compress=self.compress,
@@ -82,6 +80,7 @@ class ScanReadstat:
             threads=self.threads,
             missing_string_as_null=self.missing_string_as_null,
             value_labels_as_strings=self.value_labels_as_strings,
+            preserve_order=self.preserve_order,
         )
         self._schema = src.schema()
         self._metadata = src.get_metadata()
@@ -121,8 +120,8 @@ def scan_readstat(
     engine:str="",
     use_mmap: bool = False,
     missing_string_as_null: bool = False,
-    user_missing_as_null: bool = False,
     value_labels_as_strings: bool = False,
+    columns: list[str] | None = None,
     preserve_order: bool = False,
     compress: CompressOptions | Dict[str, Any] | None = None,
     reader: ScanReadstat | None = None,
@@ -144,8 +143,6 @@ def scan_readstat(
         DEPRECATED.
     missing_string_as_null : bool, optional
         Convert empty strings to nulls.
-    user_missing_as_null : bool, optional
-        Convert user-defined missing values to nulls (SPSS only).
     value_labels_as_strings : bool, optional
         Use value labels as strings for labeled numeric columns (Stata/SPSS).
     preserve_order : bool, optional
@@ -168,7 +165,6 @@ def scan_readstat(
             path=path,
             threads=threads,
             missing_string_as_null=missing_string_as_null,
-            user_missing_as_null=user_missing_as_null,
             value_labels_as_strings=value_labels_as_strings,
             preserve_order=preserve_order,
             compress=compress,
@@ -178,7 +174,6 @@ def scan_readstat(
         path = reader.path
         threads = reader.threads
         missing_string_as_null = reader.missing_string_as_null
-        user_missing_as_null = reader.user_missing_as_null
         value_labels_as_strings = reader.value_labels_as_strings
         preserve_order = reader.preserve_order
         compress = reader.compress
@@ -202,6 +197,9 @@ def scan_readstat(
         if batch_size is None:
             batch_size = 100_000
 
+        # Prefer explicit columns arg, otherwise use Polars pushdown.
+        use_columns = columns if columns is not None else with_columns
+
         src = PyPolarsReadstat(
             path=path,
             size_hint=batch_size,
@@ -209,9 +207,10 @@ def scan_readstat(
             threads=reader.threads,
             missing_string_as_null=reader.missing_string_as_null,
             value_labels_as_strings=reader.value_labels_as_strings,
+            preserve_order=reader.preserve_order,
         )
-        if with_columns is not None:
-            src.set_with_columns(with_columns)
+        if use_columns is not None:
+            src.set_with_columns(use_columns)
 
         while (out := src.next()) is not None:
             if predicate is not None:
@@ -228,6 +227,36 @@ def scan_readstat(
             yield out
 
     return register_io_source(io_source=source_generator, schema=schema_generator())
+
+
+def read_readstat(
+    path: Any,
+    threads: int | None = None,
+    engine: str = "",
+    use_mmap: bool = False,
+    missing_string_as_null: bool = False,
+    value_labels_as_strings: bool = False,
+    columns: list[str] | None = None,
+) -> pl.DataFrame:
+    """
+    Read a ReadStat file (SAS, SPSS, Stata) into a Polars DataFrame using the
+    Rust parallel read path.
+    """
+    path = str(path)
+    if engine != "":
+        print(f"Engine is deprecated as all calls use the new polars_readstat_rs rust engine.", flush=True)
+    if use_mmap:
+        print(f"use_mmap is deprecated as it has not been implemented in the polars_readstat_rs rust engine.", flush=True)
+
+    if threads is None:
+        threads = pl.thread_pool_size()
+    return read_readstat_rs(
+        path=path,
+        threads=threads,
+        missing_string_as_null=missing_string_as_null,
+        value_labels_as_strings=value_labels_as_strings,
+        columns=columns,
+    )
 
 
 def write_readstat(
