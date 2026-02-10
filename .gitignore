@@ -12,6 +12,7 @@
 /target/
 # cargo
 Cargo.lock
+config.toml
 
 *~
 *.o

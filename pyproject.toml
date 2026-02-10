@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "polars-readstat"
-version = "0.11.1"
+version = "0.12.0"
 description = "Read SAS (sas7bdat), Stata (dta), and SPSS (sav) files with polars"
 readme = "README.md"
 authors = [{name = "Jon Rothbaum", email = "jlrothbaum@gmail.com"}]
@@ -17,6 +17,7 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dependencies = [
+    "maturin>=1.8.3",
     "polars>=1.25.2",
 ]
 
@@ -24,16 +25,14 @@ dependencies = [
 
 
 [tool.maturin]
-manifest-path = "crates/polars_readstat_rs/Cargo.toml"
-module-name = "polars_readstat.polars_readstat_rs"
+manifest-path = "crates/polars_readstat_bindings/Cargo.toml"
+module-name = "polars_readstat.polars_readstat_bindings"
 python-source = "polars_readstat"
 python-packages = ["polars_readstat"]
 features = ["python"]
-include = [{ path = "polars_readstat/**/*", format = "wheel" }]
-
-[tool.uv.workspace]
-members = [
-    "crates/cpp-sas7bdat",
+include = [
+  { path = "polars_readstat/**/*.py", format = "wheel" },
+  { path = "polars_readstat/py.typed", format = "wheel" }
 ]
 
 [dependency-groups]
@@ -44,8 +43,6 @@ test = [
 ]
 build = [
     "maturin>=1.8.3",
-    "patchelf>=0.17.2.2; sys_platform == 'linux'", 
-    "conan==2.17.1"   
 ]
 
 [project.urls]

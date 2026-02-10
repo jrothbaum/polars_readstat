@@ -1,21 +1,39 @@
 from __future__ import annotations
-from typing import Any, Iterator, Dict
+from typing import Any, Dict, Iterator
 from pathlib import Path
-from polars.io.plugins import register_io_source
 import polars as pl
-from polars_readstat.polars_readstat_rs import PyPolarsReadstat
+from dataclasses import dataclass
+from polars.io.plugins import register_io_source
+from polars_readstat.polars_readstat_bindings import (
+    PyPolarsReadstat,
+    write_stata,
+    write_spss,
+)
 
 class ScanReadstat:
     def __init__(
         self,
         path: str,
-        engine: str = "cpp",
+        engine: str = "",
         use_mmap: bool = False,
         threads: int | None = None,
+        missing_string_as_null: bool = False,
+        user_missing_as_null: bool = False,
+        value_labels_as_strings: bool = False,
+        preserve_order: bool = False,
+        compress: "CompressOptions | dict | None" = None,
         schema_overrides: Dict[Any, Any] | None = None,
     ):
         self.path = str(path)
-        self.engine = self._validation_check(self.path, engine)
+        if engine != "":
+            print(f"Engine is deprecated as all calls use the new polars_readstat_rs rust engine.", flush=True)
+
+        if use_mmap:
+            print(f"use_mmap is deprecated as it has not been implemented in the polars_readstat_rs rust engine.", flush=True)
+
+        self.engine = engine
+        self.use_mmap = use_mmap
+        self._validation_check(self.path)
         
         if threads is None:
             threads = pl.thread_pool_size()
@@ -23,7 +41,11 @@ class ScanReadstat:
 
         self._metadata = None
         self._schema = None
-        self.use_mmap = use_mmap
+        self.missing_string_as_null = missing_string_as_null
+        self.user_missing_as_null = user_missing_as_null
+        self.value_labels_as_strings = value_labels_as_strings
+        self.preserve_order = preserve_order
+        self.compress = compress
         self.schema_overrides = schema_overrides
 
     @property
@@ -40,7 +62,17 @@ class ScanReadstat:
     
     @property
     def df(self) -> pl.LazyFrame:
-        return scan_readstat(self.path, engine=self.engine, schema_overrides=self.schema_overrides)
+        return scan_readstat(
+            self.path,
+            engine=self.engine,
+            use_mmap=self.use_mmap,
+            missing_string_as_null=self.missing_string_as_null,
+            user_missing_as_null=self.user_missing_as_null,
+            value_labels_as_strings=self.value_labels_as_strings,
+            preserve_order=self.preserve_order,
+            compress=self.compress,
+            schema_overrides=self.schema_overrides,
+        )
         
     def _get_schema(self) -> None:
         src = PyPolarsReadstat(
@@ -48,13 +80,13 @@ class ScanReadstat:
             size_hint=10_000,
             n_rows=1,
             threads=self.threads,
-            engine=self.engine,
-            use_mmap=self.use_mmap
+            missing_string_as_null=self.missing_string_as_null,
+            value_labels_as_strings=self.value_labels_as_strings,
         )
         self._schema = src.schema()
         self._metadata = src.get_metadata()
 
-    def _validation_check(self, path: str, engine: str) -> str:
+    def _validation_check(self, path: str) -> None:
         valid_files = [".sas7bdat", ".dta", ".sav", ".zsav"]
         is_valid = False
         for fi in valid_files:
@@ -64,30 +96,38 @@ class ScanReadstat:
             message = f"{path} is not a valid file for polars_readstat. It must be one of these: {valid_files}"
             raise Exception(message)
         
-        if path.endswith(".sas7bdat") and engine not in ["cpp", "readstat"]:
-            if engine == "":
-                pass
-                # print("Defaulting to cpp engine for reading sas file")
-            else:
-                print(f"{engine} is not a valid reader for sas7bdat files. Defaulting to cpp.", flush=True)
-            engine = "cpp"
         
-        if not path.endswith(".sas7bdat") and engine == "cpp":
-            print(f"{engine} is not a valid reader for anything but sas7bdat files. Defaulting to readstat.", flush=True)
-            engine = "readstat"
-        if not path.endswith(".sas7bdat") and engine == "":
-            # print("Defaulting to readstat engine")
-            engine = "readstat"
+@dataclass
+class CompressOptions:
+    enabled: bool = True
+    cols: list[str] | None = None
+    compress_numeric: bool = False
+    datetime_to_date: bool = False
+    string_to_numeric: bool = False
 
-        return engine
+    def to_dict(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "cols": self.cols,
+            "compress_numeric": self.compress_numeric,
+            "datetime_to_date": self.datetime_to_date,
+            "string_to_numeric": self.string_to_numeric,
+        }
+
 
 def scan_readstat(
     path: Any,
-    engine: str = "",
     threads: int | None = None,
+    engine:str="",
     use_mmap: bool = False,
+    missing_string_as_null: bool = False,
+    user_missing_as_null: bool = False,
+    value_labels_as_strings: bool = False,
+    preserve_order: bool = False,
+    compress: CompressOptions | Dict[str, Any] | None = None,
     reader: ScanReadstat | None = None,
-    schema_overrides: Dict[Any, Any] | None = None
+    schema_overrides: Dict[Any, Any] | None = None,
+    batch_size: int | None = None,
 ) -> pl.LazyFrame:
     """
     Scans a ReadStat file (SAS, SPSS, Stata) into a Polars LazyFrame.
@@ -97,81 +137,169 @@ def scan_readstat(
     path : str
         Path to the file.
     engine : str, optional
-        'readstat' or 'cpp' (for sas7bdat).
+        DEPRECATED.
     threads : int, optional
         Number of threads to use.
     use_mmap : bool, optional
-        Use memory mapping for file reading.
+        DEPRECATED.
+    missing_string_as_null : bool, optional
+        Convert empty strings to nulls.
+    user_missing_as_null : bool, optional
+        Convert user-defined missing values to nulls (SPSS only).
+    value_labels_as_strings : bool, optional
+        Use value labels as strings for labeled numeric columns (Stata/SPSS).
+    preserve_order : bool, optional
+        Preserve row order for parallel scan (slower but deterministic).
+    compress : CompressOptions or dict, optional
+        Apply type compression after scan (narrow numeric, date/datetime, strings).
     reader : ScanReadstat, optional
         Internal use.
     schema_overrides : dict, optional
         A dictionary mapping column names to Polars DataTypes. 
         Used to force specific types (e.g., Int64) to prevent overflow errors 
         when the schema inferred from the header differs from data in the file body.
+    batch_size : int, optional
+        Number of rows per batch to read.
     """
     path = str(path)
 
     if reader is None:
         reader = ScanReadstat(
             path=path,
-            engine=engine,
             threads=threads,
-            use_mmap=use_mmap,
+            missing_string_as_null=missing_string_as_null,
+            user_missing_as_null=user_missing_as_null,
+            value_labels_as_strings=value_labels_as_strings,
+            preserve_order=preserve_order,
+            compress=compress,
             schema_overrides=schema_overrides
         )
-        engine = reader.engine
-
+    else:
+        path = reader.path
+        threads = reader.threads
+        missing_string_as_null = reader.missing_string_as_null
+        user_missing_as_null = reader.user_missing_as_null
+        value_labels_as_strings = reader.value_labels_as_strings
+        preserve_order = reader.preserve_order
+        compress = reader.compress
+        
     def schema_generator() -> pl.Schema:
         base_schema = reader.schema
-        
         if schema_overrides:
             new_schema = dict(base_schema)
             for col, dtype in schema_overrides.items():
                 if col in new_schema:
                     new_schema[col] = dtype
             return pl.Schema(new_schema)
-            
         return base_schema
-        
+
     def source_generator(
         with_columns: list[str] | None,
         predicate: pl.Expr | None,
         n_rows: int | None,
         batch_size: int | None = None,
     ) -> Iterator[pl.DataFrame]:
-        
         if batch_size is None:
-            if engine == "cpp":
-                batch_size = 100_000
-            else:
-                batch_size = 10_000
+            batch_size = 100_000
 
         src = PyPolarsReadstat(
             path=path,
             size_hint=batch_size,
             n_rows=n_rows,
             threads=reader.threads,
-            engine=engine,
-            use_mmap=use_mmap
+            missing_string_as_null=reader.missing_string_as_null,
+            value_labels_as_strings=reader.value_labels_as_strings,
         )
-        
-        if with_columns is not None: 
+        if with_columns is not None:
             src.set_with_columns(with_columns)
-            
+
         while (out := src.next()) is not None:
             if predicate is not None:
                 out = out.filter(predicate)
-            
-            # Apply schema overrides (cast) immediately on the processed chunk
+
             if schema_overrides:
                 cols_to_cast = {}
                 for col, dtype in schema_overrides.items():
                     if col in out.columns:
                         cols_to_cast[col] = dtype
-                
                 if cols_to_cast:
                     out = out.cast(cols_to_cast)
 
             yield out
-        
+
     return register_io_source(io_source=source_generator, schema=schema_generator())
+
+
+def write_readstat(
+    df: pl.DataFrame | pl.LazyFrame,
+    path: Any,
+    *,
+    format: str | None = None,
+    **kwargs: Any,
+) -> None:
+    """
+    Write a DataFrame or LazyFrame to a ReadStat-supported file.
+
+    Parameters
+    ----------
+    df : polars.DataFrame or polars.LazyFrame
+        Data to write.
+    path : str
+        Output path.
+    format : str, optional
+        One of "dta" (Stata) or "sav"/"zsav" (SPSS). If omitted, inferred
+        from the file extension.
+    **kwargs : Any
+        Stata supports `compress` (bool), `threads` (int),
+        `value_labels` (dict[str, dict[int, str]]) and `variable_labels` (dict[str, str]).
+        SPSS supports `value_labels` (dict[str, dict[float|int, str]]) and
+        `variable_labels` (dict[str, str]).
+    """
+    path = str(path)
+    fmt = (format or Path(path).suffix.lstrip(".")).lower()
+
+    if isinstance(df, pl.LazyFrame):
+        df = df.collect()
+    if not isinstance(df, pl.DataFrame):
+        raise TypeError("df must be a polars DataFrame or LazyFrame")
+
+    if fmt in ("dta", "stata"):
+        compress = kwargs.pop("compress", None)
+        threads = kwargs.pop("threads", None)
+        value_labels = kwargs.pop("value_labels", None)
+        variable_labels = kwargs.pop("variable_labels", None)
+        if kwargs:
+            raise TypeError(f"Unsupported kwargs for Stata writer: {sorted(kwargs.keys())}")
+        write_stata(
+            df,
+            path,
+            compress=compress,
+            threads=threads,
+            value_labels=value_labels,
+            variable_labels=variable_labels,
+        )
+        return
+    if fmt in ("sav", "zsav", "spss"):
+        value_labels = kwargs.pop("value_labels", None)
+        variable_labels = kwargs.pop("variable_labels", None)
+        if kwargs:
+            raise TypeError(f"Unsupported kwargs for SPSS writer: {sorted(kwargs.keys())}")
+        write_spss(df, path, value_labels=value_labels, variable_labels=variable_labels)
+        return
+    if fmt in ("sas7bdat", "sas"):
+        raise NotImplementedError("SAS writing is not supported yet")
+
+    raise ValueError(f"Unsupported output format: {fmt}")
+
+
+def sink_readstat(
+    lf: pl.LazyFrame,
+    path: Any,
+    *,
+    format: str | None = None,
+    **kwargs: Any,
+) -> None:
+    """
+    Convenience alias to write a LazyFrame to a ReadStat-supported file.
+    """
+    write_readstat(lf, path, format=format, **kwargs)
