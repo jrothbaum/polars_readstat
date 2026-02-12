@@ -27,6 +27,11 @@ jobs:
         run: |
           /opt/python/cp39-cp39/bin/pip install --upgrade pip maturin
 
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wheel-manylinux_2_28-x86_64
+
       - name: Build wheels
         run: |
           source ~/.cargo/env
@@ -54,6 +59,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache Rust build artifacts (manylinux2014)
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cargo-home
+            target
+          key: manylinux2014-cargo-${{ hashFiles('**/Cargo.toml', '**/pyproject.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            manylinux2014-cargo-
+
       - name: Build wheels (manylinux2014 in Docker)
         run: |
           docker run --rm \
@@ -62,6 +77,7 @@ jobs:
             -e RUST_BACKTRACE=full \
             -e CARGO_BUILD_JOBS=2 \
             -e CARGO_INCREMENTAL=0 \
+            -e CARGO_HOME=/io/.cargo-home \
             -e RUSTFLAGS="-C debuginfo=0 -C codegen-units=1" \
             quay.io/pypa/manylinux2014_x86_64:latest \
             /bin/bash -lc '
@@ -126,6 +142,11 @@ jobs:
 
       - name: Install Python build tools
         run: python -m pip install --upgrade pip maturin
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wheel-${{ matrix.os }}-${{ matrix.rust-target }}
 
       - name: Build wheels (macOS)
         if: startsWith(matrix.os, 'macos-')
