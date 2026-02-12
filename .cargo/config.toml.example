@@ -1,0 +1,2 @@
+[patch.crates-io]
+polars-readstat-rs = { path = "../polars_readstat_rs" }
