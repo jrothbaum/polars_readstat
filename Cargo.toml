@@ -4,3 +4,6 @@ members = [
 ]
 resolver = "2"
 
+[profile.test]
+debug = 0
+incremental = false
