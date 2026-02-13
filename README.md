@@ -50,7 +50,7 @@ write_readstat(df, "/path/out.dta", threads=8)
 write_readstat(df, "/path/out.sav")
 ```
 
-`write_readstat` supports Stata (`dta`) and SPSS (`sav`/`zsav`). SAS writing is not supported.
+`write_readstat` supports Stata (`dta`) and SPSS (`sav`). SAS writing is not supported.
 
 ## Tests run
 
