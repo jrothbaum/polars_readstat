@@ -46,8 +46,8 @@ metadata = reader.metadata
 ```python
 from polars_readstat import write_readstat
 
-write_readstat(df, "/path/out.dta", format="dta", threads=8)
-write_readstat(df, "/path/out.sav", format="sav")
+write_readstat(df, "/path/out.dta", threads=8)
+write_readstat(df, "/path/out.sav")
 ```
 
 `write_readstat` supports Stata (`dta`) and SPSS (`sav`/`zsav`). SAS writing is not supported.
