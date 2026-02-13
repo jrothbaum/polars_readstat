@@ -1,7 +1,7 @@
 # polars_readstat
 Polars plugin for SAS (`.sas7bdat`), Stata (`.dta`), and SPSS (`.sav`/`.zsav`) files.
 
-The Python package wraps the Rust core in `polars_readstat_rs` and exposes a simple Polars-first API.  This update (to eventual release 0.12.0) is in progress.  For the currently available version (on pypi), see the [prior readme](https://github.com/jrothbaum/polars_readstat/tree/250f516a4424fbbe84c931a41cb82b454c5ca205).
+The Python package wraps the Rust core in `polars_readstat_rs` and exposes a simple Polars-first API.  I have tried to make sure there are no errors or regressions in this release (tested against 178 test files from pandas, pyreadstat, etc.).  If I missed something, you can find info on the [readme for the prior version](https://github.com/jrothbaum/polars_readstat/tree/250f516a4424fbbe84c931a41cb82b454c5ca205) and install v0.11.1 from pypi.
 
 ## Why use this?
 
@@ -77,7 +77,7 @@ Benchmark context:
 all times in seconds (speedup relative to pandas in parenthesis below each)
 | Library | Full File | Subset: True | Filter: True | Subset: True, Filter: True |
 |---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
-| polars_readstat<br>[New rust engine (in progress)](https://github.com/jrothbaum/polars_readstat_rs) | 0.90<br>(1.7×) | 0.07<br>(29.4×) | 1.23<br>(2.5×) | 0.07<br>(29.9×) |
+| polars_readstat<br>[New rust engine](https://github.com/jrothbaum/polars_readstat_rs) | 0.90<br>(1.7×) | 0.07<br>(29.4×) | 1.23<br>(2.5×) | 0.07<br>(29.9×) |
 | polars_readstat<br>engine="cpp"<br>(fastest for 0.11.1) | 1.31<br>(1.6×) | 0.09<br>(22.9×) | 1.56<br>(1.9×) | 0.09<br>(23.2×) |
 | pandas | 2.07 | 2.06 | 3.03 | 2.09 |
 | pyreadstat | 10.75<br>(0.2×) | 0.46<br>(4.5×) | 11.93<br>(0.3×) | 0.50<br>(4.2×) |
@@ -86,7 +86,7 @@ all times in seconds (speedup relative to pandas in parenthesis below each)
 all times in seconds (speedup relative to pandas in parenthesis below each)
 | Library | Full File | Subset: True | Filter: True | Subset: True, Filter: True |
 |---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
-| polars_readstat<br>[New rust engine (in progress)](https://github.com/jrothbaum/polars_readstat_rs) | 0.17<br>(6.7×) | 0.12<br>(9.8×) | 0.24<br>(4.1×) | 0.11<br>(8.7×) |
+| polars_readstat<br>[New rust engine](https://github.com/jrothbaum/polars_readstat_rs) | 0.17<br>(6.7×) | 0.12<br>(9.8×) | 0.24<br>(4.1×) | 0.11<br>(8.7×) |
 | polars_readstat<br>engine="readstat"<br>(the only option for 0.11.1) | 1.80<br>(0.6×) | 0.27<br>(4.4×) | 1.31<br>(0.8×) | 0.29<br>(3.3×) |
 | pandas | 1.14 | 1.18 | 0.99 | 0.96 |
 | pyreadstat | 7.46<br>(0.2×) | 2.18<br>(0.5×) | 7.66<br>(0.1×) | 2.24<br>(0.4×) |
