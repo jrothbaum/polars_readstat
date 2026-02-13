@@ -12,7 +12,7 @@ use pyo3_polars::{PyDataFrame, PyLazyFrame, PySchema};
 use std::cmp::min;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 
 #[derive(Clone, Copy)]
 enum ReadstatFormat {
@@ -34,6 +34,163 @@ fn detect_format(path: &str) -> PyResult<ReadstatFormat> {
         "sav" | "zsav" => Ok(ReadstatFormat::Spss),
         _ => Err(PyValueError::new_err("unknown file extension")),
     }
+}
+
+#[derive(Clone)]
+struct ParsedCompressOptions {
+    opts: polars_readstat_rs::CompressOptionsLite,
+    infer_compress_length: Option<usize>,
+}
+
+fn parse_compress_opts(compress: Option<&Bound<PyDict>>) -> PyResult<ParsedCompressOptions> {
+    let mut opts = polars_readstat_rs::CompressOptionsLite::default();
+    let mut infer_compress_length: Option<usize> = None;
+
+    if let Some(dict) = compress {
+        if let Ok(Some(v)) = dict.get_item("enabled") {
+            opts.enabled = v.extract::<bool>()?;
+        }
+        if let Ok(Some(v)) = dict.get_item("cols") {
+            opts.cols = v.extract::<Option<Vec<String>>>()?;
+        }
+        if let Ok(Some(v)) = dict.get_item("compress_numeric") {
+            opts.compress_numeric = v.extract::<bool>()?;
+        }
+        if let Ok(Some(v)) = dict.get_item("datetime_to_date") {
+            opts.datetime_to_date = v.extract::<bool>()?;
+        }
+        if let Ok(Some(v)) = dict.get_item("string_to_numeric") {
+            opts.string_to_numeric = v.extract::<bool>()?;
+        }
+        if let Ok(Some(v)) = dict.get_item("infer_compress_length") {
+            infer_compress_length = v.extract::<Option<usize>>()?;
+        }
+    }
+
+    Ok(ParsedCompressOptions {
+        opts,
+        infer_compress_length,
+    })
+}
+
+fn read_df_with_options(
+    path: &str,
+    threads: Option<usize>,
+    missing_string_as_null: bool,
+    value_labels_as_strings: bool,
+    columns: Option<Vec<String>>,
+    n_rows: Option<usize>,
+) -> PyResult<DataFrame> {
+    let format = detect_format(path)?;
+    let df = match format {
+        ReadstatFormat::Sas => {
+            let reader =
+                Sas7bdatReader::open(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let mut builder = reader.read().missing_string_as_null(missing_string_as_null);
+            if let Some(cols) = columns.clone() {
+                builder = builder.with_columns(cols);
+            }
+            if let Some(limit) = n_rows {
+                builder = builder.with_limit(limit);
+            }
+            if let Some(n) = threads {
+                builder = builder.with_n_threads(n);
+            }
+            builder
+                .finish()
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        }
+        ReadstatFormat::Stata => {
+            let reader =
+                StataReader::open(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let mut builder = reader
+                .read()
+                .missing_string_as_null(missing_string_as_null)
+                .value_labels_as_strings(value_labels_as_strings);
+            if let Some(cols) = columns.clone() {
+                builder = builder.with_columns(cols);
+            }
+            if let Some(limit) = n_rows {
+                builder = builder.with_limit(limit);
+            }
+            if let Some(n) = threads {
+                builder = builder.with_n_threads(n);
+            }
+            builder
+                .finish()
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        }
+        ReadstatFormat::Spss => {
+            let reader =
+                SpssReader::open(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let mut builder = reader
+                .read()
+                .missing_string_as_null(missing_string_as_null)
+                .value_labels_as_strings(value_labels_as_strings);
+            if let Some(cols) = columns {
+                builder = builder.with_columns(cols);
+            }
+            if let Some(limit) = n_rows {
+                builder = builder.with_limit(limit);
+            }
+            if let Some(n) = threads {
+                builder = builder.with_n_threads(n);
+            }
+            builder
+                .finish()
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        }
+    };
+    Ok(df)
+}
+
+fn infer_compressed_schema_and_cast_map(
+    path: &str,
+    threads: Option<usize>,
+    missing_string_as_null: bool,
+    value_labels_as_strings: bool,
+    columns: Option<Vec<String>>,
+    compress_opts: &polars_readstat_rs::CompressOptionsLite,
+    infer_compress_length: Option<usize>,
+) -> PyResult<(Schema, HashMap<String, DataType>)> {
+    let probe_df = read_df_with_options(
+        path,
+        threads,
+        missing_string_as_null,
+        value_labels_as_strings,
+        columns,
+        infer_compress_length,
+    )?;
+    let compressed = polars_readstat_rs::compress_df_if_enabled(&probe_df, compress_opts)
+        .map_err(PyRuntimeError::new_err)?;
+
+    let mut schema = Schema::with_capacity(compressed.width());
+    let mut cast_map = HashMap::with_capacity(compressed.width());
+    for col in compressed.get_columns() {
+        let name = col.name().as_str().to_string();
+        let dtype = col.dtype().clone();
+        schema.with_column(name.as_str().into(), dtype.clone());
+        cast_map.insert(name, dtype);
+    }
+    Ok((schema, cast_map))
+}
+
+fn cast_df_to_dtypes(df: &DataFrame, cast_map: &HashMap<String, DataType>) -> PyResult<DataFrame> {
+    let mut out_cols: Vec<Column> = Vec::with_capacity(df.width());
+    for col in df.get_columns() {
+        let name = col.name().as_str();
+        match cast_map.get(name) {
+            Some(target_dtype) if col.dtype() != target_dtype => {
+                let casted = col
+                    .as_materialized_series()
+                    .cast(target_dtype)
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                out_cols.push(casted.into_column());
+            }
+            _ => out_cols.push(col.clone()),
+        }
+    }
+    DataFrame::new(out_cols).map_err(|e| PyRuntimeError::new_err(e.to_string()))
 }
 
 enum ChunkMessage {
@@ -73,6 +230,10 @@ pub struct PyPolarsReadstat {
     value_labels_as_strings: bool,
     preserve_order: bool,
     with_columns: Option<Vec<String>>,
+    compress_opts: polars_readstat_rs::CompressOptionsLite,
+    infer_compress_length: Option<usize>,
+    inferred_schema: Option<Schema>,
+    inferred_cast_map: Option<HashMap<String, DataType>>,
     total_rows: usize,
     total_chunks: usize,
     stream: Option<Mutex<StreamState>>,
@@ -81,7 +242,7 @@ pub struct PyPolarsReadstat {
 #[pymethods]
 impl PyPolarsReadstat {
     #[new]
-    #[pyo3(signature = (path, size_hint, n_rows, threads, missing_string_as_null, value_labels_as_strings=false, preserve_order=false))]
+    #[pyo3(signature = (path, size_hint, n_rows, threads, missing_string_as_null, value_labels_as_strings=false, preserve_order=false, compress=None))]
     fn new_source(
         path: String,
         size_hint: usize,
@@ -90,6 +251,7 @@ impl PyPolarsReadstat {
         missing_string_as_null: bool,
         value_labels_as_strings: bool,
         preserve_order: bool,
+        compress: Option<&Bound<PyDict>>,
     ) -> PyResult<Self> {
         let max_useful_threads = num_cpus::get_physical();
         let threads = if threads.is_none() {
@@ -119,6 +281,7 @@ impl PyPolarsReadstat {
         let total_rows = n_rows.unwrap_or(total_rows).min(total_rows);
         let batch_size = size_hint.max(1);
         let total_chunks = (total_rows + batch_size - 1) / batch_size;
+        let parsed_compress = parse_compress_opts(compress)?;
 
         Ok(Self {
             path,
@@ -129,13 +292,24 @@ impl PyPolarsReadstat {
             value_labels_as_strings,
             preserve_order,
             with_columns: None,
+            compress_opts: parsed_compress.opts,
+            infer_compress_length: parsed_compress.infer_compress_length,
+            inferred_schema: None,
+            inferred_cast_map: None,
             total_rows,
             total_chunks,
             stream: None,
         })
     }
 
-    fn schema(&self) -> PyResult<PySchema> {
+    fn schema(&mut self) -> PyResult<PySchema> {
+        if self.compress_opts.enabled {
+            self.ensure_inferred_compress_schema()?;
+            if let Some(schema) = self.inferred_schema.as_ref() {
+                return Ok(PySchema(Arc::new(schema.clone())));
+            }
+        }
+
         let opts = ScanOptions {
             threads: Some(self.threads),
             chunk_size: Some(self.batch_size),
@@ -165,7 +339,19 @@ impl PyPolarsReadstat {
             Python::with_gil(|py| py.allow_threads(|| self.next_batch()));
 
         match result {
-            Ok(Some(df)) => Ok(Some(PyDataFrame(df))),
+            Ok(Some(df)) => {
+                let out = if self.compress_opts.enabled {
+                    self.ensure_inferred_compress_schema()?;
+                    if let Some(cast_map) = self.inferred_cast_map.as_ref() {
+                        cast_df_to_dtypes(&df, cast_map)?
+                    } else {
+                        df
+                    }
+                } else {
+                    df
+                };
+                Ok(Some(PyDataFrame(out)))
+            }
             Ok(None) => Ok(None),
             Err(e) => Err(PyRuntimeError::new_err(e)),
         }
@@ -225,6 +411,30 @@ impl PyPolarsReadstat {
 }
 
 impl PyPolarsReadstat {
+    fn ensure_inferred_compress_schema(&mut self) -> PyResult<()> {
+        if !self.compress_opts.enabled || self.inferred_schema.is_some() {
+            return Ok(());
+        }
+
+        let infer_rows = self
+            .infer_compress_length
+            .map(|n| n.min(self.total_rows))
+            .or(Some(self.total_rows));
+
+        let (schema, cast_map) = infer_compressed_schema_and_cast_map(
+            &self.path,
+            Some(self.threads),
+            self.missing_string_as_null,
+            self.value_labels_as_strings,
+            self.with_columns.clone(),
+            &self.compress_opts,
+            infer_rows,
+        )?;
+        self.inferred_schema = Some(schema);
+        self.inferred_cast_map = Some(cast_map);
+        Ok(())
+    }
+
     fn start_stream(&mut self) -> PyResult<()> {
         let total_chunks = self.total_chunks;
         let n_workers = min(self.threads.max(1), total_chunks.max(1));
@@ -452,8 +662,6 @@ impl Drop for PyPolarsReadstat {
     }
 }
 
-fn _ignore_compress_opts(_opts: Option<&Bound<PyDict>>) {}
-
 #[pyfunction]
 #[pyo3(signature = (
     path,
@@ -473,13 +681,14 @@ fn scan_readstat_rs(
     preserve_order: bool,
     compress: Option<&Bound<PyDict>>,
 ) -> PyResult<PyLazyFrame> {
-    _ignore_compress_opts(compress);
-    let _ = preserve_order;
+    let parsed_compress = parse_compress_opts(compress)?;
     let opts = ScanOptions {
         threads,
         chunk_size,
         missing_string_as_null: Some(missing_string_as_null),
         value_labels_as_strings: Some(value_labels_as_strings),
+        preserve_order: Some(preserve_order),
+        compress_opts: parsed_compress.opts,
         ..Default::default()
     };
     let lf = readstat_scan(&path, Some(opts), None)
@@ -506,13 +715,26 @@ fn readstat_schema_rs(
     preserve_order: bool,
     compress: Option<&Bound<PyDict>>,
 ) -> PyResult<PySchema> {
-    _ignore_compress_opts(compress);
+    let parsed_compress = parse_compress_opts(compress)?;
     let _ = preserve_order;
+    if parsed_compress.opts.enabled {
+        let (schema, _) = infer_compressed_schema_and_cast_map(
+            &path,
+            threads,
+            missing_string_as_null,
+            value_labels_as_strings,
+            None,
+            &parsed_compress.opts,
+            parsed_compress.infer_compress_length,
+        )?;
+        return Ok(PySchema(Arc::new(schema)));
+    }
     let opts = ScanOptions {
         threads,
         chunk_size,
         missing_string_as_null: Some(missing_string_as_null),
         value_labels_as_strings: Some(value_labels_as_strings),
+        compress_opts: parsed_compress.opts,
         ..Default::default()
     };
     let schema = readstat_schema(&path, Some(opts), None)
@@ -531,7 +753,8 @@ fn readstat_metadata_json_rs(path: String) -> PyResult<String> {
     threads=None,
     missing_string_as_null=false,
     value_labels_as_strings=false,
-    columns=None
+    columns=None,
+    compress=None
 ))]
 fn read_readstat_rs(
     path: String,
@@ -539,59 +762,32 @@ fn read_readstat_rs(
     missing_string_as_null: bool,
     value_labels_as_strings: bool,
     columns: Option<Vec<String>>,
+    compress: Option<&Bound<PyDict>>,
 ) -> PyResult<PyDataFrame> {
-    let format = detect_format(&path)?;
-    let df = match format {
-        ReadstatFormat::Sas => {
-            let reader =
-                Sas7bdatReader::open(&path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            let mut builder = reader.read().missing_string_as_null(missing_string_as_null);
-            if let Some(cols) = columns.clone() {
-                builder = builder.with_columns(cols);
-            }
-            if let Some(n) = threads {
-                builder = builder.with_n_threads(n);
-            }
-            builder
-                .finish()
-                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
-        }
-        ReadstatFormat::Stata => {
-            let reader =
-                StataReader::open(&path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            let mut builder = reader
-                .read()
-                .missing_string_as_null(missing_string_as_null)
-                .value_labels_as_strings(value_labels_as_strings);
-            if let Some(cols) = columns.clone() {
-                builder = builder.with_columns(cols);
-            }
-            if let Some(n) = threads {
-                builder = builder.with_n_threads(n);
-            }
-            builder
-                .finish()
-                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
-        }
-        ReadstatFormat::Spss => {
-            let reader =
-                SpssReader::open(&path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            let mut builder = reader
-                .read()
-                .missing_string_as_null(missing_string_as_null)
-                .value_labels_as_strings(value_labels_as_strings);
-            if let Some(cols) = columns {
-                builder = builder.with_columns(cols);
-            }
-            if let Some(n) = threads {
-                builder = builder.with_n_threads(n);
-            }
-            builder
-                .finish()
-                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
-        }
+    let parsed_compress = parse_compress_opts(compress)?;
+    let df = read_df_with_options(
+        &path,
+        threads,
+        missing_string_as_null,
+        value_labels_as_strings,
+        columns.clone(),
+        None,
+    )?;
+    let out = if parsed_compress.opts.enabled {
+        let (_, cast_map) = infer_compressed_schema_and_cast_map(
+            &path,
+            threads,
+            missing_string_as_null,
+            value_labels_as_strings,
+            columns,
+            &parsed_compress.opts,
+            parsed_compress.infer_compress_length,
+        )?;
+        cast_df_to_dtypes(&df, &cast_map)?
+    } else {
+        df
     };
-    Ok(PyDataFrame(df))
+    Ok(PyDataFrame(out))
 }
 
 #[pyfunction]

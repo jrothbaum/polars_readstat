@@ -44,7 +44,7 @@ class ScanReadstat:
         self.missing_string_as_null = missing_string_as_null
         self.value_labels_as_strings = value_labels_as_strings
         self.preserve_order = preserve_order
-        self.compress = compress
+        self.compress = _normalize_compress_opts(compress)
         self.schema_overrides = schema_overrides
 
     @property
@@ -76,11 +76,12 @@ class ScanReadstat:
         src = PyPolarsReadstat(
             path=self.path,
             size_hint=10_000,
-            n_rows=1,
+            n_rows=None,
             threads=self.threads,
             missing_string_as_null=self.missing_string_as_null,
             value_labels_as_strings=self.value_labels_as_strings,
             preserve_order=self.preserve_order,
+            compress=self.compress.to_dict() if self.compress is not None else None,
         )
         self._schema = src.schema()
         self._metadata = src.get_metadata()
@@ -98,11 +99,12 @@ class ScanReadstat:
         
 @dataclass
 class CompressOptions:
-    enabled: bool = True
+    enabled: bool = False
     cols: list[str] | None = None
     compress_numeric: bool = False
     datetime_to_date: bool = False
     string_to_numeric: bool = False
+    infer_compress_length: int | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -111,7 +113,20 @@ class CompressOptions:
             "compress_numeric": self.compress_numeric,
             "datetime_to_date": self.datetime_to_date,
             "string_to_numeric": self.string_to_numeric,
+            "infer_compress_length": self.infer_compress_length,
         }
+
+
+def _normalize_compress_opts(
+    compress: "CompressOptions | Dict[str, Any] | None",
+) -> CompressOptions | None:
+    if compress is None:
+        return None
+    if isinstance(compress, CompressOptions):
+        return compress
+    if isinstance(compress, dict):
+        return CompressOptions(**compress)
+    raise TypeError(f"compress must be CompressOptions, dict, or None, got {type(compress)}")
 
 
 def scan_readstat(
@@ -159,6 +174,7 @@ def scan_readstat(
         Number of rows per batch to read.
     """
     path = str(path)
+    compress = _normalize_compress_opts(compress)
 
     if reader is None:
         reader = ScanReadstat(
@@ -208,6 +224,7 @@ def scan_readstat(
             missing_string_as_null=reader.missing_string_as_null,
             value_labels_as_strings=reader.value_labels_as_strings,
             preserve_order=reader.preserve_order,
+            compress=compress.to_dict() if compress is not None else None,
         )
         if use_columns is not None:
             src.set_with_columns(use_columns)
@@ -237,10 +254,16 @@ def read_readstat(
     missing_string_as_null: bool = False,
     value_labels_as_strings: bool = False,
     columns: list[str] | None = None,
+    compress: CompressOptions | Dict[str, Any] | None = None,
 ) -> pl.DataFrame:
     """
     Read a ReadStat file (SAS, SPSS, Stata) into a Polars DataFrame using the
     Rust parallel read path.
+
+    Parameters
+    ----------
+    compress : CompressOptions or dict, optional
+        Apply Rust-side dual-pass compression (schema probe + cast) while reading.
     """
     path = str(path)
     if engine != "":
@@ -250,12 +273,14 @@ def read_readstat(
 
     if threads is None:
         threads = pl.thread_pool_size()
+    compress_opts = _normalize_compress_opts(compress)
     return read_readstat_rs(
         path=path,
         threads=threads,
         missing_string_as_null=missing_string_as_null,
         value_labels_as_strings=value_labels_as_strings,
         columns=columns,
+        compress=compress_opts.to_dict() if compress_opts is not None else None,
     )
 
 
