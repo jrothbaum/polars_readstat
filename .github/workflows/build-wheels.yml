@@ -18,8 +18,8 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           source ~/.cargo/env
-          rustup toolchain install 1.88.0
-          rustup default 1.88.0
+          rustup toolchain install 1.93.0
+          rustup default 1.93.0
           rustup target add x86_64-unknown-linux-gnu
         shell: bash
 
@@ -82,9 +82,9 @@ jobs:
             quay.io/pypa/manylinux2014_x86_64:latest \
             /bin/bash -lc '
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-              source ~/.cargo/env
-              rustup toolchain install 1.88.0
-              rustup default 1.88.0
+              source "${CARGO_HOME}/env"
+              rustup toolchain install 1.93.0
+              rustup default 1.93.0
               rustup target add x86_64-unknown-linux-gnu
               /opt/python/cp39-cp39/bin/pip install --upgrade pip maturin
               /opt/python/cp39-cp39/bin/maturin build --release --strip --out dist \
@@ -137,7 +137,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.88.0
+          toolchain: 1.93.0
           targets: ${{ matrix.rust-target }}
 
       - name: Install Python build tools
