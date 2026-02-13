@@ -77,7 +77,7 @@ Benchmark context:
 all times in seconds (speedup relative to pandas in parenthesis below each)
 | Library | Full File | Subset: True | Filter: True | Subset: True, Filter: True |
 |---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
-| polars_readstat<br>[New rust engine (in progress)](https://github.com/jrothbaum/polars_readstat_rs) | 1.22<br>(1.7×) | 0.07<br>(29.4×) | 1.21<br>(2.5×) | 0.07<br>(29.9×) |
+| polars_readstat<br>[New rust engine (in progress)](https://github.com/jrothbaum/polars_readstat_rs) | 0.90<br>(1.7×) | 0.07<br>(29.4×) | 1.23<br>(2.5×) | 0.07<br>(29.9×) |
 | polars_readstat<br>engine="cpp"<br>(fastest for 0.11.1) | 1.31<br>(1.6×) | 0.09<br>(22.9×) | 1.56<br>(1.9×) | 0.09<br>(23.2×) |
 | pandas | 2.07 | 2.06 | 3.03 | 2.09 |
 | pyreadstat | 10.75<br>(0.2×) | 0.46<br>(4.5×) | 11.93<br>(0.3×) | 0.50<br>(4.2×) |
