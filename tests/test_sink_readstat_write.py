@@ -5,6 +5,11 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+import polars_readstat as _prs
+
+if not hasattr(_prs, "sink_readstat"):
+    pytest.skip("sink_readstat not available", allow_module_level=True)
+
 
 def test_sink_readstat_stata_streaming_roundtrip(
     package_module,

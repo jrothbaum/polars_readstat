@@ -37,6 +37,20 @@ fn detect_format(path: &str) -> PyResult<ReadstatFormat> {
     }
 }
 
+fn ensure_extension(path: &str, allowed: &[&str]) -> PyResult<()> {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .ok_or_else(|| PyValueError::new_err("missing file extension"))?;
+
+    if allowed.iter().any(|e| e.eq_ignore_ascii_case(&ext)) {
+        Ok(())
+    } else {
+        Err(PyValueError::new_err("unknown file extension"))
+    }
+}
+
 #[derive(Clone)]
 struct ParsedCompressOptions {
     opts: polars_readstat_rs::CompressOptionsLite,
@@ -801,6 +815,7 @@ fn write_stata(
     value_labels: Option<&Bound<PyDict>>,
     variable_labels: Option<&Bound<PyDict>>,
 ) -> PyResult<()> {
+    ensure_extension(&path, &["dta"])?;
     let mut writer = StataWriter::new(path);
     if let Some(enable) = compress {
         writer = writer.with_compress(enable);
@@ -842,6 +857,7 @@ fn sink_stata(
     batch_size: Option<usize>,
     preserve_order: bool,
 ) -> PyResult<()> {
+    ensure_extension(&path, &["dta"])?;
     if compress.unwrap_or(false) {
         return Err(PyValueError::new_err(
             "sink_stata does not currently support compress=True; use write_readstat for compressed writes",
@@ -984,6 +1000,7 @@ fn write_spss(
     value_labels: Option<&Bound<PyDict>>,
     variable_labels: Option<&Bound<PyDict>>,
 ) -> PyResult<()> {
+    ensure_extension(&path, &["sav", "zsav"])?;
     let mut writer = SpssWriter::new(path);
     if let Some(labels) = value_labels {
         writer = writer.with_value_labels(parse_spss_value_labels(labels)?);
