@@ -178,6 +178,11 @@ def scan_readstat(
     path = str(path)
     compress = _normalize_compress_opts(compress)
 
+    if engine != "":
+        print(f"Engine is deprecated as all calls use the new polars_readstat_rs rust engine.", flush=True)
+    if use_mmap:
+        print(f"use_mmap is deprecated as it has not been implemented in the polars_readstat_rs rust engine.", flush=True)
+
     if reader is None:
         reader = ScanReadstat(
             path=path,
