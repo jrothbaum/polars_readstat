@@ -11,6 +11,7 @@ use pyo3::wrap_pyfunction;
 use pyo3_polars::{PyDataFrame, PyLazyFrame, PySchema};
 use std::cmp::min;
 use std::collections::{BTreeMap, HashMap};
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 
@@ -166,7 +167,7 @@ fn infer_compressed_schema_and_cast_map(
 
     let mut schema = Schema::with_capacity(compressed.width());
     let mut cast_map = HashMap::with_capacity(compressed.width());
-    for col in compressed.get_columns() {
+    for col in compressed.columns() {
         let name = col.name().as_str().to_string();
         let dtype = col.dtype().clone();
         schema.with_column(name.as_str().into(), dtype.clone());
@@ -177,7 +178,7 @@ fn infer_compressed_schema_and_cast_map(
 
 fn cast_df_to_dtypes(df: &DataFrame, cast_map: &HashMap<String, DataType>) -> PyResult<DataFrame> {
     let mut out_cols: Vec<Column> = Vec::with_capacity(df.width());
-    for col in df.get_columns() {
+    for col in df.columns() {
         let name = col.name().as_str();
         match cast_map.get(name) {
             Some(target_dtype) if col.dtype() != target_dtype => {
@@ -190,7 +191,7 @@ fn cast_df_to_dtypes(df: &DataFrame, cast_map: &HashMap<String, DataType>) -> Py
             _ => out_cols.push(col.clone()),
         }
     }
-    DataFrame::new(out_cols).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    DataFrame::new_infer_height(out_cols).map_err(|e| PyRuntimeError::new_err(e.to_string()))
 }
 
 enum ChunkMessage {
@@ -214,6 +215,7 @@ pub fn polars_readstat_bindings(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(readstat_schema_rs, m)?)?;
     m.add_function(wrap_pyfunction!(readstat_metadata_json_rs, m)?)?;
     m.add_function(wrap_pyfunction!(read_readstat_rs, m)?)?;
+    m.add_function(wrap_pyfunction!(sink_stata, m)?)?;
     m.add_function(wrap_pyfunction!(write_stata, m)?)?;
     m.add_function(wrap_pyfunction!(write_spss, m)?)?;
     m.add_function(wrap_pyfunction!(scan_readstat_rs, m)?)?;
@@ -815,6 +817,164 @@ fn write_stata(
     writer
         .write_df(&df.0)
         .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+const DTA_MAX_STR: usize = 2045;
+
+#[pyfunction]
+#[pyo3(signature = (
+    lf,
+    path,
+    compress=None,
+    threads=None,
+    value_labels=None,
+    variable_labels=None,
+    batch_size=None,
+    preserve_order=true
+))]
+fn sink_stata(
+    lf: PyLazyFrame,
+    path: String,
+    compress: Option<bool>,
+    threads: Option<usize>,
+    value_labels: Option<&Bound<PyDict>>,
+    variable_labels: Option<&Bound<PyDict>>,
+    batch_size: Option<usize>,
+    preserve_order: bool,
+) -> PyResult<()> {
+    if compress.unwrap_or(false) {
+        return Err(PyValueError::new_err(
+            "sink_stata does not currently support compress=True; use write_readstat for compressed writes",
+        ));
+    }
+
+    let mut writer = StataWriter::new(path);
+    if let Some(n) = threads {
+        writer = writer.with_n_threads(n);
+    }
+    if let Some(labels) = value_labels {
+        writer = writer.with_value_labels(parse_stata_value_labels(labels)?);
+    }
+    if let Some(labels) = variable_labels {
+        writer = writer.with_variable_labels(parse_stata_variable_labels(labels)?);
+    }
+
+    let chunk_size = batch_size.and_then(NonZeroUsize::new);
+    let schema_ref =
+        lf.0.clone()
+            .collect_schema()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    // Pre-pass over batches to determine String widths and reject strL-only cases.
+    let width_map = Arc::new(Mutex::new(HashMap::<String, usize>::new()));
+    for (name, dtype) in schema_ref.iter() {
+        if matches!(dtype, DataType::String) {
+            width_map
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("width map mutex poisoned"))?
+                .insert(name.as_str().to_string(), 1);
+        }
+    }
+    let width_map_for_prepass = Arc::clone(&width_map);
+    let prepass = lf
+        .0
+        .clone()
+        .sink_batches(
+            PlanCallback::new(move |df: DataFrame| {
+                let mut width_guard = width_map_for_prepass.lock().map_err(|_| {
+                    PolarsError::ComputeError("width map mutex poisoned".into())
+                })?;
+                for col in df.columns() {
+                    let series = col.as_materialized_series();
+                    if !matches!(series.dtype(), DataType::String) {
+                        continue;
+                    }
+                    let name = series.name().as_str().to_string();
+                    let utf8 = series.str()?;
+                    let current = width_guard.entry(name.clone()).or_insert(1);
+                    for opt in utf8.into_iter() {
+                        if let Some(s) = opt {
+                            if s.as_bytes().iter().any(|b| *b == 0) || s.ends_with(' ') {
+                                return Err(PolarsError::ComputeError(
+                                    format!(
+                                        "streaming Stata sink does not support strL-required data (column '{}')",
+                                        name
+                                    )
+                                    .into(),
+                                ));
+                            }
+                            let width = s.as_bytes().len().max(1);
+                            if width > DTA_MAX_STR {
+                                return Err(PolarsError::ComputeError(
+                                    format!(
+                                        "streaming Stata sink does not support strings > {} bytes (column '{}')",
+                                        DTA_MAX_STR, name
+                                    )
+                                    .into(),
+                                ));
+                            }
+                            if width > *current {
+                                *current = width;
+                            }
+                        }
+                    }
+                }
+                Ok(false)
+            }),
+            preserve_order,
+            chunk_size,
+        )
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    prepass
+        .collect()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    let width_map = Arc::try_unwrap(width_map)
+        .map_err(|_| PyRuntimeError::new_err("failed to finalize width map"))?
+        .into_inner()
+        .map_err(|_| PyRuntimeError::new_err("width map mutex poisoned"))?;
+
+    let mut columns = Vec::with_capacity(schema_ref.len());
+    for (name, dtype) in schema_ref.iter() {
+        let width = if matches!(dtype, DataType::String) {
+            Some(*width_map.get(name.as_str()).unwrap_or(&1))
+        } else {
+            None
+        };
+        columns.push(polars_readstat_rs::StataWriteColumn {
+            name: name.as_str().to_string(),
+            dtype: dtype.clone(),
+            string_width_bytes: width,
+        });
+    }
+    let schema = polars_readstat_rs::StataWriteSchema {
+        columns,
+        row_count: None,
+        value_labels: None,
+        variable_labels: None,
+    };
+
+    let (tx, rx) = mpsc::sync_channel::<DataFrame>(2);
+    let writer_thread =
+        std::thread::spawn(move || writer.write_batches_streaming(rx.into_iter(), schema));
+
+    let sink_plan =
+        lf.0.sink_batches(
+            PlanCallback::new(move |df: DataFrame| match tx.send(df) {
+                Ok(()) => Ok(false),
+                Err(_) => Ok(true),
+            }),
+            preserve_order,
+            chunk_size,
+        )
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let sink_result = sink_plan.collect();
+    let writer_result = writer_thread
+        .join()
+        .map_err(|_| PyRuntimeError::new_err("Stata writer thread panicked"))?;
+
+    sink_result.map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    writer_result.map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 #[pyfunction]

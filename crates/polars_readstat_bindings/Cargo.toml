@@ -3,7 +3,7 @@ name = "polars_readstat_bindings"
 version = "0.12.0"
 authors = ["Jonathan Rothbaum <jon.rothbaum@gmail.com"]
 edition = "2021"
-rust-version = "1.88"
+    rust-version = "1.93"
 description = "Streaming crate for polars-readstat"
 license = "MIT"
 repository = "https://github.com/jrothbaum/polars_readstat"
@@ -18,11 +18,11 @@ python = ["pyo3", "pyo3-polars"]
 
 [dependencies]
 # PyO3 dependencies - only included when python feature is enabled
-pyo3 = { version = "0.25.0", features = ["extension-module", "abi3-py39"], optional = true }
-pyo3-polars = { version = "0.24.0", features = ["derive", "lazy"], optional = true }
+pyo3 = { version = "0.27.0", features = ["extension-module", "abi3-py39"], optional = true }
+pyo3-polars = { version = "0.26.0", default-features = false, features = ["lazy"], optional = true }
 
 path_abs = "0.5"
-polars = { version = "0.51.0", features = ["dtype-array"] }
-polars-readstat-rs = { path = "../../../polars_readstat_rs" }
+polars = { version = "0.53.0", features = ["dtype-array", "object"] }
+polars-readstat-rs = "0.2.1"
 log = "0.4"
 num_cpus = "1.0"

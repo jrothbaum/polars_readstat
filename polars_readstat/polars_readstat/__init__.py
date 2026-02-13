@@ -7,9 +7,11 @@ from polars.io.plugins import register_io_source
 from polars_readstat.polars_readstat_bindings import (
     PyPolarsReadstat,
     read_readstat_rs,
+    sink_stata,
     write_stata,
     write_spss,
 )
+import warnings
 
 class ScanReadstat:
     def __init__(
@@ -313,6 +315,9 @@ def write_readstat(
     fmt = (format or Path(path).suffix.lstrip(".")).lower()
 
     if isinstance(df, pl.LazyFrame):
+        # if fmt in ("dta", "stata"):
+        #     sink_readstat(df, path, format=fmt, **kwargs)
+        #     return
         df = df.collect()
     if not isinstance(df, pl.DataFrame):
         raise TypeError("df must be a polars DataFrame or LazyFrame")
@@ -346,14 +351,67 @@ def write_readstat(
     raise ValueError(f"Unsupported output format: {fmt}")
 
 
-def sink_readstat(
-    lf: pl.LazyFrame,
-    path: Any,
-    *,
-    format: str | None = None,
-    **kwargs: Any,
-) -> None:
-    """
-    Convenience alias to write a LazyFrame to a ReadStat-supported file.
-    """
-    write_readstat(lf, path, format=format, **kwargs)
+# def sink_readstat(
+#     lf: pl.LazyFrame,
+#     path: Any,
+#     *,
+#     format: str | None = None,
+#     **kwargs: Any,
+# ) -> None:
+#     """
+#     Sink a LazyFrame to a ReadStat-supported file.
+
+#     Notes
+#     -----
+#     - Stata (`.dta`) uses Rust batch streaming via `sink_batches`.
+#     - SPSS (`.sav`/`.zsav`) currently materializes and writes non-streaming.
+#     """
+#     if not isinstance(lf, pl.LazyFrame):
+#         raise TypeError("lf must be a polars LazyFrame")
+
+#     path = str(path)
+#     fmt = (format or Path(path).suffix.lstrip(".")).lower()
+
+#     if fmt in ("dta", "stata"):
+#         compress = kwargs.pop("compress", None)
+#         threads = kwargs.pop("threads", None)
+#         value_labels = kwargs.pop("value_labels", None)
+#         variable_labels = kwargs.pop("variable_labels", None)
+#         batch_size = kwargs.pop("batch_size", None)
+#         preserve_order = kwargs.pop("preserve_order", True)
+#         if kwargs:
+#             raise TypeError(f"Unsupported kwargs for Stata sink: {sorted(kwargs.keys())}")
+#         warnings.warn(
+#             "Stata sink streaming is currently disabled in Python; "
+#             "falling back to materialized write.",
+#             RuntimeWarning,
+#             stacklevel=2,
+#         )
+#         try:
+#             df = lf.collect(engine="streaming")
+#         except Exception:
+#             df = lf.collect()
+#         write_readstat(
+#             df,
+#             path,
+#             format="dta",
+#             compress=compress,
+#             threads=threads,
+#             value_labels=value_labels,
+#             variable_labels=variable_labels,
+#         )
+#         return
+
+#     if fmt in ("sav", "zsav", "spss"):
+#         warnings.warn(
+#             "SPSS sink currently materializes LazyFrame before writing; output is not streamed.",
+#             RuntimeWarning,
+#             stacklevel=2,
+#         )
+#         write_readstat(lf.collect(engine="streaming"), path, format=fmt, **kwargs)
+#         return
+
+#     if fmt in ("sas7bdat", "sas"):
+#         raise NotImplementedError("SAS writing is not supported yet")
+
+#     raise ValueError(f"Unsupported output format: {fmt}")
