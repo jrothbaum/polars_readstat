@@ -291,6 +291,8 @@ def read_readstat(
     )
 
 
+
+
 def write_readstat(
     df: pl.DataFrame | pl.LazyFrame,
     path: Any,
@@ -326,6 +328,12 @@ def write_readstat(
         df = df.collect()
     if not isinstance(df, pl.DataFrame):
         raise TypeError("df must be a polars DataFrame or LazyFrame")
+
+    # pyo3-polars currently fails on narrow unsigned write inputs.
+    df = df.with_columns(
+        pl.col(pl.UInt8).cast(pl.Int16),
+        pl.col(pl.UInt16).cast(pl.Int32),
+    )
 
     if fmt in ("dta", "stata"):
         compress = kwargs.pop("compress", None)
