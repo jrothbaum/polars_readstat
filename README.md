@@ -42,7 +42,9 @@ schema = reader.schema
 metadata = reader.metadata
 ```
 
-### 4) Write (Stata/SPSS)
+### 4) Write (Stata/SPSS) - ***EXPERIMENTAL***
+I can test reading the data back with Stata, as I have access to it, but I don't have access to SPSS.  I can make sure my code roundtrips properly and I'll be adding read tests from other packages (pyreadstat and pandas) to make sure they can read the files I create, but I'll need help testing things from others before I'm comfortable with the SPSS code.
+
 ```python
 from polars_readstat import write_readstat
 
