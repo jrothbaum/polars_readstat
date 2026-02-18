@@ -1,7 +1,9 @@
 # polars_readstat
 Polars plugin for SAS (`.sas7bdat`), Stata (`.dta`), and SPSS (`.sav`/`.zsav`) files.
 
-The Python package wraps the Rust core in `polars_readstat_rs` and exposes a simple Polars-first API.  I have tried to make sure there are no errors or regressions in this release (tested against 178 test files from pandas, pyreadstat, etc.).  If I missed something, you can find info on the [readme for the prior version](https://github.com/jrothbaum/polars_readstat/tree/250f516a4424fbbe84c931a41cb82b454c5ca205) and install v0.11.1 from pypi.
+The Python package wraps the Rust core in `polars_readstat_rs` and exposes a simple Polars-first API.  I have tried to make sure there are no errors or regressions in this release (tested against 178 test files from pandas, pyreadstat, etc.).  
+
+The new rust engine is on par or faster than the old for many files, but it's not always faster (at least for SAS data sets), so if it's slower or I missed a bug, you can find info on the [prior version](https://github.com/jrothbaum/polars_readstat/tree/250f516a4424fbbe84c931a41cb82b454c5ca205) and install version 0.11.1 from pypi.
 
 ## Why use this?
 
