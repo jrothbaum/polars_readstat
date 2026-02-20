@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "polars-readstat"
-version = "0.12.2"
+version = "0.12.3"
 description = "Read SAS (sas7bdat), Stata (dta), and SPSS (sav) files with polars"
 readme = "README.md"
 authors = [{name = "Jon Rothbaum", email = "jlrothbaum@gmail.com"}]
@@ -17,7 +17,6 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dependencies = [
-    "maturin>=1.8.3",
     "polars>=1.25.2",
 ]
 
