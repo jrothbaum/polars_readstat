@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.9"
 resolution-markers = [
     "python_full_version >= '3.12'",
@@ -290,10 +290,9 @@ wheels = [
 
 [[package]]
 name = "polars-readstat"
-version = "0.12.2"
+version = "0.12.3"
 source = { editable = "." }
 dependencies = [
-    { name = "maturin" },
     { name = "polars" },
 ]
 
@@ -310,10 +309,7 @@ test = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "maturin", specifier = ">=1.8.3" },
-    { name = "polars", specifier = ">=1.25.2" },
-]
+requires-dist = [{ name = "polars", specifier = ">=1.25.2" }]
 
 [package.metadata.requires-dev]
 build = [{ name = "maturin", specifier = ">=1.8.3" }]
