@@ -1,9 +1,9 @@
 # polars_readstat
 Polars plugin for SAS (`.sas7bdat`), Stata (`.dta`), and SPSS (`.sav`/`.zsav`) files.
 
-The Python package wraps the Rust core in `polars_readstat_rs` and exposes a simple Polars-first API.  I have tried to make sure there are no errors or regressions in this release (tested against 178 test files from pandas, pyreadstat, etc.).  
+The Python package wraps the Rust core in `polars_readstat_rs` and exposes a Polars-first API. The project includes cross-library parity tests and roundtrip checks to reduce regressions.
 
-The new rust engine is on par or faster than the old for many files, but it's not always faster (at least for SAS data sets), so if it's slower or I missed a bug, you can find info on the [prior version](https://github.com/jrothbaum/polars_readstat/tree/250f516a4424fbbe84c931a41cb82b454c5ca205) and install version 0.11.1 from pypi.
+The Rust engine is generally faster for many workloads, but performance varies by file shape and options. If you need the legacy C/C++ engine, use version 0.11.1 (see the [prior version](https://github.com/jrothbaum/polars_readstat/tree/250f516a4424fbbe84c931a41cb82b454c5ca205)).
 
 ## Why use this?
 
@@ -28,6 +28,9 @@ lf = scan_readstat("/path/file.sas7bdat", preserve_order=True)
 df = lf.select(["SERIALNO", "AGEP"]).filter(pl.col("AGEP") >= 18).collect()
 ```
 
+With multiple threads, set `preserve_order=True` for deterministic row order. The default `False` may return rows out of order but can be faster.
+Use `batch_size` to control the scan chunk size used during collect.
+
 ### 2) Eager read
 ```python
 from polars_readstat import read_readstat
@@ -45,7 +48,7 @@ metadata = reader.metadata
 ```
 
 ### 4) Write (Stata/SPSS) - ***EXPERIMENTAL***
-I can test reading the data back with Stata, as I have access to it, but I don't have access to SPSS.  I can make sure my code roundtrips properly and I'll be adding read tests from other packages (pyreadstat and pandas) to make sure they can read the files I create, but I'll need help testing things from others before I'm comfortable with the SPSS code.
+Writing support is experimental and compatibility varies across tools. Stata roundtrip tests are included; SPSS roundtrip coverage is limited. Please report issues.
 
 ```python
 from polars_readstat import write_readstat
@@ -58,7 +61,7 @@ write_readstat(df, "/path/out.sav")
 
 ## Tests run
 
-We’ve tried to test this thoroughly:
+Test coverage includes:
 - Cross-library comparisons on the pyreadstat and pandas test data, checking results against `polars-readstat==0.11.1`, [pyreadstat](https://github.com/Roche/pyreadstat), and [pandas](https://github.com/pandas-dev/pandas).
 - Stata/SPSS read/write roundtrip tests.
 - Large-file read/write benchmark runs on real-world data (results below).
@@ -67,7 +70,7 @@ If you want to run the same checks locally, helper scripts and tests are in `scr
 
 ## Benchmark
 
-For each file, I compared 4 different scenarios: 1) load the full file, 2) load a subset of columns (Subset:True), 3) filter to a subet of rows (Filter: True), 4) load a subset of columns and filter to a subset of rows (Subset:True, Filter: True).
+Benchmarks compare four scenarios: 1) load the full file, 2) load a subset of columns (Subset:True), 3) filter to a subset of rows (Filter: True), 4) load a subset of columns and filter to a subset of rows (Subset:True, Filter: True).
 
 Benchmark context:
 - Machine: AMD Ryzen 7 8845HS (16 cores), 14 GiB RAM, Linux Mint 22
