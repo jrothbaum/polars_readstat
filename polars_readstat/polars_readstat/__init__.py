@@ -25,6 +25,7 @@ class ScanReadstat:
         preserve_order: bool = False,
         compress: "CompressOptions | dict | None" = None,
         schema_overrides: Dict[Any, Any] | None = None,
+        batch_size:int | None = None,
     ):
         self.path = str(path)
         if engine != "":
@@ -48,6 +49,7 @@ class ScanReadstat:
         self.preserve_order = preserve_order
         self.compress = _normalize_compress_opts(compress)
         self.schema_overrides = schema_overrides
+        self.batch_size = batch_size
 
     @property
     def schema(self) -> pl.Schema:
@@ -72,35 +74,36 @@ class ScanReadstat:
             preserve_order=self.preserve_order,
             compress=self.compress,
             schema_overrides=self.schema_overrides,
+            batch_size=self.batch_size,
         )
 
-    def iter_batches(
-        self,
-        batch_size: int | None = None,
-        columns: list[str] | None = None,
-        n_rows: int | None = None,
-        predicate: pl.Expr | None = None,
-    ) -> Iterator[pl.DataFrame]:
-        warnings.warn(
-            "ScanReadstat.iter_batches is deprecated; use scan_readstat(..., batch_size=...) and collect on the LazyFrame.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return scan_readstat(
-            path=self.path,
-            threads=self.threads,
-            engine=self.engine,
-            use_mmap=self.use_mmap,
-            missing_string_as_null=self.missing_string_as_null,
-            value_labels_as_strings=self.value_labels_as_strings,
-            columns=columns,
-            preserve_order=self.preserve_order,
-            compress=self.compress,
-            reader=self,
-            schema_overrides=self.schema_overrides,
-            batch_size=batch_size,
-            return_batches=True,
-        )
+    # def iter_batches(
+    #     self,
+    #     batch_size: int | None = None,
+    #     columns: list[str] | None = None,
+    #     n_rows: int | None = None,
+    #     predicate: pl.Expr | None = None,
+    # ) -> Iterator[pl.DataFrame]:
+    #     warnings.warn(
+    #         "ScanReadstat.iter_batches is deprecated; use scan_readstat(..., batch_size=...) and collect on the LazyFrame.",
+    #         DeprecationWarning,
+    #         stacklevel=2,
+    #     )
+    #     return scan_readstat(
+    #         path=self.path,
+    #         threads=self.threads,
+    #         engine=self.engine,
+    #         use_mmap=self.use_mmap,
+    #         missing_string_as_null=self.missing_string_as_null,
+    #         value_labels_as_strings=self.value_labels_as_strings,
+    #         columns=columns,
+    #         preserve_order=self.preserve_order,
+    #         compress=self.compress,
+    #         reader=self,
+    #         schema_overrides=self.schema_overrides,
+    #         batch_size=batch_size,
+    #         return_batches=True,
+    #     )
         
     def _get_schema(self) -> None:
         src = PyPolarsReadstat(
@@ -172,8 +175,8 @@ def scan_readstat(
     reader: ScanReadstat | None = None,
     schema_overrides: Dict[Any, Any] | None = None,
     batch_size: int | None = None,
-    return_batches: bool = False,
-) -> pl.LazyFrame | Iterator[pl.DataFrame]:
+    # return_batches: bool = False,
+) -> pl.LazyFrame:
     """
     Scans a ReadStat file (SAS, SPSS, Stata) into a Polars LazyFrame.
     
@@ -203,8 +206,6 @@ def scan_readstat(
         when the schema inferred from the header differs from data in the file body.
     batch_size : int, optional
         Number of rows per batch used by the scan source.
-    return_batches : bool, optional
-        Deprecated (internal): when True, return an iterator of DataFrame batches.
     """
     path = str(path)
     compress = _normalize_compress_opts(compress)
@@ -222,7 +223,8 @@ def scan_readstat(
             value_labels_as_strings=value_labels_as_strings,
             preserve_order=preserve_order,
             compress=compress,
-            schema_overrides=schema_overrides
+            schema_overrides=schema_overrides,
+            batch_size=batch_size,
         )
     else:
         path = reader.path
@@ -231,47 +233,48 @@ def scan_readstat(
         value_labels_as_strings = reader.value_labels_as_strings
         preserve_order = reader.preserve_order
         compress = reader.compress
+        batch_size = reader.batch_size
         
-    if return_batches:
-        warnings.warn(
-            "scan_readstat(..., return_batches=True) is deprecated; return_batches is for internal/backward-compat use only.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        def source_generator_batches() -> Iterator[pl.DataFrame]:
-            if batch_size is None:
-                bs = 100_000
-            else:
-                bs = batch_size
-            if bs <= 0:
-                raise ValueError("batch_size must be > 0")
+    # if return_batches:
+    #     warnings.warn(
+    #         "scan_readstat(..., return_batches=True) is deprecated; return_batches is for internal/backward-compat use only.",
+    #         DeprecationWarning,
+    #         stacklevel=2,
+    #     )
+    #     def source_generator_batches() -> Iterator[pl.DataFrame]:
+    #         if batch_size is None:
+    #             bs = 100_000
+    #         else:
+    #             bs = batch_size
+    #         if bs <= 0:
+    #             raise ValueError("batch_size must be > 0")
 
-            src = PyPolarsReadstat(
-                path=path,
-                size_hint=bs,
-                n_rows=None,
-                threads=reader.threads,
-                missing_string_as_null=reader.missing_string_as_null,
-                value_labels_as_strings=reader.value_labels_as_strings,
-                preserve_order=reader.preserve_order,
-                compress=compress.to_dict() if compress is not None else None,
-            )
-            if columns is not None:
-                cols = [c for c in columns if c]
-                if cols:
-                    src.set_with_columns(cols)
+    #         src = PyPolarsReadstat(
+    #             path=path,
+    #             size_hint=bs,
+    #             n_rows=None,
+    #             threads=reader.threads,
+    #             missing_string_as_null=reader.missing_string_as_null,
+    #             value_labels_as_strings=reader.value_labels_as_strings,
+    #             preserve_order=reader.preserve_order,
+    #             compress=compress.to_dict() if compress is not None else None,
+    #         )
+    #         if columns is not None:
+    #             cols = [c for c in columns if c]
+    #             if cols:
+    #                 src.set_with_columns(cols)
 
-            while (out := src.next()) is not None:
-                if schema_overrides:
-                    cols_to_cast = {
-                        col: dtype
-                        for col, dtype in schema_overrides.items()
-                        if col in out.columns
-                    }
-                    if cols_to_cast:
-                        out = out.cast(cols_to_cast)
-                yield out
-        return source_generator_batches()
+    #         while (out := src.next()) is not None:
+    #             if schema_overrides:
+    #                 cols_to_cast = {
+    #                     col: dtype
+    #                     for col, dtype in schema_overrides.items()
+    #                     if col in out.columns
+    #                 }
+    #                 if cols_to_cast:
+    #                     out = out.cast(cols_to_cast)
+    #             yield out
+    #     return source_generator_batches()
 
     def schema_generator() -> pl.Schema:
         base_schema = reader.schema
@@ -289,6 +292,8 @@ def scan_readstat(
         n_rows: int | None,
         batch_size: int | None = None,
     ) -> Iterator[pl.DataFrame]:
+        if batch_size is None:
+            batch_size = reader.batch_size
         if batch_size is None:
             batch_size = 100_000
 

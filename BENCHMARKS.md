@@ -14,7 +14,7 @@ These are intended as reproducible engineering checks, not formal microbenchmark
 - RAM: 14 GiB
 - OS: Linux Mint 22
 - Storage: external SSD
-- Last run date: August 31, 2025
+- Last run date: August 31, 2025 (SAS/Stata); February 24, 2026 (SPSS)
 - Timing method: Python `time.time()` wall-clock timing
 
 ## Workloads
@@ -36,6 +36,12 @@ Each benchmark compares four scenarios:
   - Source: ACS 5-year Illinois PUMS
   - Rows used: 623,757
   - Shape: shorter and wider
+
+- SPSS (`.sav`)
+  - Source: European Social Survey (ESS) cumulative file, rounds 1–11, country subset
+  - Rows: 540,671
+  - Columns: 887
+  - File size: ~628 MB (RLE-compressed)
 
 ## Notes
 
