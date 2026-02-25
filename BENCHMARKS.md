@@ -1,7 +1,7 @@
 # Benchmarks
 
 This project includes practical, workload-driven benchmark checks comparing:
-- `polars_readstat`==0.12.0 (new Rust engine)
+- `polars_readstat`==0.12.4 (new Rust engine)
 - `polars-readstat==0.11.1` legacy engines (`cpp`/`readstat`)
 - `pandas`
 - `pyreadstat`
