@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Dict, Iterator
+from typing import Any, Dict, Iterator, Literal
 from pathlib import Path
 import polars as pl
 from dataclasses import dataclass
@@ -25,7 +25,8 @@ class ScanReadstat:
         preserve_order: bool = False,
         compress: "CompressOptions | dict | None" = None,
         schema_overrides: Dict[Any, Any] | None = None,
-        batch_size:int | None = None,
+        batch_size: int | None = None,
+        informative_nulls: "InformativeNullOpts | dict | None" = None,
     ):
         self.path = str(path)
         if engine != "":
@@ -37,7 +38,7 @@ class ScanReadstat:
         self.engine = engine
         self.use_mmap = use_mmap
         self._validation_check(self.path)
-        
+
         if threads is None:
             threads = pl.thread_pool_size()
         self.threads = threads
@@ -50,6 +51,7 @@ class ScanReadstat:
         self.compress = _normalize_compress_opts(compress)
         self.schema_overrides = schema_overrides
         self.batch_size = batch_size
+        self.informative_nulls = _normalize_informative_null_opts(informative_nulls)
 
     @property
     def schema(self) -> pl.Schema:
@@ -75,6 +77,7 @@ class ScanReadstat:
             compress=self.compress,
             schema_overrides=self.schema_overrides,
             batch_size=self.batch_size,
+            informative_nulls=self.informative_nulls,
         )
 
     # def iter_batches(
@@ -115,6 +118,7 @@ class ScanReadstat:
             value_labels_as_strings=self.value_labels_as_strings,
             preserve_order=self.preserve_order,
             compress=self.compress.to_dict() if self.compress is not None else None,
+            informative_nulls=self.informative_nulls.to_dict() if self.informative_nulls is not None else None,
         )
         self._schema = src.schema()
         self._metadata = src.get_metadata()
@@ -162,10 +166,78 @@ def _normalize_compress_opts(
     raise TypeError(f"compress must be CompressOptions, dict, or None, got {type(compress)}")
 
 
+InformativeNullMode = Literal["separate_column", "struct", "merged_string"]
+
+
+@dataclass
+class InformativeNullOpts:
+    """Options for capturing informative (user-defined) missing value indicators.
+
+    Parameters
+    ----------
+    columns : "all" or list of str
+        ``"all"`` to track every eligible column, or a list of column names.
+        Eligible columns are numeric for SAS/Stata; numeric or string-with-declared-
+        missings for SPSS.
+    mode : InformativeNullMode
+        How to expose the indicator in the output DataFrame:
+        - ``"separate_column"`` (default): a parallel ``String`` column named
+          ``<col><suffix>`` is inserted right after the original column.
+        - ``"struct"``: each ``(col, col_null)`` pair becomes a ``Struct`` column
+          with fields ``value`` and ``null_indicator``.
+        - ``"merged_string"``: merge into a single ``String`` column via
+          ``coalesce(cast(col, Str), col_null)``.
+    suffix : str
+        Suffix for the indicator column name when ``mode="separate_column"``.
+        Defaults to ``"_null"``.
+    use_value_labels : bool
+        If ``True`` (default), prefer a value label for the indicator string when
+        one is defined for that missing code.
+    """
+
+    columns: str | list[str] = "all"
+    mode: InformativeNullMode = "separate_column"
+    suffix: str = "_null"
+    use_value_labels: bool = True
+
+    def __post_init__(self) -> None:
+        valid_modes = ("separate_column", "struct", "merged_string")
+        if self.mode not in valid_modes:
+            raise ValueError(
+                f"informative_nulls mode must be one of {valid_modes!r}, got {self.mode!r}"
+            )
+        if isinstance(self.columns, str) and self.columns != "all":
+            raise ValueError(
+                f"informative_nulls columns must be 'all' or a list of column names, got {self.columns!r}"
+            )
+
+    def to_dict(self) -> dict:
+        return {
+            "columns": self.columns,
+            "mode": self.mode,
+            "suffix": self.suffix,
+            "use_value_labels": self.use_value_labels,
+        }
+
+
+def _normalize_informative_null_opts(
+    informative_nulls: "InformativeNullOpts | Dict[str, Any] | None",
+) -> InformativeNullOpts | None:
+    if informative_nulls is None:
+        return None
+    if isinstance(informative_nulls, InformativeNullOpts):
+        return informative_nulls
+    if isinstance(informative_nulls, dict):
+        return InformativeNullOpts(**informative_nulls)
+    raise TypeError(
+        f"informative_nulls must be InformativeNullOpts, dict, or None, got {type(informative_nulls)}"
+    )
+
+
 def scan_readstat(
     path: Any,
     threads: int | None = None,
-    engine:str="",
+    engine: str = "",
     use_mmap: bool = False,
     missing_string_as_null: bool = False,
     value_labels_as_strings: bool = False,
@@ -175,6 +247,7 @@ def scan_readstat(
     reader: ScanReadstat | None = None,
     schema_overrides: Dict[Any, Any] | None = None,
     batch_size: int | None = None,
+    informative_nulls: "InformativeNullOpts | dict | None" = None,
     # return_batches: bool = False,
 ) -> pl.LazyFrame:
     """
@@ -209,6 +282,7 @@ def scan_readstat(
     """
     path = str(path)
     compress = _normalize_compress_opts(compress)
+    informative_nulls = _normalize_informative_null_opts(informative_nulls)
 
     if engine != "":
         print(f"Engine is deprecated as all calls use the new polars_readstat_rs rust engine.", flush=True)
@@ -225,6 +299,7 @@ def scan_readstat(
             compress=compress,
             schema_overrides=schema_overrides,
             batch_size=batch_size,
+            informative_nulls=informative_nulls,
         )
     else:
         path = reader.path
@@ -234,6 +309,7 @@ def scan_readstat(
         preserve_order = reader.preserve_order
         compress = reader.compress
         batch_size = reader.batch_size
+        informative_nulls = reader.informative_nulls
         
     # if return_batches:
     #     warnings.warn(
@@ -309,6 +385,7 @@ def scan_readstat(
             value_labels_as_strings=reader.value_labels_as_strings,
             preserve_order=reader.preserve_order,
             compress=compress.to_dict() if compress is not None else None,
+            informative_nulls=informative_nulls.to_dict() if informative_nulls is not None else None,
         )
         if use_columns is not None:
             src.set_with_columns(use_columns)
@@ -339,6 +416,7 @@ def read_readstat(
     value_labels_as_strings: bool = False,
     columns: list[str] | None = None,
     compress: CompressOptions | Dict[str, Any] | None = None,
+    informative_nulls: "InformativeNullOpts | dict | None" = None,
 ) -> pl.DataFrame:
     """
     Read a ReadStat file (SAS, SPSS, Stata) into a Polars DataFrame using the
@@ -348,6 +426,8 @@ def read_readstat(
     ----------
     compress : CompressOptions or dict, optional
         Apply Rust-side dual-pass compression (schema probe + cast) while reading.
+    informative_nulls : InformativeNullOpts or dict, optional
+        Capture user-defined missing value indicators as parallel indicator columns.
     """
     path = str(path)
     if engine != "":
@@ -358,6 +438,7 @@ def read_readstat(
     if threads is None:
         threads = pl.thread_pool_size()
     compress_opts = _normalize_compress_opts(compress)
+    informative_null_opts = _normalize_informative_null_opts(informative_nulls)
     return read_readstat_rs(
         path=path,
         threads=threads,
@@ -365,6 +446,7 @@ def read_readstat(
         value_labels_as_strings=value_labels_as_strings,
         columns=columns,
         compress=compress_opts.to_dict() if compress_opts is not None else None,
+        informative_nulls=informative_null_opts.to_dict() if informative_null_opts is not None else None,
     )
 
 

@@ -37,15 +37,49 @@ Key parameters:
 | `value_labels_as_strings` | `False` | For labeled numeric columns (Stata/SPSS), return the string label instead of the numeric code. |
 | `schema_overrides` | `None` | Dict mapping column names to Polars types (e.g. `{"id": pl.Int64}`). Useful when the file header reports a narrower type than the data requires. |
 | `batch_size` | `100_000` | Number of rows per internal chunk during collect. |
+| `informative_nulls` | `None` | Capture user-defined missing value indicators. See [Informative Nulls](#informative-nulls). |
 
-### 2) Eager read
+### 2) Informative Nulls
+
+SAS, Stata, and SPSS files support user-defined missing value codes (SAS `.A`–`.Z`, Stata `.a`–`.z`, SPSS discrete/range missings). By default these are read as `null`. The `informative_nulls` option captures the missing-value indicator alongside the data value.
+
+```python
+from polars_readstat import scan_readstat, read_readstat, InformativeNullOpts
+
+# Track all eligible columns; add a "<col>_null" String indicator column after each
+lf = scan_readstat("file.dta", informative_nulls=InformativeNullOpts(columns="all"))
+df = read_readstat("file.sas7bdat", informative_nulls={"columns": "all"})
+```
+
+**Three output modes** (set via the `mode` parameter):
+
+| Mode | Description |
+|---|---|
+| `"separate_column"` (default) | Adds a parallel `String` column `<col><suffix>` after each tracked column |
+| `"struct"` | Wraps each `(value, indicator)` pair into a `Struct` column |
+| `"merged_string"` | Merges into a single `String` column (value as string, or the indicator code) |
+
+```python
+from polars_readstat import InformativeNullOpts
+
+opts = InformativeNullOpts(
+    columns=["income", "age"],      # or "all"
+    mode="separate_column",         # "separate_column", "struct", or "merged_string"
+    suffix="_missing",              # indicator column suffix (separate_column mode only)
+    use_value_labels=True,          # use value label for indicator string when defined
+)
+```
+
+`informative_nulls` accepts either an `InformativeNullOpts` dataclass or a plain dict. It is supported on `scan_readstat`, `read_readstat`, and `ScanReadstat`.
+
+### 3) Eager read
 ```python
 from polars_readstat import read_readstat
 
 df = read_readstat("/path/file.dta")
 ```
 
-### 3) Metadata + schema
+### 4) Metadata + schema
 ```python
 from polars_readstat import ScanReadstat
 
@@ -60,7 +94,7 @@ lf = reader.df              # LazyFrame — same as calling scan_readstat(path)
 - `"label"` — variable label (description), if present
 - `"value_labels"` — dict mapping coded values to label strings, if present
 
-### 4) Write (Stata/SPSS) - ***EXPERIMENTAL***
+### 5) Write (Stata/SPSS) - ***EXPERIMENTAL***
 Writing support is experimental and compatibility varies across tools. Stata roundtrip tests are included; SPSS roundtrip coverage is limited. Please report issues.
 
 ```python

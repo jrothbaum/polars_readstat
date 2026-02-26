@@ -1,7 +1,8 @@
 use num_cpus;
 use polars::prelude::*;
 use polars_readstat_rs::{
-    readstat_metadata_json, readstat_scan, readstat_schema, Sas7bdatReader, ScanOptions,
+    readstat_batch_iter, readstat_metadata_json, readstat_scan, readstat_schema,
+    InformativeNullColumns, InformativeNullMode, InformativeNullOpts, Sas7bdatReader, ScanOptions,
     SpssReader, SpssWriter, StataReader, StataWriter,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -88,6 +89,65 @@ fn parse_compress_opts(compress: Option<&Bound<PyDict>>) -> PyResult<ParsedCompr
     })
 }
 
+fn parse_informative_null_opts(
+    d: Option<&Bound<PyDict>>,
+) -> PyResult<Option<InformativeNullOpts>> {
+    let dict = match d {
+        Some(d) => d,
+        None => return Ok(None),
+    };
+
+    let columns = if let Ok(Some(v)) = dict.get_item("columns") {
+        if let Ok(s) = v.extract::<String>() {
+            if s == "all" {
+                InformativeNullColumns::All
+            } else {
+                return Err(PyValueError::new_err(format!(
+                    "informative_nulls columns: expected 'all' or list of strings, got '{s}'"
+                )));
+            }
+        } else {
+            InformativeNullColumns::Selected(v.extract::<Vec<String>>()?)
+        }
+    } else {
+        InformativeNullColumns::All
+    };
+
+    let suffix = if let Ok(Some(v)) = dict.get_item("suffix") {
+        v.extract::<String>()?
+    } else {
+        "_null".to_string()
+    };
+
+    let mode = if let Ok(Some(v)) = dict.get_item("mode") {
+        let s = v.extract::<String>()?;
+        match s.as_str() {
+            "separate_column" => InformativeNullMode::SeparateColumn { suffix },
+            "struct" => InformativeNullMode::Struct,
+            "merged_string" => InformativeNullMode::MergedString,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "informative_nulls mode: expected 'separate_column', 'struct', or 'merged_string', got '{other}'"
+                )))
+            }
+        }
+    } else {
+        InformativeNullMode::SeparateColumn { suffix }
+    };
+
+    let use_value_labels = if let Ok(Some(v)) = dict.get_item("use_value_labels") {
+        v.extract::<bool>()?
+    } else {
+        true
+    };
+
+    Ok(Some(InformativeNullOpts {
+        columns,
+        mode,
+        use_value_labels,
+    }))
+}
+
 fn read_df_with_options(
     path: &str,
     threads: Option<usize>,
@@ -95,13 +155,17 @@ fn read_df_with_options(
     value_labels_as_strings: bool,
     columns: Option<Vec<String>>,
     n_rows: Option<usize>,
+    informative_nulls: Option<InformativeNullOpts>,
 ) -> PyResult<DataFrame> {
     let format = detect_format(path)?;
     let df = match format {
         ReadstatFormat::Sas => {
             let reader =
                 Sas7bdatReader::open(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            let mut builder = reader.read().missing_string_as_null(missing_string_as_null);
+            let mut builder = reader
+                .read()
+                .missing_string_as_null(missing_string_as_null)
+                .informative_nulls(informative_nulls);
             if let Some(cols) = columns.clone() {
                 builder = builder.with_columns(cols);
             }
@@ -121,7 +185,8 @@ fn read_df_with_options(
             let mut builder = reader
                 .read()
                 .missing_string_as_null(missing_string_as_null)
-                .value_labels_as_strings(value_labels_as_strings);
+                .value_labels_as_strings(value_labels_as_strings)
+                .informative_nulls(informative_nulls);
             if let Some(cols) = columns.clone() {
                 builder = builder.with_columns(cols);
             }
@@ -141,7 +206,8 @@ fn read_df_with_options(
             let mut builder = reader
                 .read()
                 .missing_string_as_null(missing_string_as_null)
-                .value_labels_as_strings(value_labels_as_strings);
+                .value_labels_as_strings(value_labels_as_strings)
+                .informative_nulls(informative_nulls);
             if let Some(cols) = columns {
                 builder = builder.with_columns(cols);
             }
@@ -167,6 +233,7 @@ fn infer_compressed_schema_and_cast_map(
     columns: Option<Vec<String>>,
     compress_opts: &polars_readstat_rs::CompressOptionsLite,
     infer_compress_length: Option<usize>,
+    informative_nulls: Option<InformativeNullOpts>,
 ) -> PyResult<(Schema, HashMap<String, DataType>)> {
     let probe_df = read_df_with_options(
         path,
@@ -175,6 +242,7 @@ fn infer_compressed_schema_and_cast_map(
         value_labels_as_strings,
         columns,
         infer_compress_length,
+        informative_nulls,
     )?;
     let compressed = polars_readstat_rs::compress_df_if_enabled(&probe_df, compress_opts)
         .map_err(PyRuntimeError::new_err)?;
@@ -208,20 +276,6 @@ fn cast_df_to_dtypes(df: &DataFrame, cast_map: &HashMap<String, DataType>) -> Py
     DataFrame::new_infer_height(out_cols).map_err(|e| PyRuntimeError::new_err(e.to_string()))
 }
 
-enum ChunkMessage {
-    Data { idx: usize, df: DataFrame },
-    Done,
-    Err(String),
-}
-
-struct StreamState {
-    rx: mpsc::Receiver<ChunkMessage>,
-    buffer: BTreeMap<usize, DataFrame>,
-    next_idx: usize,
-    completed: usize,
-    total_workers: usize,
-    handles: Vec<std::thread::JoinHandle<()>>,
-}
 
 #[pymodule]
 pub fn polars_readstat_bindings(m: &Bound<PyModule>) -> PyResult<()> {
@@ -252,13 +306,14 @@ pub struct PyPolarsReadstat {
     inferred_cast_map: Option<HashMap<String, DataType>>,
     total_rows: usize,
     total_chunks: usize,
-    stream: Option<Mutex<StreamState>>,
+    iter: Option<Mutex<polars_readstat_rs::ReadstatBatchIter>>,
+    informative_nulls: Option<InformativeNullOpts>,
 }
 
 #[pymethods]
 impl PyPolarsReadstat {
     #[new]
-    #[pyo3(signature = (path, size_hint, n_rows, threads, missing_string_as_null, value_labels_as_strings=false, preserve_order=false, compress=None))]
+    #[pyo3(signature = (path, size_hint, n_rows, threads, missing_string_as_null, value_labels_as_strings=false, preserve_order=false, compress=None, informative_nulls=None))]
     fn new_source(
         path: String,
         size_hint: usize,
@@ -268,6 +323,7 @@ impl PyPolarsReadstat {
         value_labels_as_strings: bool,
         preserve_order: bool,
         compress: Option<&Bound<PyDict>>,
+        informative_nulls: Option<&Bound<PyDict>>,
     ) -> PyResult<Self> {
         let max_useful_threads = num_cpus::get_physical();
         let threads = if threads.is_none() {
@@ -298,6 +354,7 @@ impl PyPolarsReadstat {
         let batch_size = size_hint.max(1);
         let total_chunks = (total_rows + batch_size - 1) / batch_size;
         let parsed_compress = parse_compress_opts(compress)?;
+        let parsed_informative_nulls = parse_informative_null_opts(informative_nulls)?;
 
         Ok(Self {
             path,
@@ -314,7 +371,8 @@ impl PyPolarsReadstat {
             inferred_cast_map: None,
             total_rows,
             total_chunks,
-            stream: None,
+            iter: None,
+            informative_nulls: parsed_informative_nulls,
         })
     }
 
@@ -331,6 +389,7 @@ impl PyPolarsReadstat {
             chunk_size: Some(self.batch_size),
             missing_string_as_null: Some(self.missing_string_as_null),
             value_labels_as_strings: Some(self.value_labels_as_strings),
+            informative_nulls: self.informative_nulls.clone(),
             ..Default::default()
         };
         let schema = readstat_schema(&self.path, Some(opts), None)
@@ -347,7 +406,7 @@ impl PyPolarsReadstat {
             return Ok(None);
         }
 
-        if self.stream.is_none() {
+        if self.iter.is_none() {
             self.start_stream()?;
         }
 
@@ -445,6 +504,7 @@ impl PyPolarsReadstat {
             self.with_columns.clone(),
             &self.compress_opts,
             infer_rows,
+            self.informative_nulls.clone(),
         )?;
         self.inferred_schema = Some(schema);
         self.inferred_cast_map = Some(cast_map);
@@ -452,228 +512,35 @@ impl PyPolarsReadstat {
     }
 
     fn start_stream(&mut self) -> PyResult<()> {
-        let total_chunks = self.total_chunks;
-        let n_workers = min(self.threads.max(1), total_chunks.max(1));
-        let window_chunks = 8usize;
-        let batch_size = self.batch_size;
-        let total_rows = self.total_rows;
-        let path = self.path.clone();
-        let format = self.format;
-        let columns = self.with_columns.clone();
-        let missing_string_as_null = self.missing_string_as_null;
-        let value_labels_as_strings = self.value_labels_as_strings;
-
-        let (tx, rx) = mpsc::channel::<ChunkMessage>();
-        let mut handles = Vec::with_capacity(n_workers);
-
-        let base_chunks = total_chunks / n_workers;
-        let extra_chunks = total_chunks % n_workers;
-        let mut worker_ranges: Vec<(usize, usize)> = Vec::with_capacity(n_workers);
-        let mut next_chunk = 0usize;
-        for worker_idx in 0..n_workers {
-            let worker_chunk_count = base_chunks + usize::from(worker_idx < extra_chunks);
-            if worker_chunk_count == 0 {
-                continue;
-            }
-            let start_chunk = next_chunk;
-            let end_chunk = start_chunk + worker_chunk_count;
-            worker_ranges.push((start_chunk, end_chunk));
-            next_chunk = end_chunk;
-        }
-
-        for (start_chunk, end_chunk) in worker_ranges {
-            let tx = tx.clone();
-            let path = path.clone();
-            let columns = columns.clone();
-            let total_rows = total_rows;
-            let batch_size = batch_size;
-            let format = format;
-            let missing_string_as_null = missing_string_as_null;
-            let value_labels_as_strings = value_labels_as_strings;
-            let window_chunks = window_chunks;
-
-            let handle = std::thread::spawn(move || {
-                enum WorkerReader {
-                    Sas(Sas7bdatReader),
-                    Stata(StataReader),
-                    Spss(SpssReader),
-                }
-
-                let reader = match format {
-                    ReadstatFormat::Sas => match Sas7bdatReader::open(&path) {
-                        Ok(r) => WorkerReader::Sas(r),
-                        Err(e) => {
-                            let _ = tx.send(ChunkMessage::Err(e.to_string()));
-                            return;
-                        }
-                    },
-                    ReadstatFormat::Stata => match StataReader::open(&path) {
-                        Ok(r) => WorkerReader::Stata(r),
-                        Err(e) => {
-                            let _ = tx.send(ChunkMessage::Err(e.to_string()));
-                            return;
-                        }
-                    },
-                    ReadstatFormat::Spss => match SpssReader::open(&path) {
-                        Ok(r) => WorkerReader::Spss(r),
-                        Err(e) => {
-                            let _ = tx.send(ChunkMessage::Err(e.to_string()));
-                            return;
-                        }
-                    },
-                };
-
-                let mut chunk_idx = start_chunk;
-                while chunk_idx < end_chunk {
-                    let window_end = (chunk_idx + window_chunks).min(end_chunk);
-                    let offset = chunk_idx * batch_size;
-                    if offset >= total_rows {
-                        break;
-                    }
-                    let window_rows = (window_end - chunk_idx) * batch_size;
-                    let take = (total_rows - offset).min(window_rows);
-
-                    let result: Result<DataFrame, String> = match &reader {
-                        WorkerReader::Sas(reader) => {
-                            let mut builder = reader
-                                .read()
-                                .with_offset(offset)
-                                .with_limit(take)
-                                .missing_string_as_null(missing_string_as_null)
-                                .sequential();
-                            if let Some(cols) = columns.as_ref() {
-                                builder = builder.with_columns(cols.clone());
-                            }
-                            builder.finish().map_err(|e| e.to_string())
-                        }
-                        WorkerReader::Stata(reader) => {
-                            let mut builder = reader
-                                .read()
-                                .with_offset(offset)
-                                .with_limit(take)
-                                .missing_string_as_null(missing_string_as_null)
-                                .value_labels_as_strings(value_labels_as_strings)
-                                .sequential();
-                            if let Some(cols) = columns.as_ref() {
-                                builder = builder.with_columns(cols.clone());
-                            }
-                            builder.finish().map_err(|e| e.to_string())
-                        }
-                        WorkerReader::Spss(reader) => {
-                            let mut builder = reader
-                                .read()
-                                .with_offset(offset)
-                                .with_limit(take)
-                                .missing_string_as_null(missing_string_as_null)
-                                .value_labels_as_strings(value_labels_as_strings)
-                                .sequential();
-                            if let Some(cols) = columns.as_ref() {
-                                builder = builder.with_columns(cols.clone());
-                            }
-                            builder.finish().map_err(|e| e.to_string())
-                        }
-                    };
-
-                    match result {
-                        Ok(window_df) => {
-                            let mut sent = 0usize;
-                            for out_idx in chunk_idx..window_end {
-                                let local_offset = (out_idx - chunk_idx) * batch_size;
-                                if local_offset >= window_df.height() {
-                                    break;
-                                }
-                                let local_take = batch_size.min(window_df.height() - local_offset);
-                                let df = window_df.slice(local_offset as i64, local_take);
-                                let _ = tx.send(ChunkMessage::Data { idx: out_idx, df });
-                                sent += 1;
-                            }
-                            if sent == 0 {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            let _ = tx.send(ChunkMessage::Err(e));
-                            return;
-                        }
-                    }
-
-                    chunk_idx = window_end;
-                }
-                let _ = tx.send(ChunkMessage::Done);
-            });
-
-            handles.push(handle);
-        }
-
-        self.stream = Some(Mutex::new(StreamState {
-            rx,
-            buffer: BTreeMap::new(),
-            next_idx: 0,
-            completed: 0,
-            total_workers: n_workers,
-            handles,
-        }));
-
+        let opts = ScanOptions {
+            threads: Some(self.threads),
+            chunk_size: Some(self.batch_size),
+            missing_string_as_null: Some(self.missing_string_as_null),
+            value_labels_as_strings: Some(self.value_labels_as_strings),
+            preserve_order: Some(self.preserve_order),
+            informative_nulls: self.informative_nulls.clone(),
+            ..Default::default()
+        };
+        let iter = readstat_batch_iter(
+            &self.path,
+            Some(opts),
+            None, // auto-detect from file extension
+            self.with_columns.clone(),
+            Some(self.total_rows),
+            Some(self.batch_size),
+        )
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        self.iter = Some(Mutex::new(iter));
         Ok(())
     }
 
     fn next_batch(&mut self) -> Result<Option<DataFrame>, String> {
-        let stream = self.stream.as_ref().ok_or("stream not initialized")?;
-        let mut state = stream
-            .lock()
-            .map_err(|_| "stream mutex poisoned".to_string())?;
-
-        if !self.preserve_order {
-            loop {
-                if state.completed == state.total_workers {
-                    return Ok(None);
-                }
-                match state.rx.recv() {
-                    Ok(ChunkMessage::Data { df, .. }) => return Ok(Some(df)),
-                    Ok(ChunkMessage::Done) => state.completed += 1,
-                    Ok(ChunkMessage::Err(e)) => return Err(e),
-                    Err(_) => return Ok(None),
-                }
-            }
-        }
-
-        loop {
-            let next_idx = state.next_idx;
-            if let Some(df) = state.buffer.remove(&next_idx) {
-                state.next_idx += 1;
-                return Ok(Some(df));
-            }
-
-            if state.completed == state.total_workers {
-                return Ok(None);
-            }
-
-            match state.rx.recv() {
-                Ok(ChunkMessage::Data { idx, df }) => {
-                    state.buffer.insert(idx, df);
-                }
-                Ok(ChunkMessage::Done) => {
-                    state.completed += 1;
-                }
-                Ok(ChunkMessage::Err(e)) => {
-                    return Err(e);
-                }
-                Err(_) => {
-                    return Ok(None);
-                }
-            }
-        }
-    }
-}
-
-impl Drop for PyPolarsReadstat {
-    fn drop(&mut self) {
-        if let Some(state) = self.stream.take() {
-            if let Ok(state) = state.into_inner() {
-                for handle in state.handles {
-                    let _ = handle.join();
-                }
-            }
+        let iter = self.iter.as_ref().ok_or("stream not initialized")?;
+        let mut iter = iter.lock().map_err(|_| "iter mutex poisoned".to_string())?;
+        match iter.next() {
+            Some(Ok(df)) => Ok(Some(df)),
+            Some(Err(e)) => Err(e.to_string()),
+            None => Ok(None),
         }
     }
 }
@@ -686,7 +553,8 @@ impl Drop for PyPolarsReadstat {
     missing_string_as_null=false,
     value_labels_as_strings=false,
     preserve_order=false,
-    compress=None
+    compress=None,
+    informative_nulls=None
 ))]
 fn scan_readstat_rs(
     path: String,
@@ -696,14 +564,17 @@ fn scan_readstat_rs(
     value_labels_as_strings: bool,
     preserve_order: bool,
     compress: Option<&Bound<PyDict>>,
+    informative_nulls: Option<&Bound<PyDict>>,
 ) -> PyResult<PyLazyFrame> {
     let parsed_compress = parse_compress_opts(compress)?;
+    let parsed_informative_nulls = parse_informative_null_opts(informative_nulls)?;
     let opts = ScanOptions {
         threads,
         chunk_size,
         missing_string_as_null: Some(missing_string_as_null),
         value_labels_as_strings: Some(value_labels_as_strings),
         preserve_order: Some(preserve_order),
+        informative_nulls: parsed_informative_nulls,
         compress_opts: parsed_compress.opts,
         ..Default::default()
     };
@@ -720,7 +591,8 @@ fn scan_readstat_rs(
     missing_string_as_null=false,
     value_labels_as_strings=false,
     preserve_order=false,
-    compress=None
+    compress=None,
+    informative_nulls=None
 ))]
 fn readstat_schema_rs(
     path: String,
@@ -730,8 +602,10 @@ fn readstat_schema_rs(
     value_labels_as_strings: bool,
     preserve_order: bool,
     compress: Option<&Bound<PyDict>>,
+    informative_nulls: Option<&Bound<PyDict>>,
 ) -> PyResult<PySchema> {
     let parsed_compress = parse_compress_opts(compress)?;
+    let parsed_informative_nulls = parse_informative_null_opts(informative_nulls)?;
     let _ = preserve_order;
     if parsed_compress.opts.enabled {
         let (schema, _) = infer_compressed_schema_and_cast_map(
@@ -742,6 +616,7 @@ fn readstat_schema_rs(
             None,
             &parsed_compress.opts,
             parsed_compress.infer_compress_length,
+            parsed_informative_nulls,
         )?;
         return Ok(PySchema(Arc::new(schema)));
     }
@@ -750,6 +625,7 @@ fn readstat_schema_rs(
         chunk_size,
         missing_string_as_null: Some(missing_string_as_null),
         value_labels_as_strings: Some(value_labels_as_strings),
+        informative_nulls: parsed_informative_nulls,
         compress_opts: parsed_compress.opts,
         ..Default::default()
     };
@@ -770,7 +646,8 @@ fn readstat_metadata_json_rs(path: String) -> PyResult<String> {
     missing_string_as_null=false,
     value_labels_as_strings=false,
     columns=None,
-    compress=None
+    compress=None,
+    informative_nulls=None
 ))]
 fn read_readstat_rs(
     path: String,
@@ -779,8 +656,10 @@ fn read_readstat_rs(
     value_labels_as_strings: bool,
     columns: Option<Vec<String>>,
     compress: Option<&Bound<PyDict>>,
+    informative_nulls: Option<&Bound<PyDict>>,
 ) -> PyResult<PyDataFrame> {
     let parsed_compress = parse_compress_opts(compress)?;
+    let parsed_informative_nulls = parse_informative_null_opts(informative_nulls)?;
     let df = read_df_with_options(
         &path,
         threads,
@@ -788,6 +667,7 @@ fn read_readstat_rs(
         value_labels_as_strings,
         columns.clone(),
         None,
+        parsed_informative_nulls.clone(),
     )?;
     let out = if parsed_compress.opts.enabled {
         let (_, cast_map) = infer_compressed_schema_and_cast_map(
@@ -798,6 +678,7 @@ fn read_readstat_rs(
             columns,
             &parsed_compress.opts,
             parsed_compress.infer_compress_length,
+            parsed_informative_nulls,
         )?;
         cast_df_to_dtypes(&df, &cast_map)?
     } else {
