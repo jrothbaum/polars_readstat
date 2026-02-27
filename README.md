@@ -37,7 +37,7 @@ Key parameters:
 | `value_labels_as_strings` | `False` | For labeled numeric columns (Stata/SPSS), return the string label instead of the numeric code. |
 | `schema_overrides` | `None` | Dict mapping column names to Polars types (e.g. `{"id": pl.Int64}`). Useful when the file header reports a narrower type than the data requires. |
 | `batch_size` | `100_000` | Number of rows per internal chunk during collect. |
-| `informative_nulls` | `None` | Capture user-defined missing value indicators. See [Informative Nulls](#informative-nulls). |
+| `informative_nulls` | `None` | Capture user-defined missing value indicators. See below. |
 
 ### 2) Informative Nulls
 
