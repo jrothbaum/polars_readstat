@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "polars-readstat"
-version = "0.13.0"
+version = "0.13.1"
 description = "Read SAS (sas7bdat), Stata (dta), and SPSS (sav) files with polars"
 readme = "README.md"
 authors = [{name = "Jon Rothbaum", email = "jlrothbaum@gmail.com"}]
@@ -40,6 +40,10 @@ test = [
 ]
 build = [
     "maturin>=1.8.3",
+]
+docs = [
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5.0",
 ]
 
 [tool.pytest.ini_options]
