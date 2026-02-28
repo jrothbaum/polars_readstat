@@ -13,6 +13,7 @@ from polars_readstat.polars_readstat_bindings import (
 )
 import warnings
 
+
 class ScanReadstat:
     def __init__(
         self,
@@ -39,8 +40,6 @@ class ScanReadstat:
         self.use_mmap = use_mmap
         self._validation_check(self.path)
 
-        if threads is None:
-            threads = pl.thread_pool_size()
         self.threads = threads
 
         self._metadata = None
@@ -420,7 +419,7 @@ def read_readstat(
 ) -> pl.DataFrame:
     """
     Read a ReadStat file (SAS, SPSS, Stata) into a Polars DataFrame using the
-    Rust parallel read path.
+    Rust streaming read path.
 
     Parameters
     ----------
@@ -437,6 +436,7 @@ def read_readstat(
 
     if threads is None:
         threads = pl.thread_pool_size()
+
     compress_opts = _normalize_compress_opts(compress)
     informative_null_opts = _normalize_informative_null_opts(informative_nulls)
     return read_readstat_rs(
@@ -511,6 +511,13 @@ def write_readstat(
         )
         return
     if fmt in ("sav", "zsav", "spss"):
+        compress = kwargs.pop("compress", None)
+        if compress is not None:
+            warnings.warn(
+                "compress has no effect for SPSS outputs.",
+                UserWarning,
+                stacklevel=2,
+            )
         value_labels = kwargs.pop("value_labels", None)
         variable_labels = kwargs.pop("variable_labels", None)
         if kwargs:
