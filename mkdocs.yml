@@ -1,0 +1,24 @@
+site_name: polars-readstat
+site_description: Polars plugin for SAS, Stata, and SPSS files.
+repo_url: https://github.com/jrothbaum/polars_readstat
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: cyan
+    - scheme: slate
+      primary: indigo
+      accent: cyan
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+
+nav:
+  - Home: index.md
+  - Reading: read.md
+  - Writing: write.md
