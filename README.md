@@ -28,58 +28,7 @@ lf = scan_readstat("/path/file.sas7bdat", preserve_order=True)
 df = lf.select(["SERIALNO", "AGEP"]).filter(pl.col("AGEP") >= 18).collect()
 ```
 
-Key parameters:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `preserve_order` | `False` | Return rows in original file order. Set `True` when order matters; may be slower with multiple threads. |
-| `missing_string_as_null` | `False` | Convert empty strings to `null`. |
-| `value_labels_as_strings` | `False` | For labeled numeric columns (Stata/SPSS), return the string label instead of the numeric code. |
-| `schema_overrides` | `None` | Dict mapping column names to Polars types (e.g. `{"id": pl.Int64}`). Useful when the file header reports a narrower type than the data requires. |
-| `batch_size` | `100_000` | Number of rows per internal chunk during collect. |
-| `informative_nulls` | `None` | Capture user-defined missing value indicators. See below. |
-
-### 2) Informative Nulls
-
-SAS, Stata, and SPSS files support user-defined missing value codes (SAS `.A`–`.Z`, Stata `.a`–`.z`, SPSS discrete/range missings). By default these are read as `null`. The `informative_nulls` option captures the missing-value indicator alongside the data value.
-
-```python
-from polars_readstat import scan_readstat, read_readstat, InformativeNullOpts
-
-# Track all eligible columns; add a "<col>_null" String indicator column after each
-lf = scan_readstat("file.dta", informative_nulls=InformativeNullOpts(columns="all"))
-df = read_readstat("file.sas7bdat", informative_nulls={"columns": "all"})
-```
-
-**Three output modes** (set via the `mode` parameter):
-
-| Mode | Description |
-|---|---|
-| `"separate_column"` (default) | Adds a parallel `String` column `<col><suffix>` after each tracked column |
-| `"struct"` | Wraps each `(value, indicator)` pair into a `Struct` column |
-| `"merged_string"` | Merges into a single `String` column (value as string, or the indicator code) |
-
-```python
-from polars_readstat import InformativeNullOpts
-
-opts = InformativeNullOpts(
-    columns=["income", "age"],      # or "all"
-    mode="separate_column",         # "separate_column", "struct", or "merged_string"
-    suffix="_missing",              # indicator column suffix (separate_column mode only)
-    use_value_labels=True,          # use value label for indicator string when defined
-)
-```
-
-`informative_nulls` accepts either an `InformativeNullOpts` dataclass or a plain dict. It is supported on `scan_readstat`, `read_readstat`, and `ScanReadstat`.
-
-### 3) Eager read
-```python
-from polars_readstat import read_readstat
-
-df = read_readstat("/path/file.dta")
-```
-
-### 4) Metadata + schema
+### 2) Getting metadata
 ```python
 from polars_readstat import ScanReadstat
 
@@ -94,7 +43,7 @@ lf = reader.df              # LazyFrame — same as calling scan_readstat(path)
 - `"label"` — variable label (description), if present
 - `"value_labels"` — dict mapping coded values to label strings, if present
 
-### 5) Write (Stata/SPSS) - ***EXPERIMENTAL***
+### 3) Write (Stata/SPSS) - ***EXPERIMENTAL***
 Writing support is experimental and compatibility varies across tools. Stata roundtrip tests are included; SPSS roundtrip coverage is limited. Please report issues.
 
 ```python
@@ -102,36 +51,13 @@ from polars_readstat import write_readstat
 
 write_readstat(df, "/path/out.dta")
 write_readstat(df, "/path/out.sav")
-
-# With value labels and variable labels (both formats)
-write_readstat(
-    df,
-    "/path/out.dta",
-    value_labels={"sex": {1: "Male", 2: "Female"}},
-    variable_labels={"sex": "Sex of respondent", "age": "Age in years"},
-)
-
-# Stata-only options
-write_readstat(df, "/path/out.dta", compress=True, threads=8)
 ```
 
 `write_readstat` supports Stata (`dta`) and SPSS (`sav`). SAS writing is not supported.
 
-| Parameter | Formats | Description |
-|-----------|---------|-------------|
-| `value_labels` | dta, sav | Dict mapping column names to `{coded_value: label_string}`. |
-| `variable_labels` | dta, sav | Dict mapping column names to descriptive label strings. |
-| `compress` | dta only | Write compressed Stata file. |
-| `threads` | dta only | Number of threads for writing. |
+## Docs
 
-## Tests run
-
-Test coverage includes:
-- Cross-library comparisons on the pyreadstat and pandas test data, checking results against `polars-readstat==0.11.1`, [pyreadstat](https://github.com/Roche/pyreadstat), and [pandas](https://github.com/pandas-dev/pandas).
-- Stata/SPSS read/write roundtrip tests.
-- Large-file read/write benchmark runs on real-world data (results below).
-
-If you want to run the same checks locally, helper scripts and tests are in `scripts/` and `tests/`.
+View the docs at [https://jrothbaum.github.io/polars_readstat/](https://jrothbaum.github.io/polars_readstat/) for more information on the options you can pass to the scan and write functions.
 
 ## Benchmark
 
@@ -172,3 +98,13 @@ all times in seconds (speedup relative to pandas in parenthesis below each)
 | pyreadstat | 9.25<br>(0.2×) | 4.85<br>(0.3×) | 9.39<br>(0.2×) | 4.75<br>(0.2×) |
 
 Detailed benchmark notes and dataset descriptions are in `BENCHMARKS.md`.
+
+
+## Tests run
+
+Test coverage includes:
+- Cross-library comparisons on the pyreadstat and pandas test data, checking results against `polars-readstat==0.11.1`, [pyreadstat](https://github.com/Roche/pyreadstat), and [pandas](https://github.com/pandas-dev/pandas).
+- Stata/SPSS read/write roundtrip tests.
+- Large-file read/write benchmark runs on real-world data (results below).
+
+If you want to run the same checks locally, helper scripts and tests are in `scripts/` and `tests/`.
