@@ -17,14 +17,6 @@ The Rust engine is generally faster for many workloads, but performance varies b
 pip install polars-readstat
 ```
 
-## Docs
-
-Short docs are in `docs/` and built with MkDocs.
-
-```bash
-mkdocs serve
-```
-
 ## Core API
 
 ### 1) Lazy scan
