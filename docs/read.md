@@ -8,7 +8,7 @@ Key parameters:
 
 | Parameter | Default | Notes |
 | --- | --- | --- |
-| `preserve_order` | `False` | Keep original row order; may be slower with multiple threads. |
+| `preserve_order` | `False` | Preserve row order or expose a row index (see below). |
 | `missing_string_as_null` | `False` | Convert empty strings to `null`. |
 | `value_labels_as_strings` | `False` | For labeled numeric columns, return label strings. |
 | `schema_overrides` | `None` | Dict of `{column: polars_dtype}`. |
@@ -68,6 +68,42 @@ opts = InformativeNullOpts(
     mode="separate_column",
     suffix="_missing",
     use_value_labels=True,
+)
+```
+
+## Preserve order options
+
+`preserve_order` accepts:
+
+| Value | Behavior |
+| --- | --- |
+| `False` | Allow out-of-order batches for higher throughput. |
+| `True` | Current behavior: buffer batches to preserve order (more memory). |
+| `PreserveOrderOpts(...)` or `dict` | Row-index-based modes (less buffering). |
+
+`PreserveOrderOpts` fields:
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `mode` | `"buffered"` | `"buffered"`, `"row_index"`, or `"sort"`. |
+| `row_index_name` | `"row_index"` | Column name when mode is `"row_index"` or `"sort"`. |
+
+Modes:
+
+| Mode | Description |
+| --- | --- |
+| `"buffered"` | Keep original row order by buffering batches in Rust. |
+| `"row_index"` | Add a row index column in Rust, return unsorted batches. |
+| `"sort"` | Add a row index in Rust, then sort and drop it in Python. |
+
+Example:
+
+```python
+from polars_readstat import scan_readstat, PreserveOrderOpts
+
+lf = scan_readstat(
+    "file.sas7bdat",
+    preserve_order=PreserveOrderOpts(mode="row_index", row_index_name="__row_idx"),
 )
 ```
 
