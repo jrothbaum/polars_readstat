@@ -85,7 +85,7 @@ impl<R: Read + Seek> PageReader<R> {
         let log_subheaders = debug
             && matches!(
                 page_header.page_type,
-                PageType::Meta | PageType::Mix1 | PageType::Mix2 | PageType::Amd
+                PageType::Meta | PageType::Mix1 | PageType::Mix2 | PageType::Amd | PageType::Metc
             );
 
         for i in 0..page_header.subheader_count {

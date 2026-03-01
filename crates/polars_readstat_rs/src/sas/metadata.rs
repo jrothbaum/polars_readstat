@@ -134,7 +134,7 @@ fn is_metadata_page(page_header: &PageHeader) -> bool {
     use crate::types::PageType;
     matches!(
         page_header.page_type,
-        PageType::Meta | PageType::Mix1 | PageType::Mix2 | PageType::Amd
+        PageType::Meta | PageType::Mix1 | PageType::Mix2 | PageType::Amd | PageType::Metc
     )
 }
 
