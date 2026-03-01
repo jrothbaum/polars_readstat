@@ -92,8 +92,8 @@ Modes:
 
 | Mode | Description |
 | --- | --- |
-| `"buffered"` | Keep original row order by buffering batches in Rust. |
-| `"row_index"` | Add a row index column in Rust, return unsorted batches. |
+| `"buffered"` | Keep original row order by buffering batches in Rust.  This can result in higher RAM spikes as it affects the streaming of results to polars. |
+| `"row_index"` | Add a row index column in Rust, but return unsorted batches (so you can sort on the row_index later). |
 | `"sort"` | Add a row index in Rust, then sort and drop it in Python. |
 
 Example:
