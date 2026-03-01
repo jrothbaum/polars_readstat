@@ -1,6 +1,6 @@
 [package]
 name = "polars_readstat_bindings"
-version = "0.13.1"
+version = "0.14.0"
 authors = ["Jonathan Rothbaum <jon.rothbaum@gmail.com"]
 edition = "2021"
 rust-version = "1.93"
