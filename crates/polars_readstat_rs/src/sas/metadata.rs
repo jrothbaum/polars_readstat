@@ -22,7 +22,7 @@ pub fn read_metadata<R: Read + Seek>(
 
     let debug = super::sas_debug_enabled();
     if debug {
-        eprintln!(
+        println!(
             "[sas-debug] read_metadata: format={:?} endian={:?} page_length={} header_length={} page_count={} encoding_byte={}",
             format,
             endian,
@@ -57,7 +57,7 @@ pub fn read_metadata<R: Read + Seek>(
 
         let page_header = page_reader.get_page_header()?;
         if debug {
-            eprintln!(
+            println!(
                 "[sas-debug] page {}: type={:?} block_count={} subheader_count={}",
                 page_idx, page_header.page_type, page_header.block_count, page_header.subheader_count
             );
@@ -100,7 +100,7 @@ pub fn read_metadata<R: Read + Seek>(
                     let added = max_fit.min(mix_row_count);
                     mix_data_rows += added;
                     if debug {
-                        eprintln!(
+                        println!(
                             "[sas-debug] page {} mix rows: row_length={} mix_row_count={} added={} total={}",
                             page_idx, row_length, mix_row_count, added, mix_data_rows
                         );
@@ -121,7 +121,7 @@ pub fn read_metadata<R: Read + Seek>(
     // Instead, filter during data reading phase
     let data_subheaders = Vec::new();
     if debug {
-        eprintln!(
+        println!(
             "[sas-debug] metadata scan complete: pages_read={} first_data_page={:?} mix_data_rows={}",
             pages_read, first_data_page, mix_data_rows
         );
@@ -220,7 +220,7 @@ impl MetadataBuilder {
 
     fn debug_log(&self, args: std::fmt::Arguments) {
         if self.debug {
-            eprintln!("[sas-debug] {}", args);
+            println!("[sas-debug] {}", args);
         }
     }
 

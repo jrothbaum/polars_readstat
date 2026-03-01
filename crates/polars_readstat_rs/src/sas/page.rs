@@ -99,7 +99,7 @@ impl<R: Read + Seek> PageReader<R> {
             // Skip empty or truncated subheaders.
             let skip = sub_length == 0 || compression == 1;
             if log_subheaders {
-                eprintln!(
+                println!(
                     "[sas-debug] subheader desc idx={} offset={} length={} compression={} type={} skip={}",
                     i, sub_offset, sub_length, compression, subheader_type, skip
                 );
