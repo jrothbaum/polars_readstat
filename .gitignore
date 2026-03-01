@@ -1,10 +1,3 @@
-# data
-/crates/readstat-tests/tests/data/*.csv
-/crates/readstat-tests/tests/data/*.feather
-/crates/readstat-tests/tests/data/*.ndjson
-/crates/readstat-tests/tests/data/*.parquet
-# starts with _ are larger files to exclude
-/crates/readstat-tests/tests/data/_*.sas7bdat
 # environment
 .idea/
 .vscode/
@@ -12,7 +5,6 @@
 /target/
 # cargo
 Cargo.lock
-config.toml
 
 *~
 *.o
@@ -34,17 +26,14 @@ debug.txt        # Debug text files
 debug_*          # Files starting with debug_
 *release*
 *Release*
-test/data_*
 .coverage
 .pytest_cache/
 pytest.xml
 dist
-R/CPPSAS7BDAT/DESCRIPTION
-version.txt
-package.txt
 tmp
-CMakeUserPresets.json
 *.bin
 *.rlib
+*.csv
 
-.conan2
+# Ignore too_big test datasets in this repo layout
+/crates/**/tests/**/data/too_big/

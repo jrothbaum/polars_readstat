@@ -1,0 +1,4 @@
+[build]
+# Limit parallel compile jobs to reduce peak RAM usage during builds.
+# Raise this if you have more RAM to spare (default is number of CPU cores).
+jobs = 2
