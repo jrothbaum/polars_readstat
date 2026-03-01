@@ -20,19 +20,6 @@ pub fn read_metadata<R: Read + Seek>(
 ) -> Result<(Metadata, Vec<DataSubheader>, usize, usize)> {
     use crate::types::PageType;
 
-    let debug = super::sas_debug_enabled();
-    if debug {
-        println!(
-            "[sas-debug] read_metadata: format={:?} endian={:?} page_length={} header_length={} page_count={} encoding_byte={}",
-            format,
-            endian,
-            header.page_length,
-            header.header_length,
-            header.page_count,
-            header.encoding_byte
-        );
-    }
-
     let page_bit_offset: usize = match format {
         Format::Bit64 => 32,
         Format::Bit32 => 16,
@@ -43,7 +30,7 @@ pub fn read_metadata<R: Read + Seek>(
     };
 
     let mut page_reader = PageReader::new(reader, header.clone(), endian, format);
-    let mut metadata_builder = MetadataBuilder::new(header.encoding_byte, debug);
+    let mut metadata_builder = MetadataBuilder::new(header.encoding_byte);
     let mut pages_read = 0usize;
     let mut first_data_page: Option<usize> = None;
     let mut mix_data_rows = 0usize;
@@ -56,12 +43,6 @@ pub fn read_metadata<R: Read + Seek>(
         pages_read += 1;
 
         let page_header = page_reader.get_page_header()?;
-        if debug {
-            println!(
-                "[sas-debug] page {}: type={:?} block_count={} subheader_count={}",
-                page_idx, page_header.page_type, page_header.block_count, page_header.subheader_count
-            );
-        }
 
         // Record the first DATA page index, but keep scanning to capture AMD pages.
         if !is_metadata_page(&page_header) {
@@ -99,12 +80,6 @@ pub fn read_metadata<R: Read + Seek>(
                     let max_fit = available / row_length;
                     let added = max_fit.min(mix_row_count);
                     mix_data_rows += added;
-                    if debug {
-                        println!(
-                            "[sas-debug] page {} mix rows: row_length={} mix_row_count={} added={} total={}",
-                            page_idx, row_length, mix_row_count, added, mix_data_rows
-                        );
-                    }
                 }
             }
         }
@@ -120,12 +95,6 @@ pub fn read_metadata<R: Read + Seek>(
     // Don't collect data_subheaders - causes issues with page state management
     // Instead, filter during data reading phase
     let data_subheaders = Vec::new();
-    if debug {
-        println!(
-            "[sas-debug] metadata scan complete: pages_read={} first_data_page={:?} mix_data_rows={}",
-            pages_read, first_data_page, mix_data_rows
-        );
-    }
     let metadata = metadata_builder.build()?;
     Ok((metadata, data_subheaders, first_data_page, mix_data_rows))
 }
@@ -142,7 +111,6 @@ fn is_metadata_page(page_header: &PageHeader) -> bool {
 struct MetadataBuilder {
     encoding: &'static encoding_rs::Encoding,
     encoding_byte: u8,
-    debug: bool,
     row_count: Option<usize>,
     row_length: Option<usize>,
     mix_page_row_count: Option<usize>,
@@ -195,11 +163,10 @@ struct ColumnFormatLabelEntry {
 }
 
 impl MetadataBuilder {
-    fn new(encoding_byte: u8, debug: bool) -> Self {
+    fn new(encoding_byte: u8) -> Self {
         Self {
             encoding: encoding::get_encoding(encoding_byte),
             encoding_byte,
-            debug,
             row_count: None,
             row_length: None,
             mix_page_row_count: None,
@@ -218,102 +185,40 @@ impl MetadataBuilder {
         }
     }
 
-    fn debug_log(&self, args: std::fmt::Arguments) {
-        if self.debug {
-            println!("[sas-debug] {}", args);
-        }
-    }
-
     fn process_subheader(
         &mut self,
         buf: &Buffer,
         subheader: &PageSubheader,
         format: Format,
     ) -> Result<()> {
-        let sig_len = match format {
-            Format::Bit64 => 8,
-            Format::Bit32 => 4,
-        };
-
-        let signature = buf.get_bytes(subheader.offset, sig_len)?;
-        let sig_hex = if self.debug {
-            Some(super::hex(signature))
-        } else {
-            None
-        };
-
-        enum SubheaderKind {
-            RowSize,
-            ColumnSize,
-            ColumnText,
-            ColumnName,
-            ColumnAttributes,
-            FormatAndLabel,
-            Unknown,
+        if subheader.compression != 0 {
+            return Ok(());
         }
 
-        impl SubheaderKind {
-            fn as_str(&self) -> &'static str {
-                match self {
-                    SubheaderKind::RowSize => "ROW_SIZE",
-                    SubheaderKind::ColumnSize => "COLUMN_SIZE",
-                    SubheaderKind::ColumnText => "COLUMN_TEXT",
-                    SubheaderKind::ColumnName => "COLUMN_NAME",
-                    SubheaderKind::ColumnAttributes => "COLUMN_ATTRIBUTES",
-                    SubheaderKind::FormatAndLabel => "FORMAT_AND_LABEL",
-                    SubheaderKind::Unknown => "UNKNOWN",
-                }
+        let mut signature = buf.get_u32(subheader.offset)?;
+        if matches!(format, Format::Bit64) && signature == 0xFFFF_FFFF {
+            if let Ok(sig2) = buf.get_u32(subheader.offset + 4) {
+                signature = sig2;
             }
         }
 
-        let kind = if matches_signature(signature, &get_row_size_signatures(format)) {
-            SubheaderKind::RowSize
-        } else if matches_signature(signature, &get_column_size_signatures(format)) {
-            SubheaderKind::ColumnSize
-        } else if matches_signature(signature, &get_column_text_signatures(format)) {
-            SubheaderKind::ColumnText
-        } else if matches_signature(signature, &get_column_name_signatures(format)) {
-            SubheaderKind::ColumnName
-        } else if matches_signature(signature, &get_column_attributes_signatures(format)) {
-            SubheaderKind::ColumnAttributes
-        } else if matches_signature(signature, &get_format_and_label_signatures(format)) {
-            SubheaderKind::FormatAndLabel
-        } else {
-            SubheaderKind::Unknown
-        };
-
-        if let Some(sig_hex) = sig_hex {
-            self.debug_log(format_args!(
-                "subheader kind={} offset={} length={} compression={} type={} sig={}",
-                kind.as_str(),
-                subheader.offset,
-                subheader.length,
-                subheader.compression,
-                subheader.subheader_type,
-                sig_hex
-            ));
-        }
-
-        match kind {
-            SubheaderKind::RowSize => {
-                self.process_row_size_subheader(buf, subheader, format)?;
-            }
-            SubheaderKind::ColumnSize => {
-                self.process_column_size_subheader(buf, subheader, format)?;
-            }
-            SubheaderKind::ColumnText => {
-                self.process_column_text_subheader(buf, subheader, format)?;
-            }
-            SubheaderKind::ColumnName => {
-                self.process_column_name_subheader(buf, subheader, format)?;
-            }
-            SubheaderKind::ColumnAttributes => {
-                self.process_column_attributes_subheader(buf, subheader, format)?;
-            }
-            SubheaderKind::FormatAndLabel => {
-                self.process_format_and_label_subheader(buf, subheader, format)?;
-            }
-            SubheaderKind::Unknown => {}
+        if signature == SAS_SUBHEADER_SIGNATURE_ROW_SIZE {
+            self.process_row_size_subheader(buf, subheader, format)?;
+        } else if signature == SAS_SUBHEADER_SIGNATURE_COLUMN_SIZE {
+            self.process_column_size_subheader(buf, subheader, format)?;
+        } else if signature == SAS_SUBHEADER_SIGNATURE_COLUMN_TEXT {
+            self.process_column_text_subheader(buf, subheader, format)?;
+        } else if signature == SAS_SUBHEADER_SIGNATURE_COLUMN_NAME {
+            self.process_column_name_subheader(buf, subheader, format)?;
+        } else if signature == SAS_SUBHEADER_SIGNATURE_COLUMN_ATTRS {
+            self.process_column_attributes_subheader(buf, subheader, format)?;
+        } else if signature == SAS_SUBHEADER_SIGNATURE_COLUMN_FORMAT {
+            self.process_format_and_label_subheader(buf, subheader, format)?;
+        } else if signature == SAS_SUBHEADER_SIGNATURE_COUNTS
+            || signature == SAS_SUBHEADER_SIGNATURE_COLUMN_LIST
+            || (signature & SAS_SUBHEADER_SIGNATURE_COLUMN_MASK) == SAS_SUBHEADER_SIGNATURE_COLUMN_MASK
+        {
+            // Recognized but unused subheaders.
         }
 
         Ok(())
@@ -361,11 +266,6 @@ impl MetadataBuilder {
             self.lcp = lcp as usize;
         }
 
-        self.debug_log(format_args!(
-            "row_size row_length={} row_count={} col_count_p1={} col_count_p2={} mix_page_row_count={} lcs={} lcp={}",
-            row_length, row_count, col_count_p1, col_count_p2, mix_page_row_count, self.lcs, self.lcp
-        ));
-
         Ok(())
     }
 
@@ -384,8 +284,6 @@ impl MetadataBuilder {
         // C++ code: buf.get_uinteger(_subheader.offset + integer_size)
         let column_count = buf.get_integer(offset + integer_size, format)? as usize;
         self.column_count = Some(column_count);
-
-        self.debug_log(format_args!("column_size column_count={}", column_count));
 
         Ok(())
     }
@@ -408,7 +306,6 @@ impl MetadataBuilder {
         let text_len = subheader.length.saturating_sub(signature_len);
 
         if text_len > 0 {
-            let prev_compression = self.compression;
             // Text starts at offset + signature_len and spans the full payload.
             let text_offset = offset + signature_len;
             let text_bytes = buf.get_bytes(text_offset, text_len)?;
@@ -464,30 +361,6 @@ impl MetadataBuilder {
             // Store raw bytes for later use by column names/labels
             // We'll decode them when extracting individual strings
             self.column_texts.push(text_bytes.to_vec());
-
-            if self.debug {
-                let compression_changed = prev_compression != self.compression;
-                if compression_changed {
-                    self.debug_log(format_args!(
-                        "column_text text_len={} blocks={} compression={:?}",
-                        text_len,
-                        self.column_texts.len(),
-                        self.compression
-                    ));
-                } else {
-                    self.debug_log(format_args!(
-                        "column_text text_len={} blocks={}",
-                        text_len,
-                        self.column_texts.len()
-                    ));
-                }
-                if !self.creator.is_empty() || !self.creator_proc.is_empty() {
-                    self.debug_log(format_args!(
-                        "column_text creator='{}' creator_proc='{}'",
-                        self.creator, self.creator_proc
-                    ));
-                }
-            }
         }
 
         Ok(())
@@ -509,8 +382,6 @@ impl MetadataBuilder {
         // loop increment is fixed 8 bytes, NOT integer_size
         let offset_max = offset + subheader.length - 12 - integer_size;
         let mut entry_offset = offset + integer_size + 8;
-        let before = self.column_name_entries.len();
-
         while entry_offset <= offset_max {
             let text_idx = buf.get_u16(entry_offset)? as usize; // Index into column_texts
             let name_offset = buf.get_u16(entry_offset + 2)? as usize;
@@ -525,13 +396,6 @@ impl MetadataBuilder {
 
             entry_offset += 8; // Fixed 8-byte increment
         }
-
-        let added = self.column_name_entries.len().saturating_sub(before);
-        self.debug_log(format_args!(
-            "column_names added={} total={}",
-            added,
-            self.column_name_entries.len()
-        ));
 
         Ok(())
     }
@@ -552,7 +416,6 @@ impl MetadataBuilder {
         // loop increment is integer_size + 8
         let offset_max = offset + subheader.length - 12 - integer_size;
         let mut entry_offset = offset + integer_size + 8;
-        let before = self.column_attr_entries.len();
         while entry_offset <= offset_max {
             let col_offset = buf.get_integer(entry_offset, format)? as usize;
             let col_length = buf.get_u32(entry_offset + integer_size)? as usize;
@@ -572,13 +435,6 @@ impl MetadataBuilder {
 
             entry_offset += integer_size + 8; // Format-dependent increment
         }
-
-        let added = self.column_attr_entries.len().saturating_sub(before);
-        self.debug_log(format_args!(
-            "column_attributes added={} total={}",
-            added,
-            self.column_attr_entries.len()
-        ));
 
         Ok(())
     }
@@ -615,11 +471,6 @@ impl MetadataBuilder {
             label_offset,
             label_length,
         });
-
-        self.debug_log(format_args!(
-            "format_and_label total={}",
-            self.format_label_entries.len()
-        ));
 
         Ok(())
     }
@@ -720,38 +571,9 @@ impl MetadataBuilder {
 
     fn build(self) -> Result<Metadata> {
         let resolved_column_count = self.resolve_column_count();
-        if self.debug {
-            self.debug_log(format_args!(
-                "build summary row_count={:?} row_length={:?} column_count={:?} col_count_p1={:?} col_count_p2={:?} mix_page_row_count={:?} column_texts={} column_name_entries={} column_attr_entries={} format_label_entries={} compression={:?} creator='{}' creator_proc='{}' lcs={} lcp={}",
-                self.row_count,
-                self.row_length,
-                resolved_column_count,
-                self.col_count_p1,
-                self.col_count_p2,
-                self.mix_page_row_count,
-                self.column_texts.len(),
-                self.column_name_entries.len(),
-                self.column_attr_entries.len(),
-                self.format_label_entries.len(),
-                self.compression,
-                self.creator,
-                self.creator_proc,
-                self.lcs,
-                self.lcp
-            ));
-        }
-        let row_count = self.row_count.ok_or_else(|| {
-            self.debug_log(format_args!("build failed: missing row_count"));
-            Error::MissingMetadata
-        })?;
-        let row_length = self.row_length.ok_or_else(|| {
-            self.debug_log(format_args!("build failed: missing row_length"));
-            Error::MissingMetadata
-        })?;
-        let column_count = resolved_column_count.ok_or_else(|| {
-            self.debug_log(format_args!("build failed: missing column_count"));
-            Error::MissingMetadata
-        })?;
+        let row_count = self.row_count.ok_or(Error::MissingMetadata)?;
+        let row_length = self.row_length.ok_or(Error::MissingMetadata)?;
+        let column_count = resolved_column_count.ok_or(Error::MissingMetadata)?;
         let mix_page_row_count = self.mix_page_row_count.unwrap_or(row_count);
 
         let mut columns = vec![ColumnBuilder::default(); column_count];
@@ -809,66 +631,12 @@ impl MetadataBuilder {
     }
 }
 
-// Signature matching functions
-fn matches_signature(sig: &[u8], patterns: &[&[u8]]) -> bool {
-    patterns.iter().any(|pattern| sig == *pattern)
-}
-
-fn get_row_size_signatures(format: Format) -> Vec<&'static [u8]> {
-    match format {
-        Format::Bit64 => vec![
-            &[0x00, 0x00, 0x00, 0x00, 0xF7, 0xF7, 0xF7, 0xF7],
-            &[0xF7, 0xF7, 0xF7, 0xF7, 0x00, 0x00, 0x00, 0x00],
-            &[0xF7, 0xF7, 0xF7, 0xF7, 0xFF, 0xFF, 0xFB, 0xFE],
-        ],
-        Format::Bit32 => vec![&[0xF7, 0xF7, 0xF7, 0xF7]],
-    }
-}
-
-fn get_column_size_signatures(format: Format) -> Vec<&'static [u8]> {
-    match format {
-        Format::Bit64 => vec![
-            &[0x00, 0x00, 0x00, 0x00, 0xF6, 0xF6, 0xF6, 0xF6],
-            &[0xF6, 0xF6, 0xF6, 0xF6, 0x00, 0x00, 0x00, 0x00],
-            &[0xF6, 0xF6, 0xF6, 0xF6, 0xFF, 0xFF, 0xFB, 0xFE],
-        ],
-        Format::Bit32 => vec![&[0xF6, 0xF6, 0xF6, 0xF6]],
-    }
-}
-
-fn get_column_text_signatures(format: Format) -> Vec<&'static [u8]> {
-    match format {
-        Format::Bit64 => vec![
-            &[0xFD, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
-            &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFD],
-        ],
-        Format::Bit32 => vec![&[0xFD, 0xFF, 0xFF, 0xFF], &[0xFF, 0xFF, 0xFF, 0xFD]],
-    }
-}
-
-fn get_column_name_signatures(format: Format) -> Vec<&'static [u8]> {
-    match format {
-        Format::Bit64 => vec![&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]],
-        Format::Bit32 => vec![&[0xFF, 0xFF, 0xFF, 0xFF]],
-    }
-}
-
-fn get_column_attributes_signatures(format: Format) -> Vec<&'static [u8]> {
-    match format {
-        Format::Bit64 => vec![
-            &[0xFC, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
-            &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFC],
-        ],
-        Format::Bit32 => vec![&[0xFC, 0xFF, 0xFF, 0xFF], &[0xFF, 0xFF, 0xFF, 0xFC]],
-    }
-}
-
-fn get_format_and_label_signatures(format: Format) -> Vec<&'static [u8]> {
-    match format {
-        Format::Bit64 => vec![
-            &[0xFE, 0xFB, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
-            &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFB, 0xFE],
-        ],
-        Format::Bit32 => vec![&[0xFE, 0xFB, 0xFF, 0xFF], &[0xFF, 0xFF, 0xFB, 0xFE]],
-    }
-}
+const SAS_SUBHEADER_SIGNATURE_ROW_SIZE: u32 = 0xF7F7_F7F7;
+const SAS_SUBHEADER_SIGNATURE_COLUMN_SIZE: u32 = 0xF6F6_F6F6;
+const SAS_SUBHEADER_SIGNATURE_COUNTS: u32 = 0xFFFF_FC00;
+const SAS_SUBHEADER_SIGNATURE_COLUMN_FORMAT: u32 = 0xFFFF_FBFE;
+const SAS_SUBHEADER_SIGNATURE_COLUMN_MASK: u32 = 0xFFFF_FFF8;
+const SAS_SUBHEADER_SIGNATURE_COLUMN_ATTRS: u32 = 0xFFFF_FFFC;
+const SAS_SUBHEADER_SIGNATURE_COLUMN_TEXT: u32 = 0xFFFF_FFFD;
+const SAS_SUBHEADER_SIGNATURE_COLUMN_LIST: u32 = 0xFFFF_FFFE;
+const SAS_SUBHEADER_SIGNATURE_COLUMN_NAME: u32 = 0xFFFF_FFFF;
