@@ -1,5 +1,8 @@
 # polars_readstat_rs
 
+[![Crates.io](https://img.shields.io/crates/v/polars_readstat_rs.svg)](https://crates.io/crates/polars_readstat_rs)
+[![Docs.rs](https://img.shields.io/docsrs/polars_readstat_rs)](https://docs.rs/polars_readstat_rs)
+
 Rust library for reading SAS (`.sas7bdat`), Stata (`.dta`), and SPSS (`.sav`/`.zsav`) files with Polars.
 
 The crate provides:
@@ -9,40 +12,22 @@ The crate provides:
 - Arrow FFI export helpers
 - Stata/SPSS writers
 
-## Performance at a glance
+## Crate and docs
 
-Benchmarks run via the [`polars_readstat`](https://github.com/jrothbaum/polars_readstat) Python bindings (AMD Ryzen 7 8845HS, 16 cores, external SSD), comparing against pandas:
-
-| Format | Full file | Column subset | Row filter | Subset + filter |
-|--------|----------:|-------------:|-----------:|----------------:|
-| SAS    | 2.9×      | **51.5×**    | 2.9×       | **52.5×**       |
-| Stata  | 6.7×      | 9.8×         | 4.1×       | 8.7×            |
-| SPSS   | 16×       | 25×          | 15×        | **64×**         |
-
-The largest gains come from column projection: the reader skips parsing unwanted columns entirely rather than reading and discarding them. Speedups will vary with file shape, storage, and hardware.
-
-SPSS reading was significantly improved in v0.3. The library also handles large SPSS files (600MB+) that crash pandas due to memory exhaustion.
-
-SPSS run times (`anes_timeseries_cdf.sav`, 73,745 rows × 1,030 cols, 87 MB — one run per scenario):
-
-```
-                  Full file   Subset   Filter   Subset+Filter
-polars_readstat    1.30       0.74     1.24     0.28
-pandas            21.26      18.17    17.94    17.93
-pyreadstat         6.37       1.58     5.49     1.43
-```
-
-For full methodology and tables, see [BENCHMARKS.md](https://github.com/jrothbaum/polars_readstat/blob/main/BENCHMARKS.md).
+- Crate: [`polars_readstat_rs` on crates.io](https://crates.io/crates/polars_readstat_rs)
+- API docs: [docs.rs/polars_readstat_rs](https://docs.rs/polars_readstat_rs)
 
 This was nearly completely coded by Claude Code and Codex, but with a very particular setup that I hope makes it less likely to be a mess than other moslty-AI code repository.  It was meant to directly replace the C++ and C code in relatively small, existing codebase ([polars_readstat, v0.11.1](https://github.com/jrothbaum/polars_readstat/releases/tag/v0.11.1)) with the ability to exactly validate the new code's output against the old.  For any given regression, the AI models could be told to refer directly to the spot in the code where the prior implementation did the same operation to try to figure out how to solve the issue.  It could also compare any output to the output produced by other similar tools such as [pandas](https://github.com/pandas-dev/pandas) and [pyreadstat](https://github.com/Roche/pyreadstat/).  I'm sure it's not the most beautiful code, but I'm an economist and I wanted a tool to exist that was faster than what's out there and implemented in Rust (so many build issues with using C++ and C across systems.  So many...) but I didn't want to spend months on figuring out records layouts and encoding of SAS, Stata, and SPSS files.  Hence, my first attempt that just directly plugged into other tools ([polars_readstat, v0.11.1](https://github.com/jrothbaum/polars_readstat/releases/tag/v0.11.1)) and the AI-first version of this.
 
 ## Install
 ```toml
 [dependencies]
-polars_readstat_rs = "0.2"
+polars_readstat_rs = "0.4"
 ```
 
 ## Core API
+
+This section is a focused tour of the Rust API. For the full reference, see the docs.rs link above.
 
 ### 1) Read directly to a `DataFrame`
 ```rust
@@ -357,23 +342,11 @@ let mut stream = sas_arrow_output::read_to_arrow_stream_ffi("file.sas7bdat", Som
 
 See `ARROW_EXPORT.md` for FFI details.
 
-## Basic validation and benchmarks
+## Basic validation
 
 Compare against Python reference outputs:
 ```bash
 uv run tests/sas/compare_to_python.py
 uv run tests/stata/compare_to_python.py --file tests/stata/data/too_big/usa_00009.dta --rows 100000
 uv run tests/spss/compare_to_python.py --rows 100000
-```
-
-Read performance checks:
-```bash
-uv run tests/sas/bench_vs_python.py --file tests/sas/data/too_big/psam_p17.sas7bdat --rows 100000 --repeat 2
-uv run tests/stata/bench_vs_python.py --file tests/stata/data/too_big/usa_00009.dta --rows 100000 --repeat 2
-uv run tests/spss/bench_vs_python.py --file tests/spss/data/too_big/ess_data.sav --rows 100000 --repeat 2
-```
-
-Streaming batch benchmark (200k-row cap on `tests/*/data/too_big` files):
-```bash
-cargo bench --bench readstat_stream_benchmarks
 ```
