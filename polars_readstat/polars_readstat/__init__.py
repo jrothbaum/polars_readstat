@@ -23,7 +23,7 @@ class ScanReadstat:
         threads: int | None = None,
         missing_string_as_null: bool = False,
         value_labels_as_strings: bool = False,
-        preserve_order: bool = False,
+        preserve_order: bool | "PreserveOrderOpts" | dict = False,
         compress: "CompressOptions | dict | None" = None,
         schema_overrides: Dict[Any, Any] | None = None,
         batch_size: int | None = None,
@@ -47,6 +47,7 @@ class ScanReadstat:
         self.missing_string_as_null = missing_string_as_null
         self.value_labels_as_strings = value_labels_as_strings
         self.preserve_order = preserve_order
+        self._preserve_order_opts = _normalize_preserve_order_opts(preserve_order)
         self.compress = _normalize_compress_opts(compress)
         self.schema_overrides = schema_overrides
         self.batch_size = batch_size
@@ -108,6 +109,7 @@ class ScanReadstat:
     #     )
         
     def _get_schema(self) -> None:
+        preserve_order, row_index_name, _ = _resolve_preserve_order_opts(self._preserve_order_opts)
         src = PyPolarsReadstat(
             path=self.path,
             size_hint=10_000,
@@ -115,9 +117,10 @@ class ScanReadstat:
             threads=self.threads,
             missing_string_as_null=self.missing_string_as_null,
             value_labels_as_strings=self.value_labels_as_strings,
-            preserve_order=self.preserve_order,
+            preserve_order=preserve_order,
             compress=self.compress.to_dict() if self.compress is not None else None,
             informative_nulls=self.informative_nulls.to_dict() if self.informative_nulls is not None else None,
+            row_index_name=row_index_name,
         )
         self._schema = src.schema()
         self._metadata = src.get_metadata()
@@ -163,6 +166,67 @@ def _normalize_compress_opts(
     if isinstance(compress, dict):
         return CompressOptions(**compress)
     raise TypeError(f"compress must be CompressOptions, dict, or None, got {type(compress)}")
+
+
+PreserveOrderMode = Literal["buffered", "row_index", "sort"]
+
+
+@dataclass
+class PreserveOrderOpts:
+    """Options for preserving row order or exposing a row index during scan.
+
+    Parameters
+    ----------
+    mode : PreserveOrderMode
+        - ``"buffered"`` (default): current behavior; buffer batches to preserve order.
+        - ``"row_index"``: add a row index column and return unsorted batches.
+        - ``"sort"``: add a row index column, sort by it, then drop it in Python.
+    row_index_name : str
+        Name for the row index column when ``mode`` is ``"row_index"`` or ``"sort"``.
+    """
+
+    mode: PreserveOrderMode = "buffered"
+    row_index_name: str = "row_index"
+
+    def __post_init__(self) -> None:
+        valid_modes = ("buffered", "row_index", "sort")
+        if self.mode not in valid_modes:
+            raise ValueError(
+                f"preserve_order mode must be one of {valid_modes!r}, got {self.mode!r}"
+            )
+        if not isinstance(self.row_index_name, str) or not self.row_index_name:
+            raise ValueError("row_index_name must be a non-empty string")
+
+
+def _normalize_preserve_order_opts(
+    preserve_order: bool | PreserveOrderOpts | Dict[str, Any] | None,
+) -> PreserveOrderOpts | None:
+    if preserve_order is None or preserve_order is False:
+        return None
+    if isinstance(preserve_order, PreserveOrderOpts):
+        return preserve_order
+    if isinstance(preserve_order, dict):
+        return PreserveOrderOpts(**preserve_order)
+    if isinstance(preserve_order, bool):
+        return PreserveOrderOpts(mode="buffered")
+    raise TypeError(
+        "preserve_order must be bool, PreserveOrderOpts, dict, or None, "
+        f"got {type(preserve_order)}"
+    )
+
+
+def _resolve_preserve_order_opts(
+    preserve_order: PreserveOrderOpts | None,
+) -> tuple[bool, str | None, bool]:
+    if preserve_order is None:
+        return False, None, False
+    if preserve_order.mode == "buffered":
+        return True, None, False
+    if preserve_order.mode == "row_index":
+        return False, preserve_order.row_index_name, False
+    if preserve_order.mode == "sort":
+        return False, preserve_order.row_index_name, True
+    raise ValueError(f"Unknown preserve_order mode: {preserve_order.mode!r}")
 
 
 InformativeNullMode = Literal["separate_column", "struct", "merged_string"]
@@ -241,7 +305,7 @@ def scan_readstat(
     missing_string_as_null: bool = False,
     value_labels_as_strings: bool = False,
     columns: list[str] | None = None,
-    preserve_order: bool = False,
+    preserve_order: bool | PreserveOrderOpts | Dict[str, Any] = False,
     compress: CompressOptions | Dict[str, Any] | None = None,
     reader: ScanReadstat | None = None,
     schema_overrides: Dict[Any, Any] | None = None,
@@ -266,8 +330,11 @@ def scan_readstat(
         Convert empty strings to nulls.
     value_labels_as_strings : bool, optional
         Use value labels as strings for labeled numeric columns (Stata/SPSS).
-    preserve_order : bool, optional
-        Preserve row order for parallel scan (slower but deterministic).
+    preserve_order : bool, PreserveOrderOpts, or dict, optional
+        ``False`` (default) allows out-of-order batches for higher throughput.
+        ``True`` maps to ``PreserveOrderOpts(mode="buffered")`` (current behavior).
+        ``PreserveOrderOpts`` or a dict with ``mode``/``row_index_name`` allows
+        row-index-based ordering without buffering.
     compress : CompressOptions or dict, optional
         Apply type compression after scan (narrow numeric, date/datetime, strings).
     reader : ScanReadstat, optional
@@ -282,6 +349,7 @@ def scan_readstat(
     path = str(path)
     compress = _normalize_compress_opts(compress)
     informative_nulls = _normalize_informative_null_opts(informative_nulls)
+    preserve_order_opts = _normalize_preserve_order_opts(preserve_order)
 
     if engine != "":
         print(f"Engine is deprecated as all calls use the new polars_readstat_rs rust engine.", flush=True)
@@ -306,9 +374,14 @@ def scan_readstat(
         missing_string_as_null = reader.missing_string_as_null
         value_labels_as_strings = reader.value_labels_as_strings
         preserve_order = reader.preserve_order
+        preserve_order_opts = _normalize_preserve_order_opts(preserve_order)
         compress = reader.compress
         batch_size = reader.batch_size
         informative_nulls = reader.informative_nulls
+
+    preserve_order_flag, row_index_name, sort_in_python = _resolve_preserve_order_opts(
+        preserve_order_opts
+    )
         
     # if return_batches:
     #     warnings.warn(
@@ -382,9 +455,10 @@ def scan_readstat(
             threads=reader.threads,
             missing_string_as_null=reader.missing_string_as_null,
             value_labels_as_strings=reader.value_labels_as_strings,
-            preserve_order=reader.preserve_order,
+            preserve_order=preserve_order_flag,
             compress=compress.to_dict() if compress is not None else None,
             informative_nulls=informative_nulls.to_dict() if informative_nulls is not None else None,
+            row_index_name=row_index_name,
         )
         if use_columns is not None:
             src.set_with_columns(use_columns)
@@ -403,7 +477,10 @@ def scan_readstat(
 
             yield out
 
-    return register_io_source(io_source=source_generator, schema=schema_generator())
+    lf = register_io_source(io_source=source_generator, schema=schema_generator())
+    if sort_in_python and row_index_name is not None:
+        lf = lf.sort(row_index_name).drop([row_index_name])
+    return lf
 
 
 def read_readstat(

@@ -383,6 +383,7 @@ pub struct SasScan {
     missing_string_as_null: bool,
     chunk_size: Option<usize>,
     preserve_order: bool,
+    row_index_name: Option<String>,
     compress_opts: crate::CompressOptionsLite,
     informative_nulls: Option<crate::InformativeNullOpts>,
 }
@@ -394,6 +395,7 @@ impl SasScan {
         missing_string_as_null: bool,
         chunk_size: Option<usize>,
         preserve_order: bool,
+        row_index_name: Option<String>,
         compress_opts: crate::CompressOptionsLite,
         informative_nulls: Option<crate::InformativeNullOpts>,
     ) -> Self {
@@ -403,6 +405,7 @@ impl SasScan {
             missing_string_as_null,
             chunk_size,
             preserve_order,
+            row_index_name,
             compress_opts,
             informative_nulls,
         }
@@ -521,6 +524,8 @@ pub(crate) struct SerialSasBatchIter {
     col_indices: Option<Vec<usize>>,
     batch_size: usize,
     remaining: usize,
+    row_index_name: Option<String>,
+    current_row: usize,
     // Informative-null state (empty/None when not tracking)
     null_opts: Option<crate::InformativeNullOpts>,
     indicator_plan_indices: Vec<usize>,
@@ -543,6 +548,7 @@ impl SerialSasBatchIter {
         missing_string_as_null: bool,
         null_opts: Option<crate::InformativeNullOpts>,
         skip: usize,
+        row_index_name: Option<String>,
     ) -> PolarsResult<Self> {
         let mut file = BufReader::new(File::open(&path)?);
         file.seek(SeekFrom::Start(header.header_length as u64))?;
@@ -619,6 +625,8 @@ impl SerialSasBatchIter {
             col_indices,
             batch_size,
             remaining: total,
+            row_index_name,
+            current_row: skip,
             null_opts,
             indicator_plan_indices,
             indicator_names,
@@ -713,36 +721,47 @@ impl Iterator for SerialSasBatchIter {
             return None;
         }
         self.remaining = self.remaining.saturating_sub(read);
+        let row_start = self.current_row;
+        self.current_row = self.current_row.saturating_add(read);
 
         let base_df = match builder.build() {
             Ok(df) => df,
             Err(e) => return Some(Err(PolarsError::ComputeError(e.to_string().into()))),
         };
 
-        if !has_inds {
-            return Some(Ok(base_df));
+        let df = if !has_inds {
+            Ok(base_df)
+        } else {
+            // Append indicator columns and apply informative null mode.
+            let ind_series: Vec<Column> = ind_builders
+                .into_iter()
+                .map(|b| b.finish().into_series().into())
+                .collect();
+            let ind_df = match DataFrame::new_infer_height(ind_series) {
+                Ok(df) => df,
+                Err(e) => return Some(Err(e)),
+            };
+            let df_with_inds = match base_df.hstack(ind_df.columns()) {
+                Ok(df) => df,
+                Err(e) => return Some(Err(e)),
+            };
+            let null_opts = self.null_opts.as_ref().unwrap();
+            crate::apply_informative_null_mode(df_with_inds, &null_opts.mode, &self.null_pairs)
+        };
+
+        let df = match df {
+            Ok(df) => df,
+            Err(e) => return Some(Err(e)),
+        };
+
+        if let Some(ref name) = self.row_index_name {
+            Some(
+                crate::append_row_index(df, name.as_str(), row_start)
+                    .map_err(|e| PolarsError::ComputeError(e.to_string().into())),
+            )
+        } else {
+            Some(Ok(df))
         }
-
-        // Append indicator columns and apply informative null mode.
-        let ind_series: Vec<Column> = ind_builders
-            .into_iter()
-            .map(|b| b.finish().into_series().into())
-            .collect();
-        let ind_df = match DataFrame::new_infer_height(ind_series) {
-            Ok(df) => df,
-            Err(e) => return Some(Err(e)),
-        };
-        let df_with_inds = match base_df.hstack(ind_df.columns()) {
-            Ok(df) => df,
-            Err(e) => return Some(Err(e)),
-        };
-
-        let null_opts = self.null_opts.as_ref().unwrap();
-        Some(crate::apply_informative_null_mode(
-            df_with_inds,
-            &null_opts.mode,
-            &self.null_pairs,
-        ))
     }
 }
 
@@ -755,6 +774,7 @@ pub(crate) fn sas_batch_iter(
     offset: usize,
     n_rows: Option<usize>,
     preserve_order: bool,
+    row_index_name: Option<String>,
     informative_nulls: Option<crate::InformativeNullOpts>,
 ) -> PolarsResult<SasBatchIter> {
     let reader =
@@ -769,6 +789,7 @@ pub(crate) fn sas_batch_iter(
         offset,
         n_rows,
         preserve_order,
+        row_index_name,
         informative_nulls,
     )
 }
@@ -783,6 +804,7 @@ pub(crate) fn sas_batch_iter_with_reader(
     offset: usize,
     n_rows: Option<usize>,
     preserve_order: bool,
+    row_index_name: Option<String>,
     informative_nulls: Option<crate::InformativeNullOpts>,
 ) -> PolarsResult<SasBatchIter> {
     let max_rows = reader.metadata().row_count.saturating_sub(offset);
@@ -792,6 +814,15 @@ pub(crate) fn sas_batch_iter_with_reader(
 
     if total_chunks == 0 {
         return Ok(Box::new(std::iter::empty()));
+    }
+
+    if let Some(ref name) = row_index_name {
+        let collision = reader.metadata().columns.iter().any(|c| c.name == *name);
+        if collision {
+            return Err(PolarsError::ComputeError(
+                format!("row_index_name '{name}' collides with existing column").into(),
+            ));
+        }
     }
 
     // When informative nulls are requested, always use the serial path (needs row-by-row decode).
@@ -818,6 +849,13 @@ pub(crate) fn sas_batch_iter_with_reader(
         };
         let pairs = crate::informative_null_pairs(&active_names, &eligible_names, &null_opts);
         crate::check_informative_null_collisions(&var_names, &pairs)?;
+        if let Some(ref name) = row_index_name {
+            if pairs.iter().any(|(m, i)| m == name || i == name) {
+                return Err(PolarsError::ComputeError(
+                    format!("row_index_name '{name}' collides with informative-null column").into(),
+                ));
+            }
+        }
 
         let header = reader.header().clone();
         let metadata = reader.metadata().clone();
@@ -837,6 +875,7 @@ pub(crate) fn sas_batch_iter_with_reader(
             missing_string_as_null,
             Some(null_opts),
             offset,
+            row_index_name,
         )?;
         let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(2);
         let handle = std::thread::spawn(move || {
@@ -885,6 +924,7 @@ pub(crate) fn sas_batch_iter_with_reader(
             missing_string_as_null,
             None,
             offset,
+            row_index_name,
         )?;
         let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(2);
         let handle = std::thread::spawn(move || {
@@ -930,6 +970,7 @@ pub(crate) fn sas_batch_iter_with_reader(
         let page_index = page_index.clone();
         let col_indices = col_indices.clone();
         let initial_data_subheaders = initial_data_subheaders.clone();
+        let row_index_name = row_index_name.clone();
         let handle = std::thread::spawn(move || {
             if batch_count == 0 {
                 return;
@@ -969,6 +1010,7 @@ pub(crate) fn sas_batch_iter_with_reader(
 
             let mut remaining = range_rows;
             let mut local_idx = 0usize;
+            let mut next_row = start_row;
             while remaining > 0 {
                 let take = batch_size.min(remaining);
                 let mut builder = match col_indices.as_deref() {
@@ -998,18 +1040,8 @@ pub(crate) fn sas_batch_iter_with_reader(
                     break;
                 }
 
-                match builder.build() {
-                    Ok(df) => {
-                        if tx
-                            .send(ChunkMessage::Data {
-                                idx: batch_start + local_idx,
-                                df,
-                            })
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
+                let mut df = match builder.build() {
+                    Ok(df) => df,
                     Err(e) => {
                         let _ = tx.send(ChunkMessage::Err {
                             idx: batch_start + local_idx,
@@ -1017,6 +1049,33 @@ pub(crate) fn sas_batch_iter_with_reader(
                         });
                         return;
                     }
+                };
+
+                if let Some(ref name) = row_index_name {
+                    let row_start = next_row;
+                    next_row = next_row.saturating_add(read);
+                    match crate::append_row_index(df, name.as_str(), row_start) {
+                        Ok(with_idx) => df = with_idx,
+                        Err(e) => {
+                            let _ = tx.send(ChunkMessage::Err {
+                                idx: batch_start + local_idx,
+                                msg: e.to_string(),
+                            });
+                            return;
+                        }
+                    }
+                } else {
+                    next_row = next_row.saturating_add(read);
+                }
+
+                if tx
+                    .send(ChunkMessage::Data {
+                        idx: batch_start + local_idx,
+                        df,
+                    })
+                    .is_err()
+                {
+                    return;
                 }
 
                 local_idx += 1;
@@ -1077,6 +1136,7 @@ impl AnonymousScan for SasScan {
             0,
             opts.n_rows,
             self.preserve_order,
+            self.row_index_name.clone(),
             self.informative_nulls.clone(),
         )?;
 
@@ -1182,6 +1242,10 @@ impl AnonymousScan for SasScan {
             }
         }
 
+        if let Some(ref name) = self.row_index_name {
+            schema = crate::append_row_index_schema(schema, name.as_str())?;
+        }
+
         Ok(Arc::new(schema))
     }
 }
@@ -1198,6 +1262,7 @@ pub fn scan_sas7bdat(
         missing_string_as_null,
         opts.chunk_size,
         opts.preserve_order.unwrap_or(false),
+        opts.row_index_name,
         opts.compress_opts,
         opts.informative_nulls,
     ));
@@ -1242,6 +1307,7 @@ mod tests {
             0,
             Some(25),
             true,
+            None,
             None,
         )
         .expect("batch iter");

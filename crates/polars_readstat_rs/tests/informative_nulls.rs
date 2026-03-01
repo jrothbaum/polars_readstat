@@ -161,8 +161,14 @@ fn test_stata_informative_nulls_schema_grows() -> PolarsResult<()> {
     if !path.exists() {
         return Ok(());
     }
-
-    let base_df = scan_dta(&path, ScanOptions { value_labels_as_strings: Some(false), ..Default::default() })?.collect()?;
+    let base_df = scan_dta(
+        &path,
+        ScanOptions {
+            value_labels_as_strings: Some(false),
+            ..Default::default()
+        },
+    )?
+    .collect()?;
     let base_cols = base_df.width();
 
     let null_opts = InformativeNullOpts::new(InformativeNullColumns::All);
@@ -221,7 +227,14 @@ fn test_spss_informative_nulls_schema() -> PolarsResult<()> {
     }
 
     // Baseline
-    let base_df = scan_sav(&path, ScanOptions { value_labels_as_strings: Some(false), ..Default::default() })?.collect()?;
+    let base_df = scan_sav(
+        &path,
+        ScanOptions {
+            value_labels_as_strings: Some(false),
+            ..Default::default()
+        },
+    )?
+    .collect()?;
     let base_cols = base_df.width();
 
     // With indicators
@@ -402,8 +415,12 @@ fn test_spss_simple_alltypes_informative_nulls() -> PolarsResult<()> {
 
     let base_df = scan_sav(
         &path,
-        ScanOptions { value_labels_as_strings: Some(false), ..Default::default() },
-    )?.collect()?;
+        ScanOptions {
+            value_labels_as_strings: Some(false),
+            ..Default::default()
+        },
+    )?
+    .collect()?;
 
     assert!(
         ind_df.width() > base_df.width(),

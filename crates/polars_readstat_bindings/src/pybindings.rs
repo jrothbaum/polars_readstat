@@ -276,6 +276,16 @@ fn cast_df_to_dtypes(df: &DataFrame, cast_map: &HashMap<String, DataType>) -> Py
     DataFrame::new_infer_height(out_cols).map_err(|e| PyRuntimeError::new_err(e.to_string()))
 }
 
+fn append_row_index_schema(schema: &mut Schema, name: &str) -> PyResult<()> {
+    if schema.get(name).is_some() {
+        return Err(PyRuntimeError::new_err(format!(
+            "row_index_name '{name}' collides with existing column"
+        )));
+    }
+    schema.with_column(name.into(), DataType::UInt64);
+    Ok(())
+}
+
 
 #[pymodule]
 pub fn polars_readstat_bindings(m: &Bound<PyModule>) -> PyResult<()> {
@@ -299,6 +309,7 @@ pub struct PyPolarsReadstat {
     missing_string_as_null: bool,
     value_labels_as_strings: bool,
     preserve_order: bool,
+    row_index_name: Option<String>,
     with_columns: Option<Vec<String>>,
     compress_opts: polars_readstat_rs::CompressOptionsLite,
     infer_compress_length: Option<usize>,
@@ -313,7 +324,7 @@ pub struct PyPolarsReadstat {
 #[pymethods]
 impl PyPolarsReadstat {
     #[new]
-    #[pyo3(signature = (path, size_hint, n_rows, threads, missing_string_as_null, value_labels_as_strings=false, preserve_order=false, compress=None, informative_nulls=None))]
+    #[pyo3(signature = (path, size_hint, n_rows, threads, missing_string_as_null, value_labels_as_strings=false, preserve_order=false, compress=None, informative_nulls=None, row_index_name=None))]
     fn new_source(
         path: String,
         size_hint: usize,
@@ -324,6 +335,7 @@ impl PyPolarsReadstat {
         preserve_order: bool,
         compress: Option<&Bound<PyDict>>,
         informative_nulls: Option<&Bound<PyDict>>,
+        row_index_name: Option<String>,
     ) -> PyResult<Self> {
         let max_useful_threads = num_cpus::get_physical();
         let threads = if threads.is_none() {
@@ -364,6 +376,7 @@ impl PyPolarsReadstat {
             missing_string_as_null,
             value_labels_as_strings,
             preserve_order,
+            row_index_name,
             with_columns: None,
             compress_opts: parsed_compress.opts,
             infer_compress_length: parsed_compress.infer_compress_length,
@@ -380,7 +393,11 @@ impl PyPolarsReadstat {
         if self.compress_opts.enabled {
             self.ensure_inferred_compress_schema()?;
             if let Some(schema) = self.inferred_schema.as_ref() {
-                return Ok(PySchema(Arc::new(schema.clone())));
+                let mut schema = schema.clone();
+                if let Some(ref name) = self.row_index_name {
+                    append_row_index_schema(&mut schema, name.as_str())?;
+                }
+                return Ok(PySchema(Arc::new(schema)));
             }
         }
 
@@ -389,6 +406,8 @@ impl PyPolarsReadstat {
             chunk_size: Some(self.batch_size),
             missing_string_as_null: Some(self.missing_string_as_null),
             value_labels_as_strings: Some(self.value_labels_as_strings),
+            preserve_order: Some(self.preserve_order),
+            row_index_name: self.row_index_name.clone(),
             informative_nulls: self.informative_nulls.clone(),
             ..Default::default()
         };
@@ -518,6 +537,7 @@ impl PyPolarsReadstat {
             missing_string_as_null: Some(self.missing_string_as_null),
             value_labels_as_strings: Some(self.value_labels_as_strings),
             preserve_order: Some(self.preserve_order),
+            row_index_name: self.row_index_name.clone(),
             informative_nulls: self.informative_nulls.clone(),
             ..Default::default()
         };
@@ -554,7 +574,8 @@ impl PyPolarsReadstat {
     value_labels_as_strings=false,
     preserve_order=false,
     compress=None,
-    informative_nulls=None
+    informative_nulls=None,
+    row_index_name=None
 ))]
 fn scan_readstat_rs(
     path: String,
@@ -565,6 +586,7 @@ fn scan_readstat_rs(
     preserve_order: bool,
     compress: Option<&Bound<PyDict>>,
     informative_nulls: Option<&Bound<PyDict>>,
+    row_index_name: Option<String>,
 ) -> PyResult<PyLazyFrame> {
     let parsed_compress = parse_compress_opts(compress)?;
     let parsed_informative_nulls = parse_informative_null_opts(informative_nulls)?;
@@ -574,6 +596,7 @@ fn scan_readstat_rs(
         missing_string_as_null: Some(missing_string_as_null),
         value_labels_as_strings: Some(value_labels_as_strings),
         preserve_order: Some(preserve_order),
+        row_index_name,
         informative_nulls: parsed_informative_nulls,
         compress_opts: parsed_compress.opts,
         ..Default::default()
@@ -592,7 +615,8 @@ fn scan_readstat_rs(
     value_labels_as_strings=false,
     preserve_order=false,
     compress=None,
-    informative_nulls=None
+    informative_nulls=None,
+    row_index_name=None
 ))]
 fn readstat_schema_rs(
     path: String,
@@ -603,10 +627,10 @@ fn readstat_schema_rs(
     preserve_order: bool,
     compress: Option<&Bound<PyDict>>,
     informative_nulls: Option<&Bound<PyDict>>,
+    row_index_name: Option<String>,
 ) -> PyResult<PySchema> {
     let parsed_compress = parse_compress_opts(compress)?;
     let parsed_informative_nulls = parse_informative_null_opts(informative_nulls)?;
-    let _ = preserve_order;
     if parsed_compress.opts.enabled {
         let (schema, _) = infer_compressed_schema_and_cast_map(
             &path,
@@ -618,6 +642,10 @@ fn readstat_schema_rs(
             parsed_compress.infer_compress_length,
             parsed_informative_nulls,
         )?;
+        let mut schema = schema;
+        if let Some(ref name) = row_index_name {
+            append_row_index_schema(&mut schema, name.as_str())?;
+        }
         return Ok(PySchema(Arc::new(schema)));
     }
     let opts = ScanOptions {
@@ -625,6 +653,8 @@ fn readstat_schema_rs(
         chunk_size,
         missing_string_as_null: Some(missing_string_as_null),
         value_labels_as_strings: Some(value_labels_as_strings),
+        preserve_order: Some(preserve_order),
+        row_index_name,
         informative_nulls: parsed_informative_nulls,
         compress_opts: parsed_compress.opts,
         ..Default::default()

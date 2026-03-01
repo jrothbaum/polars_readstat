@@ -158,6 +158,7 @@ impl Sas7bdatReader {
             opts.offset,
             Some(limit),
             true,
+            None,
             opts.informative_nulls.clone(),
         )
         .map_err(|e| crate::error::Error::ParseError(e.to_string()))?;

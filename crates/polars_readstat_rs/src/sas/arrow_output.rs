@@ -39,6 +39,7 @@ pub fn read_to_arrow_schema_ffi(
         informative_nulls: None,
         value_labels_as_strings: None,
         preserve_order: Some(true),
+        row_index_name: None,
         compress_opts: crate::CompressOptionsLite::default(),
     };
     let schema = scan_sas7bdat(path.to_path_buf(), opts)?.collect_schema()?;
@@ -61,6 +62,7 @@ pub fn read_to_arrow_array_ffi(
         informative_nulls: None,
         value_labels_as_strings: None,
         preserve_order: Some(true),
+        row_index_name: None,
         compress_opts: crate::CompressOptionsLite::default(),
     };
     let df = scan_sas7bdat(path.to_path_buf(), opts)?.collect()?;
@@ -86,6 +88,7 @@ pub fn read_to_arrow_stream_ffi(
         informative_nulls: None,
         value_labels_as_strings: None,
         preserve_order: Some(true),
+        row_index_name: None,
         compress_opts: crate::CompressOptionsLite::default(),
     };
     let mut lf = scan_sas7bdat(path.to_path_buf(), opts.clone())?;
@@ -102,6 +105,7 @@ pub fn read_to_arrow_stream_ffi(
         0,
         None,
         opts.preserve_order.unwrap_or(false),
+        None,
         None,
     )?;
     let iter = Box::new(std::iter::from_fn(move || {

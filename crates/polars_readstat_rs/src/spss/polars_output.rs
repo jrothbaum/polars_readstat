@@ -22,6 +22,7 @@ pub fn scan_sav(path: impl Into<PathBuf>, opts: crate::ScanOptions) -> PolarsRes
         opts.chunk_size,
         preserve_order,
         opts.informative_nulls,
+        opts.row_index_name,
         opts.compress_opts,
     ));
     LazyFrame::anonymous_scan(scan_ptr, Default::default())
@@ -63,6 +64,7 @@ mod tests {
             true,
             Some(10),
             false,
+            None,
             None,
             0,
             Some(25),
@@ -181,6 +183,7 @@ pub(crate) fn spss_batch_iter(
     value_labels_as_strings: bool,
     chunk_size: Option<usize>,
     preserve_order: bool,
+    row_index_name: Option<String>,
     cols: Option<Vec<String>>,
     offset: usize,
     n_rows: Option<usize>,
@@ -196,6 +199,7 @@ pub(crate) fn spss_batch_iter(
         value_labels_as_strings,
         chunk_size,
         preserve_order,
+        row_index_name,
         cols,
         offset,
         n_rows,
@@ -211,6 +215,7 @@ pub(crate) fn spss_batch_iter_with_reader(
     value_labels_as_strings: bool,
     chunk_size: Option<usize>,
     preserve_order: bool,
+    row_index_name: Option<String>,
     cols: Option<Vec<String>>,
     offset: usize,
     n_rows: Option<usize>,
@@ -219,6 +224,15 @@ pub(crate) fn spss_batch_iter_with_reader(
     let max_rows = reader.metadata().row_count.saturating_sub(offset as u64) as usize;
     let total = n_rows.unwrap_or(max_rows).min(max_rows);
     let batch_size = chunk_size.unwrap_or(100_000).max(1);
+
+    if let Some(ref name) = row_index_name {
+        let collision = reader.metadata().variables.iter().any(|v| v.name == *name);
+        if collision {
+            return Err(PolarsError::ComputeError(
+                format!("row_index_name '{name}' collides with existing column").into(),
+            ));
+        }
+    }
 
     // Informative nulls: read once with indicators, then slice into batches in a background thread.
     if let Some(null_opts) = informative_nulls {
@@ -255,6 +269,13 @@ pub(crate) fn spss_batch_iter_with_reader(
             .collect();
         let pairs = crate::informative_null_pairs(&var_names, &eligible, &null_opts);
         crate::check_informative_null_collisions(&var_names, &pairs)?;
+        if let Some(ref name) = row_index_name {
+            if pairs.iter().any(|(m, i)| m == name || i == name) {
+                return Err(PolarsError::ComputeError(
+                    format!("row_index_name '{name}' collides with informative-null column").into(),
+                ));
+            }
+        }
         let pairs_map: std::collections::HashMap<&str, &str> = pairs
             .iter()
             .map(|(m, i)| (m.as_str(), i.as_str()))
@@ -300,7 +321,17 @@ pub(crate) fn spss_batch_iter_with_reader(
             let mut start = 0usize;
             while start < df.height() {
                 let take = batch_size.min(df.height() - start);
-                let slice = df.slice(start as i64, take);
+                let mut slice = df.slice(start as i64, take);
+                if let Some(ref name) = row_index_name {
+                    let row_start = offset + start;
+                    match crate::append_row_index(slice, name.as_str(), row_start) {
+                        Ok(with_idx) => slice = with_idx,
+                        Err(e) => {
+                            let _ = tx.send(Err(e));
+                            return;
+                        }
+                    }
+                }
                 if tx.send(Ok(slice)).is_err() {
                     return;
                 }
@@ -362,7 +393,25 @@ pub(crate) fn spss_batch_iter_with_reader(
                     let range_rows =
                         (batch_count * batch_size).min(total - batch_start * batch_size);
                     let mut local_idx = 0usize;
-                    let mut on_batch = |df: DataFrame| -> bool {
+                    let row_index_name = row_index_name.clone();
+                    let mut next_row = start_row;
+                    let mut on_batch = |mut df: DataFrame| -> bool {
+                        if let Some(ref name) = row_index_name {
+                            let row_start = next_row;
+                            next_row = next_row.saturating_add(df.height());
+                            match crate::append_row_index(df, name.as_str(), row_start) {
+                                Ok(with_idx) => df = with_idx,
+                                Err(e) => {
+                                    let _ = sender.send((
+                                        batch_start + local_idx,
+                                        Err(PolarsError::ComputeError(e.to_string().into())),
+                                    ));
+                                    return false;
+                                }
+                            }
+                        } else {
+                            next_row = next_row.saturating_add(df.height());
+                        }
                         let idx = batch_start + local_idx;
                         local_idx += 1;
                         sender.send((idx, Ok(df))).is_ok()
@@ -427,6 +476,7 @@ pub(crate) fn spss_batch_iter_with_reader(
         let labels = value_labels_as_strings;
         let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(2);
         let handle = std::thread::spawn(move || {
+            let mut next_row = offset;
             if let Err(e) = crate::spss::data::read_data_frame_streaming(
                 &path,
                 &metadata,
@@ -439,7 +489,22 @@ pub(crate) fn spss_batch_iter_with_reader(
                 missing_null,
                 labels,
                 batch_size,
-                &mut |df| tx.send(Ok(df)).is_ok(),
+                &mut |mut df| {
+                    if let Some(ref name) = row_index_name {
+                        let row_start = next_row;
+                        next_row = next_row.saturating_add(df.height());
+                        match crate::append_row_index(df, name.as_str(), row_start) {
+                            Ok(with_idx) => df = with_idx,
+                            Err(e) => {
+                                let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
+                                return false;
+                            }
+                        }
+                    } else {
+                        next_row = next_row.saturating_add(df.height());
+                    }
+                    tx.send(Ok(df)).is_ok()
+                },
             ) {
                 let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
             }
@@ -475,6 +540,7 @@ pub(crate) fn spss_batch_iter_with_reader(
     let labels = value_labels_as_strings;
     let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(2);
     let handle = std::thread::spawn(move || {
+        let mut next_row = offset;
         if let Err(e) = crate::spss::data::read_data_frame_streaming(
             &path,
             &metadata,
@@ -487,7 +553,22 @@ pub(crate) fn spss_batch_iter_with_reader(
             missing_null,
             labels,
             batch_size,
-            &mut |df| tx.send(Ok(df)).is_ok(),
+            &mut |mut df| {
+                if let Some(ref name) = row_index_name {
+                    let row_start = next_row;
+                    next_row = next_row.saturating_add(df.height());
+                    match crate::append_row_index(df, name.as_str(), row_start) {
+                        Ok(with_idx) => df = with_idx,
+                        Err(e) => {
+                            let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
+                            return false;
+                        }
+                    }
+                } else {
+                    next_row = next_row.saturating_add(df.height());
+                }
+                tx.send(Ok(df)).is_ok()
+            },
         ) {
             let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
         }
@@ -506,6 +587,7 @@ pub struct SpssScan {
     chunk_size: Option<usize>,
     preserve_order: bool,
     informative_nulls: Option<crate::InformativeNullOpts>,
+    row_index_name: Option<String>,
     compress_opts: crate::CompressOptionsLite,
 }
 
@@ -518,6 +600,7 @@ impl SpssScan {
         chunk_size: Option<usize>,
         preserve_order: bool,
         informative_nulls: Option<crate::InformativeNullOpts>,
+        row_index_name: Option<String>,
         compress_opts: crate::CompressOptionsLite,
     ) -> Self {
         Self {
@@ -528,6 +611,7 @@ impl SpssScan {
             chunk_size,
             preserve_order,
             informative_nulls,
+            row_index_name,
             compress_opts,
         }
     }
@@ -549,6 +633,7 @@ impl AnonymousScan for SpssScan {
             self.value_labels_as_strings.unwrap_or(true),
             self.chunk_size,
             self.preserve_order,
+            self.row_index_name.clone(),
             cols,
             0,
             opts.n_rows,
@@ -598,9 +683,17 @@ impl AnonymousScan for SpssScan {
                 .collect();
             let pairs = crate::informative_null_pairs(&var_names, &eligible, null_opts);
             crate::check_informative_null_collisions(&var_names, &pairs)?;
-            Ok(Arc::new(crate::build_indicator_schema(base_schema, &pairs, &null_opts.mode)))
+            let mut schema = crate::build_indicator_schema(base_schema, &pairs, &null_opts.mode);
+            if let Some(ref name) = self.row_index_name {
+                schema = crate::append_row_index_schema(schema, name.as_str())?;
+            }
+            Ok(Arc::new(schema))
         } else {
-            Ok(Arc::new(base_schema))
+            let mut schema = base_schema;
+            if let Some(ref name) = self.row_index_name {
+                schema = crate::append_row_index_schema(schema, name.as_str())?;
+            }
+            Ok(Arc::new(schema))
         }
     }
 }

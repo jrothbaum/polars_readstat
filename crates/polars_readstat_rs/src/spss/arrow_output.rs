@@ -40,6 +40,7 @@ pub fn read_to_arrow_schema_ffi(
         informative_nulls: None,
         value_labels_as_strings,
         preserve_order: Some(true),
+        row_index_name: None,
         compress_opts: crate::CompressOptionsLite::default(),
     };
     let schema = scan_sav(path.to_path_buf(), opts)?.collect_schema()?;
@@ -62,6 +63,7 @@ pub fn read_to_arrow_array_ffi(
         informative_nulls: None,
         value_labels_as_strings,
         preserve_order: Some(true),
+        row_index_name: None,
         compress_opts: crate::CompressOptionsLite::default(),
     };
     let df = scan_sav(path.to_path_buf(), opts)?.collect()?;
@@ -88,6 +90,7 @@ pub fn read_to_arrow_stream_ffi(
         informative_nulls: None,
         value_labels_as_strings,
         preserve_order: Some(true),
+        row_index_name: None,
         compress_opts: crate::CompressOptionsLite::default(),
     };
     let mut lf = scan_sav(path.to_path_buf(), opts.clone())?;
@@ -102,6 +105,7 @@ pub fn read_to_arrow_stream_ffi(
         value_labels_as_strings.unwrap_or(true),
         Some(batch_size),
         true,
+        None,
         None,
         0,
         None,

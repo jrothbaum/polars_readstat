@@ -134,6 +134,7 @@ impl<'a> ReadBuilder<'a> {
             self.value_labels_as_strings,
             self.chunk_size,
             true,
+            None,
             self.columns,
             self.offset,
             Some(limit),

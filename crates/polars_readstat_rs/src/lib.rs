@@ -122,6 +122,7 @@ pub struct ScanOptions {
     pub informative_nulls: Option<InformativeNullOpts>,
     pub value_labels_as_strings: Option<bool>,
     pub preserve_order: Option<bool>,
+    pub row_index_name: Option<String>,
     pub compress_opts: CompressOptionsLite,
 }
 
@@ -134,6 +135,7 @@ impl Default for ScanOptions {
             informative_nulls: None,
             value_labels_as_strings: Some(true),
             preserve_order: Some(false),
+            row_index_name: None,
             compress_opts: CompressOptionsLite::default(),
         }
     }
@@ -352,6 +354,31 @@ pub fn apply_informative_null_mode(
                 .collect()
         }
     }
+}
+
+pub(crate) fn append_row_index(
+    df: polars::prelude::DataFrame,
+    name: &str,
+    start: usize,
+) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
+    use polars::prelude::IdxSize;
+
+    df.with_row_index(name.into(), Some(start as IdxSize))
+}
+
+pub(crate) fn append_row_index_schema(
+    mut schema: polars::prelude::Schema,
+    name: &str,
+) -> polars::prelude::PolarsResult<polars::prelude::Schema> {
+    use polars::prelude::{DataType, PolarsError};
+
+    if schema.get(name).is_some() {
+        return Err(PolarsError::ComputeError(
+            format!("row_index_name '{name}' collides with existing column").into(),
+        ));
+    }
+    schema.with_column(name.into(), DataType::UInt64);
+    Ok(schema)
 }
 
 pub fn compress_df_if_enabled(

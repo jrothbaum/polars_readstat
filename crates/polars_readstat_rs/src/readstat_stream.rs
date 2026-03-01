@@ -64,13 +64,19 @@ pub fn readstat_batch_iter(
         PolarsError::ComputeError("unknown file extension".into())
     })?;
 
+    let row_index_name = opts.row_index_name.clone();
+    let mut columns = columns;
+    if let Some(ref name) = row_index_name {
+        if let Some(cols) = columns.as_mut() {
+            cols.retain(|c| c != name);
+        }
+    }
     let columns = columns.and_then(|cols| if cols.is_empty() { None } else { Some(cols) });
 
     let chunk_size = batch_size.or(opts.chunk_size);
     let missing_string_as_null = opts.missing_string_as_null.unwrap_or(true);
     let value_labels_as_strings = opts.value_labels_as_strings.unwrap_or(true);
     let preserve_order = opts.preserve_order.unwrap_or(false);
-
     let iter: Box<dyn Iterator<Item = PolarsResult<DataFrame>> + Send> = match format {
         ReadStatFormat::Sas => {
             let col_indices = if let Some(cols) = columns {
@@ -90,6 +96,7 @@ pub fn readstat_batch_iter(
                 0,
                 n_rows,
                 preserve_order,
+                row_index_name.clone(),
                 opts.informative_nulls.clone(),
             )?;
             Box::new(iter)
@@ -102,6 +109,7 @@ pub fn readstat_batch_iter(
                 value_labels_as_strings,
                 chunk_size,
                 preserve_order,
+                row_index_name.clone(),
                 columns,
                 0,
                 n_rows,
@@ -117,6 +125,7 @@ pub fn readstat_batch_iter(
                 value_labels_as_strings,
                 chunk_size,
                 preserve_order,
+                row_index_name.clone(),
                 columns,
                 0,
                 n_rows,

@@ -95,6 +95,7 @@ impl StataReader {
             _opts.value_labels_as_strings,
             _opts.chunk_size,
             true,
+            None,
             _opts.columns,
             _opts.offset,
             Some(limit),

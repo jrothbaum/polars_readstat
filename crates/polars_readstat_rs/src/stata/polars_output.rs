@@ -28,6 +28,7 @@ pub fn scan_dta(
         value_labels_as_strings,
         opts.chunk_size,
         preserve_order,
+        opts.row_index_name,
         opts.compress_opts,
         opts.informative_nulls,
     ));
@@ -71,6 +72,7 @@ mod tests {
             Some(10),
             false,
             None,
+            None,
             0,
             Some(25),
             None,
@@ -95,6 +97,7 @@ pub struct StataScan {
     value_labels_as_strings: Option<bool>,
     chunk_size: Option<usize>,
     preserve_order: bool,
+    row_index_name: Option<String>,
     compress_opts: crate::CompressOptionsLite,
     informative_nulls: Option<crate::InformativeNullOpts>,
 }
@@ -107,6 +110,7 @@ impl StataScan {
         value_labels_as_strings: Option<bool>,
         chunk_size: Option<usize>,
         preserve_order: bool,
+        row_index_name: Option<String>,
         compress_opts: crate::CompressOptionsLite,
         informative_nulls: Option<crate::InformativeNullOpts>,
     ) -> Self {
@@ -117,6 +121,7 @@ impl StataScan {
             value_labels_as_strings,
             chunk_size,
             preserve_order,
+            row_index_name,
             compress_opts,
             informative_nulls,
         }
@@ -222,6 +227,7 @@ pub(crate) fn stata_batch_iter(
     value_labels_as_strings: bool,
     chunk_size: Option<usize>,
     preserve_order: bool,
+    row_index_name: Option<String>,
     cols: Option<Vec<String>>,
     offset: usize,
     n_rows: Option<usize>,
@@ -237,6 +243,7 @@ pub(crate) fn stata_batch_iter(
         value_labels_as_strings,
         chunk_size,
         preserve_order,
+        row_index_name,
         cols,
         offset,
         n_rows,
@@ -252,6 +259,7 @@ pub(crate) fn stata_batch_iter_with_reader(
     value_labels_as_strings: bool,
     chunk_size: Option<usize>,
     preserve_order: bool,
+    row_index_name: Option<String>,
     cols: Option<Vec<String>>,
     offset: usize,
     n_rows: Option<usize>,
@@ -282,6 +290,14 @@ pub(crate) fn stata_batch_iter_with_reader(
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()?;
+    if let Some(ref name) = row_index_name {
+        let collision = reader.metadata().variables.iter().any(|v| v.name == *name);
+        if collision {
+            return Err(PolarsError::ComputeError(
+                format!("row_index_name '{name}' collides with existing column").into(),
+            ));
+        }
+    }
     let mut time_formats = Vec::new();
     for var in &reader.metadata().variables {
         if let Some(kind) = stata_time_format_kind(var.format.as_deref(), &var.var_type) {
@@ -337,6 +353,8 @@ pub(crate) fn stata_batch_iter_with_reader(
                     let range_rows =
                         (batch_count * batch_size).min(total - batch_start * batch_size);
                     let mut local_idx = 0usize;
+                    let row_index_name = row_index_name.clone();
+                    let mut next_row = start_row;
                     let mut on_batch = |mut df: DataFrame| -> bool {
                         if let Err(e) = apply_stata_time_formats(&mut df, &formats) {
                             let _ = sender.send((
@@ -344,6 +362,22 @@ pub(crate) fn stata_batch_iter_with_reader(
                                 Err(PolarsError::ComputeError(e.to_string().into())),
                             ));
                             return false;
+                        }
+                        if let Some(ref name) = row_index_name {
+                            let row_start = next_row;
+                            next_row = next_row.saturating_add(df.height());
+                            match crate::append_row_index(df, name.as_str(), row_start) {
+                                Ok(with_idx) => df = with_idx,
+                                Err(e) => {
+                                    let _ = sender.send((
+                                        batch_start + local_idx,
+                                        Err(PolarsError::ComputeError(e.to_string().into())),
+                                    ));
+                                    return false;
+                                }
+                            }
+                        } else {
+                            next_row = next_row.saturating_add(df.height());
                         }
                         let idx = batch_start + local_idx;
                         local_idx += 1;
@@ -407,6 +441,13 @@ pub(crate) fn stata_batch_iter_with_reader(
             .collect();
         let pairs = crate::informative_null_pairs(&var_name_refs, &eligible, &null_opts);
         crate::check_informative_null_collisions(&var_name_refs, &pairs)?;
+        if let Some(ref name) = row_index_name {
+            if pairs.iter().any(|(m, i)| m == name || i == name) {
+                return Err(PolarsError::ComputeError(
+                    format!("row_index_name '{name}' collides with informative-null column").into(),
+                ));
+            }
+        }
         let indicator_set: std::collections::HashSet<String> =
             pairs.iter().map(|(m, _)| m.clone()).collect();
         let suffix = match &null_opts.mode {
@@ -429,6 +470,7 @@ pub(crate) fn stata_batch_iter_with_reader(
             let mut remaining = total;
             while remaining > 0 {
                 let take = batch_size.min(remaining);
+                let row_start = cur_offset;
                 let result = read_data_frame_range_with_indicators(
                     &path_clone, &metadata_clone, endian, version,
                     col_indices_clone.as_deref(), cur_offset, take, missing_null, labels,
@@ -439,7 +481,14 @@ pub(crate) fn stata_batch_iter_with_reader(
                     apply_stata_time_formats(&mut df, &formats_clone)?;
                     Ok(df)
                 })
-                .and_then(|df| crate::apply_informative_null_mode(df, &null_opts.mode, &pairs));
+                .and_then(|df| crate::apply_informative_null_mode(df, &null_opts.mode, &pairs))
+                .and_then(|df| {
+                    if let Some(ref name) = row_index_name {
+                        crate::append_row_index(df, name.as_str(), row_start)
+                    } else {
+                        Ok(df)
+                    }
+                });
                 if tx.send(result).is_err() {
                     return;
                 }
@@ -463,6 +512,7 @@ pub(crate) fn stata_batch_iter_with_reader(
         let mut remaining = total;
         while remaining > 0 {
             let take = batch_size.min(remaining);
+            let row_start = cur_offset;
             let result = read_data_frame_range(
                 &path, &metadata, endian, version, col_indices.as_deref(),
                 cur_offset, take, missing_null, labels, &shared,
@@ -471,6 +521,13 @@ pub(crate) fn stata_batch_iter_with_reader(
             .and_then(|mut df| {
                 apply_stata_time_formats(&mut df, &formats)?;
                 Ok(df)
+            })
+            .and_then(|df| {
+                if let Some(ref name) = row_index_name {
+                    crate::append_row_index(df, name.as_str(), row_start)
+                } else {
+                    Ok(df)
+                }
             });
             if tx.send(result).is_err() {
                 return;
@@ -498,6 +555,7 @@ impl AnonymousScan for StataScan {
             self.value_labels_as_strings.unwrap_or(true),
             self.chunk_size,
             self.preserve_order,
+            self.row_index_name.clone(),
             cols,
             0,
             opts.n_rows,
@@ -572,9 +630,16 @@ impl AnonymousScan for StataScan {
                 .collect();
             let pairs = crate::informative_null_pairs(&var_names, &eligible, null_opts);
             crate::check_informative_null_collisions(&var_names, &pairs)?;
-            return Ok(Arc::new(crate::build_indicator_schema(schema, &pairs, &null_opts.mode)));
+            let mut schema = crate::build_indicator_schema(schema, &pairs, &null_opts.mode);
+            if let Some(ref name) = self.row_index_name {
+                schema = crate::append_row_index_schema(schema, name.as_str())?;
+            }
+            return Ok(Arc::new(schema));
         }
 
+        if let Some(ref name) = self.row_index_name {
+            schema = crate::append_row_index_schema(schema, name.as_str())?;
+        }
         Ok(Arc::new(schema))
     }
 }

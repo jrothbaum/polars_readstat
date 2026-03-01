@@ -44,6 +44,7 @@ fn main() -> PolarsResult<()> {
         informative_nulls: None,
         value_labels_as_strings: Some(value_labels_as_strings),
         preserve_order: Some(true),
+        row_index_name: None,
         compress_opts,
     };
     let n_rows = args.get(8).and_then(|s| s.parse::<u32>().ok());
