@@ -81,6 +81,12 @@ impl<R: Read + Seek> PageReader<R> {
     /// Get all subheaders from current page
     pub fn get_subheaders(&self, page_header: &PageHeader) -> Result<Vec<PageSubheader>> {
         let mut subheaders = Vec::new();
+        let debug = super::sas_debug_enabled();
+        let log_subheaders = debug
+            && matches!(
+                page_header.page_type,
+                PageType::Meta | PageType::Mix1 | PageType::Mix2 | PageType::Amd
+            );
 
         for i in 0..page_header.subheader_count {
             let offset = self.page_bit_offset + 8 + (i as usize * self.subheader_size);
@@ -91,7 +97,14 @@ impl<R: Read + Seek> PageReader<R> {
             let subheader_type = self.read_u8(offset + self.integer_size * 2 + 1)?;
 
             // Skip empty or truncated subheaders.
-            if sub_length == 0 || compression == 1 {
+            let skip = sub_length == 0 || compression == 1;
+            if log_subheaders {
+                eprintln!(
+                    "[sas-debug] subheader desc idx={} offset={} length={} compression={} type={} skip={}",
+                    i, sub_offset, sub_length, compression, subheader_type, skip
+                );
+            }
+            if skip {
                 continue;
             }
 

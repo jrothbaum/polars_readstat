@@ -1,0 +1,54 @@
+name: Build Linux Debug Wheels
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-linux-debug:
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-tag:
+          - cp39-cp39
+          - cp310-cp310
+          - cp311-cp311
+          - cp312-cp312
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source ~/.cargo/env
+          rustup toolchain install 1.93.0
+          rustup default 1.93.0
+          rustup target add x86_64-unknown-linux-gnu
+        shell: bash
+
+      - name: Install Python build tools
+        run: |
+          /opt/python/${{ matrix.python-tag }}/bin/pip install --upgrade pip maturin
+
+      - name: Build debug wheel (manylinux_2_28)
+        run: |
+          source ~/.cargo/env
+          /opt/python/${{ matrix.python-tag }}/bin/maturin build --release --out dist \
+            --interpreter /opt/python/${{ matrix.python-tag }}/bin/python \
+            --target x86_64-unknown-linux-gnu \
+            --compatibility manylinux_2_28 \
+            --jobs 2
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: "true"
+          CARGO_INCREMENTAL: "0"
+          RUSTFLAGS: "-C debuginfo=2 -C codegen-units=1"
+          RUST_BACKTRACE: "full"
+        shell: bash
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-debug-${{ matrix.python-tag }}
+          path: dist

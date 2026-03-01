@@ -27,6 +27,7 @@ pub use writer::{
 
 use serde_json::json;
 use std::path::Path;
+use std::sync::OnceLock;
 
 /// Export SAS metadata as a JSON string.
 pub fn metadata_json(path: impl AsRef<Path>) -> Result<String> {
@@ -109,6 +110,15 @@ fn trim_sas_bytes(bytes: &[u8]) -> &[u8] {
         end -= 1;
     }
     &bytes[..end]
+}
+
+static SAS_DEBUG_ENABLED: OnceLock<bool> = OnceLock::new();
+
+pub(crate) fn sas_debug_enabled() -> bool {
+    *SAS_DEBUG_ENABLED.get_or_init(|| {
+        std::env::var("POLARS_READSTAT_SAS_DEBUG").ok().is_some()
+            || std::env::var("SAS_DEBUG").ok().is_some()
+    })
 }
 
 /// Debug helper: extract raw bytes for a column across a row range.
