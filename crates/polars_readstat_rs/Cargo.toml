@@ -5,7 +5,7 @@ edition = "2021"
 rust-version="1.93"
 description = "Pure Rust readers for SAS, Stata, and SPSS with Polars and Arrow outputs"
 license = "MIT"
-repository = "https://github.com/jrothbaum/polars_readstat_rs"
+repository = "https://github.com/jrothbaum/polars_readstat"
 readme = "README.md"
 
 [dependencies]
