@@ -137,6 +137,39 @@ fn test_sas_informative_nulls_indicator_values() -> PolarsResult<()> {
 }
 
 #[test]
+fn test_sas_linux_informative_nulls_tag_decode() -> PolarsResult<()> {
+    let path = test_data("sas", "info_nulls.sas7bdat");
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let null_opts = InformativeNullOpts::new(InformativeNullColumns::All);
+    let opts = ScanOptions {
+        informative_nulls: Some(null_opts),
+        ..Default::default()
+    };
+    let df = scan_sas7bdat(&path, opts)?.collect()?;
+
+    let y = df.column("y_null")?.as_materialized_series().str()?;
+    let z = df.column("z_null")?.as_materialized_series().str()?;
+
+    assert_eq!(y.get(0), Some(".X"));
+    assert_eq!(z.get(0), Some(".X"));
+    assert_eq!(y.get(1), Some(".U"));
+    assert_eq!(z.get(1), Some(".K"));
+    assert_eq!(y.get(2), Some(".V"));
+    assert_eq!(z.get(2), Some(".G"));
+    assert_eq!(y.get(3), Some(".O"));
+    assert_eq!(z.get(3), Some("._"));
+
+    // Row 5 in fixture has real numeric values in y/z, so indicators should be null.
+    assert_eq!(y.get(4), None);
+    assert_eq!(z.get(4), None);
+
+    Ok(())
+}
+
+#[test]
 fn test_sas_informative_nulls_no_indicators_without_option() -> PolarsResult<()> {
     let path = test_data("sas", "info_nulls_test_data.sas7bdat");
     if !path.exists() {

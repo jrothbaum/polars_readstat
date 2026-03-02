@@ -277,12 +277,19 @@ fn cast_df_to_dtypes(df: &DataFrame, cast_map: &HashMap<String, DataType>) -> Py
 }
 
 fn append_row_index_schema(schema: &mut Schema, name: &str) -> PyResult<()> {
+    use polars::prelude::IdxSize;
+
     if schema.get(name).is_some() {
         return Err(PyRuntimeError::new_err(format!(
             "row_index_name '{name}' collides with existing column"
         )));
     }
-    schema.with_column(name.into(), DataType::UInt64);
+    let idx_dtype = if std::mem::size_of::<IdxSize>() == std::mem::size_of::<u32>() {
+        DataType::UInt32
+    } else {
+        DataType::UInt64
+    };
+    schema.with_column(name.into(), idx_dtype);
     Ok(())
 }
 

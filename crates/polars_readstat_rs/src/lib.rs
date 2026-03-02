@@ -366,18 +366,28 @@ pub(crate) fn append_row_index(
     df.with_row_index(name.into(), Some(start as IdxSize))
 }
 
+fn row_index_dtype() -> polars::prelude::DataType {
+    use polars::prelude::{DataType, IdxSize};
+
+    if std::mem::size_of::<IdxSize>() == std::mem::size_of::<u32>() {
+        DataType::UInt32
+    } else {
+        DataType::UInt64
+    }
+}
+
 pub(crate) fn append_row_index_schema(
     mut schema: polars::prelude::Schema,
     name: &str,
 ) -> polars::prelude::PolarsResult<polars::prelude::Schema> {
-    use polars::prelude::{DataType, PolarsError};
+    use polars::prelude::PolarsError;
 
     if schema.get(name).is_some() {
         return Err(PolarsError::ComputeError(
             format!("row_index_name '{name}' collides with existing column").into(),
         ));
     }
-    schema.with_column(name.into(), DataType::UInt64);
+    schema.with_column(name.into(), row_index_dtype());
     Ok(schema)
 }
 

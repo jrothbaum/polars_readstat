@@ -24,7 +24,7 @@ class ScanReadstat:
         missing_string_as_null: bool = False,
         value_labels_as_strings: bool = False,
         preserve_order: bool | "PreserveOrderOpts" | dict = False,
-        compress: "CompressOptions | dict | None" = None,
+        compress: "bool | CompressOptions | dict | None" = None,
         schema_overrides: Dict[Any, Any] | None = None,
         batch_size: int | None = None,
         informative_nulls: "InformativeNullOpts | dict | None" = None,
@@ -157,15 +157,26 @@ class CompressOptions:
 
 
 def _normalize_compress_opts(
-    compress: "CompressOptions | Dict[str, Any] | None",
+    compress: "bool | CompressOptions | Dict[str, Any] | None",
 ) -> CompressOptions | None:
     if compress is None:
         return None
+    if isinstance(compress, bool):
+        if not compress:
+            return None
+        return CompressOptions(
+            enabled=True,
+            compress_numeric=True,
+            datetime_to_date=True,
+            string_to_numeric=True,
+        )
     if isinstance(compress, CompressOptions):
         return compress
     if isinstance(compress, dict):
         return CompressOptions(**compress)
-    raise TypeError(f"compress must be CompressOptions, dict, or None, got {type(compress)}")
+    raise TypeError(
+        f"compress must be bool, CompressOptions, dict, or None, got {type(compress)}"
+    )
 
 
 PreserveOrderMode = Literal["buffered", "row_index", "sort"]
@@ -305,7 +316,7 @@ def scan_readstat(
     missing_string_as_null: bool = False,
     value_labels_as_strings: bool = False,
     preserve_order: bool | PreserveOrderOpts | Dict[str, Any] = False,
-    compress: CompressOptions | Dict[str, Any] | None = None,
+    compress: bool | CompressOptions | Dict[str, Any] | None = None,
     reader: ScanReadstat | None = None,
     schema_overrides: Dict[Any, Any] | None = None,
     batch_size: int | None = None,
@@ -334,8 +345,10 @@ def scan_readstat(
         ``True`` maps to ``PreserveOrderOpts(mode="buffered")`` (current behavior).
         ``PreserveOrderOpts`` or a dict with ``mode``/``row_index_name`` allows
         row-index-based ordering without buffering.
-    compress : CompressOptions or dict, optional
-        Apply type compression after scan (narrow numeric, date/datetime, strings).
+    compress : bool, CompressOptions, or dict, optional
+        Read-side type compression after scan.
+        ``True`` enables all transforms (numeric downcast, datetime-to-date,
+        and string-to-numeric). ``False``/``None`` disables compression.
     reader : ScanReadstat, optional
         Internal use.
     schema_overrides : dict, optional
@@ -487,7 +500,7 @@ def read_readstat(
     missing_string_as_null: bool = False,
     value_labels_as_strings: bool = False,
     columns: list[str] | None = None,
-    compress: CompressOptions | Dict[str, Any] | None = None,
+    compress: bool | CompressOptions | Dict[str, Any] | None = None,
     informative_nulls: "InformativeNullOpts | dict | None" = None,
 ) -> pl.DataFrame:
     """
@@ -496,8 +509,9 @@ def read_readstat(
 
     Parameters
     ----------
-    compress : CompressOptions or dict, optional
+    compress : bool, CompressOptions, or dict, optional
         Apply Rust-side dual-pass compression (schema probe + cast) while reading.
+        ``True`` enables all transforms; ``False``/``None`` disables compression.
     informative_nulls : InformativeNullOpts or dict, optional
         Capture user-defined missing value indicators as parallel indicator columns.
     """

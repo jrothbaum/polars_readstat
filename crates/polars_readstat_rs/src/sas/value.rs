@@ -122,33 +122,43 @@ impl ValueParser {
 
 const SAS_MISSING_MIN: u64 = 0x7ff0_0000_0000_0000;
 
+fn decode_numeric_bits(endian: Endian, bytes: &[u8]) -> u64 {
+    let width = bytes.len().min(8);
+    let mut bits = 0u64;
+    match endian {
+        Endian::Little => {
+            for &b in bytes[..width].iter().rev() {
+                bits = (bits << 8) | u64::from(b);
+            }
+        }
+        Endian::Big => {
+            for &b in &bytes[..width] {
+                bits = (bits << 8) | u64::from(b);
+            }
+        }
+    }
+    bits << ((8 - width) * 8)
+}
+fn sas_tag_to_offset(tag: u8) -> Option<u8> {
+    if tag == 0 || tag == b'_' {
+        return Some(27);
+    }
+    if (2..28).contains(&tag) {
+        // ReadStat's alternate tag scheme encodes .A.. .Z as 2..27.
+        return Some(tag - 1);
+    }
+    if tag.is_ascii_uppercase() {
+        return Some(tag - b'A' + 1);
+    }
+    None
+}
+
 /// Decode numeric bytes into (value, is_missing) without allocating Value.
 pub fn decode_numeric_bytes_mask(endian: Endian, bytes: &[u8]) -> (f64, bool) {
     if bytes.is_empty() {
         return (0.0, true);
     }
-    let bits = if bytes.len() >= 8 {
-        let slice = &bytes[..8];
-        match endian {
-            Endian::Little => u64::from_le_bytes(slice.try_into().unwrap_or([0u8; 8])),
-            Endian::Big => u64::from_be_bytes(slice.try_into().unwrap_or([0u8; 8])),
-        }
-    } else {
-        let mut buf = [0u8; 8];
-        match endian {
-            Endian::Little => {
-                let start = 8 - bytes.len();
-                buf[start..].copy_from_slice(bytes);
-            }
-            Endian::Big => {
-                buf[..bytes.len()].copy_from_slice(bytes);
-            }
-        }
-        match endian {
-            Endian::Little => u64::from_le_bytes(buf),
-            Endian::Big => u64::from_be_bytes(buf),
-        }
-    };
+    let bits = decode_numeric_bits(endian, bytes);
     let abs_bits = bits & 0x7fff_ffff_ffff_ffff;
     // Treat any NaN/Inf as missing (matches prior behavior and polars_readstat).
     let is_missing = abs_bits >= SAS_MISSING_MIN;
@@ -172,44 +182,14 @@ pub fn decode_numeric_bytes_mask_tagged(endian: Endian, bytes: &[u8]) -> (f64, O
     if bytes.is_empty() {
         return (f64::NAN, None);
     }
-    let bits = if bytes.len() >= 8 {
-        let slice = &bytes[..8];
-        match endian {
-            Endian::Little => u64::from_le_bytes(slice.try_into().unwrap_or([0u8; 8])),
-            Endian::Big => u64::from_be_bytes(slice.try_into().unwrap_or([0u8; 8])),
-        }
-    } else {
-        let mut buf = [0u8; 8];
-        match endian {
-            Endian::Little => {
-                let start = 8 - bytes.len();
-                buf[start..].copy_from_slice(bytes);
-            }
-            Endian::Big => {
-                buf[..bytes.len()].copy_from_slice(bytes);
-            }
-        }
-        match endian {
-            Endian::Little => u64::from_le_bytes(buf),
-            Endian::Big => u64::from_be_bytes(buf),
-        }
-    };
+    let bits = decode_numeric_bits(endian, bytes);
     let abs_bits = bits & 0x7fff_ffff_ffff_ffff;
     if abs_bits < SAS_MISSING_MIN {
         return (f64::from_bits(bits), None); // valid value
     }
-    // NaN — classify by type byte at bits [47:40]
     let type_byte = ((bits >> 40) & 0xFF) as u8;
-    let offset = if type_byte >= 0xA5 && type_byte <= 0xBE {
-        // .A (0xBE) through .Z (0xA5) — reversed because SAS XORs with 0xFF
-        // offset = (0xFF ^ type_byte) - 0x40: 0xBE→1(.A), 0xA5→26(.Z)
-        let letter_code = 0xFF ^ type_byte; // 0x41='A' through 0x5A='Z'
-        Some(letter_code - 0x40)            // 1 through 26
-    } else if type_byte == 0xD2 {
-        Some(27u8) // ._ (underscore)
-    } else {
-        None // system missing (.) at 0xD1, or any other NaN → no indicator
-    };
+    let decoded_tag = !type_byte;
+    let offset = sas_tag_to_offset(decoded_tag);
     (f64::NAN, offset)
 }
 
@@ -303,6 +283,51 @@ mod tests {
         }
     }
 
+    fn make_tagged_missing_bits(tag: u8) -> u64 {
+        // Mirrors ReadStat writer: place bitwise-not of tag in bits [47:40].
+        0x7ff0_0000_0000_0000u64 | ((!(tag) as u64) << 40)
+    }
+
+    #[test]
+    fn test_decode_numeric_bytes_mask_tagged_ascii_scheme() {
+        // ASCII-tag scheme: 'X' => .X, '_' => ._, '.' => system missing.
+        let x_bits = make_tagged_missing_bits(b'X');
+        let underscore_bits = make_tagged_missing_bits(b'_');
+        let dot_bits = make_tagged_missing_bits(b'.');
+
+        let (_, x_off) = decode_numeric_bytes_mask_tagged(Endian::Little, &x_bits.to_le_bytes());
+        let (_, us_off) =
+            decode_numeric_bytes_mask_tagged(Endian::Little, &underscore_bits.to_le_bytes());
+        let (_, dot_off) =
+            decode_numeric_bytes_mask_tagged(Endian::Little, &dot_bits.to_le_bytes());
+
+        assert_eq!(x_off, Some(24)); // .X
+        assert_eq!(us_off, Some(27)); // ._
+        assert_eq!(dot_off, None); // system missing
+    }
+
+    #[test]
+    fn test_decode_numeric_bytes_mask_tagged_offset_scheme() {
+        // Offset-tag scheme: 0 => ._, 1 => ., 2..27 => .A.. .Z
+        let a_bits = make_tagged_missing_bits(2);
+        let x_bits = make_tagged_missing_bits(25); // .X
+        let z_bits = make_tagged_missing_bits(27); // .Z
+        let us_bits = make_tagged_missing_bits(0);
+        let sys_bits = make_tagged_missing_bits(1);
+
+        let (_, a_off) = decode_numeric_bytes_mask_tagged(Endian::Little, &a_bits.to_le_bytes());
+        let (_, x_off) = decode_numeric_bytes_mask_tagged(Endian::Little, &x_bits.to_le_bytes());
+        let (_, z_off) = decode_numeric_bytes_mask_tagged(Endian::Little, &z_bits.to_le_bytes());
+        let (_, us_off) = decode_numeric_bytes_mask_tagged(Endian::Little, &us_bits.to_le_bytes());
+        let (_, sys_off) = decode_numeric_bytes_mask_tagged(Endian::Little, &sys_bits.to_le_bytes());
+
+        assert_eq!(a_off, Some(1)); // .A
+        assert_eq!(x_off, Some(24)); // .X
+        assert_eq!(z_off, Some(26)); // .Z
+        assert_eq!(us_off, Some(27)); // ._
+        assert_eq!(sys_off, None); // .
+    }
+
     #[test]
     fn test_parse_character() {
         // Use UTF-8 encoding (byte 20)
@@ -334,3 +359,4 @@ mod tests {
         }
     }
 }
+

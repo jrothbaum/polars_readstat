@@ -19,7 +19,13 @@ Key parameters:
 
 ## Compression options
 
-`compress` accepts a `CompressOptions` object or a plain dict with the same fields.
+`compress` accepts:
+
+- `True`: enable all read-side compression transforms
+- `False` / `None`: disable read-side compression
+- a `CompressOptions` object
+- a plain dict with the same fields
+
 This is read-side type compression (not the Stata writer `compress` flag).
 
 Fields:
@@ -130,6 +136,3 @@ Metadata includes:
 - `columns[].label`
 - `columns[].value_labels`
 
-## `write_readstat(df, path, **kwargs)`
-
-Write Stata (`.dta`) and SPSS (`.sav`, `.zsav`) files. See [Writing](write.md) for details.

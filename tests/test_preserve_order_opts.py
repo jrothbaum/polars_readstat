@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 
@@ -79,4 +80,45 @@ def test_preserve_order_row_index_and_sort_big_files(
         .head(head_rows)
         .collect()
     )
+    assert df_sorted.equals(df_buffered)
+
+
+@pytest.mark.parametrize("fixture_name", ["sas_fixture", "stata_fixture", "spss_fixture"])
+def test_preserve_order_row_index_collect_small_fixtures(
+    request: pytest.FixtureRequest,
+    package_module,
+    fixture_name: str,
+) -> None:
+    path: Path = request.getfixturevalue(fixture_name)
+    row_col = "__row_idx_collect"
+
+    lf = package_module.scan_readstat(
+        str(path),
+        preserve_order={"mode": "row_index", "row_index_name": row_col},
+    )
+    df = lf.collect()
+
+    assert row_col in df.columns
+    assert df[row_col].dtype in (pl.UInt32, pl.UInt64)
+    assert df[row_col].min() == 0
+    assert df[row_col].n_unique() == df.height
+
+
+@pytest.mark.parametrize("fixture_name", ["sas_fixture", "stata_fixture", "spss_fixture"])
+def test_preserve_order_sort_collect_small_fixtures(
+    request: pytest.FixtureRequest,
+    package_module,
+    fixture_name: str,
+) -> None:
+    path: Path = request.getfixturevalue(fixture_name)
+    row_col = "__row_idx_collect"
+
+    df_sorted = package_module.scan_readstat(
+        str(path),
+        preserve_order={"mode": "sort", "row_index_name": row_col},
+    ).collect()
+
+    df_buffered = package_module.scan_readstat(str(path), preserve_order=True).collect()
+
+    assert row_col not in df_sorted.columns
     assert df_sorted.equals(df_buffered)

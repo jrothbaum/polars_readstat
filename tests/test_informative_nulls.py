@@ -32,6 +32,14 @@ def sas_info_nulls(rs_tests_root: Path) -> Path:
 
 
 @pytest.fixture(scope="session")
+def sas_info_nulls_linux(rs_tests_root: Path) -> Path:
+    path = rs_tests_root / "sas/data/info_nulls.sas7bdat"
+    if not path.exists():
+        pytest.skip(f"Missing SAS informative-nulls fixture: {path}")
+    return path
+
+
+@pytest.fixture(scope="session")
 def stata_missing(rs_tests_root: Path) -> Path:
     # stata8_115.dta has 78 confirmed user-defined missing cells
     path = rs_tests_root / "stata/data/stata8_115.dta"
@@ -146,6 +154,28 @@ def test_sas_indicator_cols_have_non_null_values(sas_info_nulls: Path) -> None:
     df = prs.read_readstat(str(sas_info_nulls), informative_nulls={"columns": "all"})
     inds = _indicator_cols(df)
     assert _total_non_null(df, inds) > 0, "expected at least one non-null indicator"
+
+
+def test_sas_linux_informative_nulls_decode_tags(sas_info_nulls_linux: Path) -> None:
+    df = prs.read_readstat(str(sas_info_nulls_linux), informative_nulls={"columns": "all"})
+
+    assert "y_null" in df.columns, "expected y_null indicator column"
+    assert "z_null" in df.columns, "expected z_null indicator column"
+
+    rows = df.select(["y_null", "z_null"]).head(4).to_dicts()
+    assert rows == [
+        {"y_null": ".X", "z_null": ".X"},
+        {"y_null": ".U", "z_null": ".K"},
+        {"y_null": ".V", "z_null": ".G"},
+        {"y_null": ".O", "z_null": "._"},
+    ]
+
+    y_expected = {".X", ".U", ".V", ".O", ".S", ".K", ".D", ".E", ".B"}
+    z_expected = {".X", ".K", ".G", "._", ".J", ".B", ".T"}
+    y_actual = set(df["y_null"].drop_nulls().to_list())
+    z_actual = set(df["z_null"].drop_nulls().to_list())
+    assert y_expected.issubset(y_actual), f"missing expected y tags: {sorted(y_expected - y_actual)}"
+    assert z_expected.issubset(z_actual), f"missing expected z tags: {sorted(z_expected - z_actual)}"
 
 
 def test_sas_read_and_scan_agree(sas_info_nulls: Path) -> None:

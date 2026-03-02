@@ -153,3 +153,76 @@ def test_scan_accepts_compress_and_exposes_compressed_schema_pre_scan(
     schema = lf.collect_schema()
     assert schema["float_intlike"] in INT_DTYPES
     assert schema["numeric_string"] in INT_DTYPES
+
+
+@pytest.mark.parametrize("target_fmt", ["dta", "sav"])
+def test_read_compress_true_matches_explicit_all_options(
+    package_module,
+    tmp_path: Path,
+    target_fmt: str,
+) -> None:
+    df = pl.DataFrame(
+        {
+            "float_intlike": [1.0, 2.0, 120.0, None],
+            "numeric_string": ["1", "2", "120", None],
+        }
+    )
+
+    out_path = tmp_path / f"read_compress_true.{target_fmt}"
+    if target_fmt == "dta":
+        package_module.write_readstat(df, str(out_path), format=target_fmt, compress=False)
+    else:
+        package_module.write_readstat(df, str(out_path), format=target_fmt)
+
+    from_true = package_module.read_readstat(str(out_path), compress=True)
+    from_explicit = package_module.read_readstat(
+        str(out_path),
+        compress={
+            "enabled": True,
+            "compress_numeric": True,
+            "datetime_to_date": True,
+            "string_to_numeric": True,
+        },
+    )
+
+    assert from_true.schema == from_explicit.schema
+    assert from_true.equals(from_explicit)
+
+
+@pytest.mark.parametrize("target_fmt", ["dta", "sav"])
+def test_scan_compress_true_matches_explicit_all_options(
+    package_module,
+    tmp_path: Path,
+    target_fmt: str,
+) -> None:
+    df = pl.DataFrame(
+        {
+            "float_intlike": [1.0, 2.0, 120.0, None],
+            "numeric_string": ["1", "2", "120", None],
+        }
+    )
+
+    out_path = tmp_path / f"scan_compress_true.{target_fmt}"
+    if target_fmt == "dta":
+        package_module.write_readstat(df, str(out_path), format=target_fmt, compress=False)
+    else:
+        package_module.write_readstat(df, str(out_path), format=target_fmt)
+
+    from_true = package_module.scan_readstat(
+        str(out_path),
+        compress=True,
+        preserve_order=True,
+    ).collect()
+    from_explicit = package_module.scan_readstat(
+        str(out_path),
+        compress={
+            "enabled": True,
+            "compress_numeric": True,
+            "datetime_to_date": True,
+            "string_to_numeric": True,
+        },
+        preserve_order=True,
+    ).collect()
+
+    assert from_true.schema == from_explicit.schema
+    assert from_true.equals(from_explicit)
