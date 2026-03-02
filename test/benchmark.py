@@ -1,14 +1,15 @@
+import os
+os.environ["_RJEM_MALLOC_CONF"]="muzzy_decay_ms:0"
+os.environ["MALLOC_TRIM_THRESHOLD_"]="0" 
+
+
 import sys
 from pathlib import Path
 import pandas as pd
 import polars as pl
+import polars.selectors as cs
 import pyreadstat as prs
-
-# Load the test library
-prs_path = f"{Path(__file__).parent.parent}/polars_readstat/polars_readstat/"
-sys.path.insert(0, str(prs_path))
-
-from polars_readstat import scan_readstat
+from polars_readstat import scan_readstat, ScanReadstat
 
 
 
@@ -16,208 +17,136 @@ from polars_readstat import scan_readstat
 
 
 if __name__ == "__main__":
-    def read_test(path:str) -> None:
-        print(path)
-        df = scan_readstat(path)
-        print(df.collect_schema())
-        print(df.collect())
-        df = df.head(2)
-        #   print(df.collect())
-        
-        
-        print(df.collect_schema())
-
-        df = df.filter(pl.col("mylabl") > 1.5)
-
-        
-        df = df.select("mychar",
-                        "mynum",
-                        "myord")        
-        df = df.collect()
-        print(df)
-        print("\n\n\n")
-
-    def read_multithreaded_test_dta(subset_columns:bool=False,
-                                    filter_rows:bool=False,
-                                    use_pyreadstat:bool=False):
+    def read_multithreaded_test(subset_columns:bool=False,
+                                filter_rows:bool=False,
+                                stata:bool=False,
+                                spss:bool=False):
         import time
 
-        path = "/home/jrothbaum/Downloads/usa_00008.dta"
+        if stata:
+            path = "/home/jrothbaum/Coding/claude_code/polars_readstat/crates/polars_readstat_rs/tests/stata/data/too_big/usa_00009.dta"
+            f_pandas = pd.read_stata
+            f_pyreadstat = prs.read_dta
+            threads = pl.thread_pool_size()
+        elif spss:
+            path = "/home/jrothbaum/Coding/claude_code/polars_readstat_rs/tests/spss/data/too_big/anes_timeseries_cdf_spss_20260205.sav"
+            f_pandas = pd.read_spss
+            f_pyreadstat = prs.read_sav
 
+            threads = 4
+        else:
+            path = "/home/jrothbaum/Coding/claude_code/polars_readstat/crates/polars_readstat_rs/tests/sas/data/too_big/psam_p17.sas7bdat"
+            f_pandas = pd.read_sas
+            f_pyreadstat = prs.read_sas7bdat
+            threads = pl.thread_pool_size()
         columns = None
         if subset_columns:
-            columns = ["index",
+            if stata:
+                columns = ["index",
                         "YEAR",
                         "SAMPLE",
                         "BIRTHYR"]
+            elif spss:
+                columns = ['VCF0004', 'VCF0006', 'VCF0006a']
+            else:
+                columns = ["SERIALNO",
+                        "STATE",
+                        "PINCP"]
             
         
-        start_pl = time.time()
-        df = scan_readstat(path)
-        if subset_columns:
-            df = df.select(columns)
-        if filter_rows:
-            df = df.filter(pl.col("BIRTHYR") >= 1980)
+        
+        if stata:
+            engines = ["polars_readstat",
+                       "pandas",
+                    #    "pyreadstat"
+                       ]
+        elif spss:
+            engines = ["polars_readstat",
+                       "pandas",
+                    #    "pyreadstat"
+                       ]
+
+        else:
+            engines = ["polars_readstat",
+                       # "polars_cpp",
+                       "pandas",
+                    #    "pyreadstat"
+                       ]
+        d_timings = {}
+        for enginei in engines:
+            print(f"Running {enginei}")
+            start = time.time()
+
+            if enginei.startswith("polars"):
+                polars_engine = enginei[7:]
+                df = scan_readstat(path,
+                                #    engine=polars_engine,
+                                   threads=threads)
+                if subset_columns:
+                    df = df.select(columns) 
+                if filter_rows:
+                    if stata:
+                        df = df.filter(pl.col("BIRTHYR") >= 1980)
+                    elif spss:
+                        df = df.filter(pl.col("VCF0004") >= 2020)
+                    else:
+                        df = df.filter(pl.col("PINCP") >= 5000)
+                
+                df = df.collect()
+            elif enginei == "pandas":
+                df = f_pandas(path)
+                if subset_columns:
+                    df = df[columns]
+                if filter_rows:
+                    if stata:
+                        df = df[df['BIRTHYR'] >= 1980]
+                    elif spss:
+                        df = df[df['VCF0004'] >= 2020]
+                    else:
+                        df = df[df['PINCP'] >= 5000]
+                # dfp = pl.from_pandas(dfp)
+            elif enginei == "pyreadstat":
+                (df,_) = prs.read_file_multiprocessing(f_pyreadstat,
+                                                        path,
+                                                        num_processes=threads,
+                                                        usecols=columns)
+                if stata:
+                    df = df[df['BIRTHYR'] >= 1980]
+                elif spss:
+                    df = df[df['VCF0004'] >= 2020]
+                else:
+                    df = df[df['PINCP'] >= 5000]
+            #     # dfp = pl.from_pandas(dfp)
+            elapsed = time.time() - start
+            d_timings[enginei] = elapsed
             
-        df = df.collect()
-        elapsed_pl = time.time() - start_pl
-        # print(df.schema)
-        # print(df)
-        del df
-        if use_pyreadstat:
-            import pyreadstat as prs
-            start_pd = time.time()
-            (dfp,_) = prs.read_file_multiprocessing(prs.read_dta,
-                                                    path,
-                                                    num_processes=pl.thread_pool_size(),
-                                                    usecols=columns)
-            if filter_rows:
-                dfp = dfp[dfp['BIRTHYR'] >= 1980]
-            dfp = pl.from_pandas(dfp)
-            elapsed_pd = time.time() - start_pd
-        else:
-            import pandas as pd
-
-            start_pd = time.time()
-            dfp = pd.read_stata(path)
-            if subset_columns:
-                dfp = dfp[columns]
-            if filter_rows:
-                dfp = dfp[dfp['BIRTHYR'] >= 1980]
-            dfp = pl.from_pandas(dfp)
-            elapsed_pd = time.time() - start_pd
-        # print(dfp)
-        del dfp
+            try:
+                del df
+            except:
+                pass
         
-        
-        print(f"Subset: {subset_columns}, Filter: {filter_rows}")
-        print(f"    Polars: {elapsed_pl}")
-        if use_pyreadstat:
-            print(f"    Pyreadstat: {elapsed_pd}")
-        else:
-            print(f"    Pandas: {elapsed_pd}")
-        #   print(f"    Are identical: {dfp.equals(df)}")
-    # read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.sas7bdat")
+        for enginei in engines:
+            print(f"     {enginei:<16}{d_timings[enginei]:.2f}")
 
-    # read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat/tests/data/sample.dta")
+    def test(stata:bool=False,spss:bool=False):
 
-    def dta_test(use_pyreadstat:bool=False):
-        print("\n\n\nStata")
-        read_multithreaded_test_dta(subset_columns=False,
-                                    filter_rows=False,
-                                    use_pyreadstat=use_pyreadstat)
-        read_multithreaded_test_dta(subset_columns=True,
-                                    filter_rows=False,
-                                    use_pyreadstat=use_pyreadstat)
-        read_multithreaded_test_dta(subset_columns=False,
-                                    filter_rows=True,
-                                    use_pyreadstat=use_pyreadstat)
-        read_multithreaded_test_dta(subset_columns=True,
-                                    filter_rows=True,
-                                    use_pyreadstat=use_pyreadstat)
-        
+        read_multithreaded_test(subset_columns=False,
+                                filter_rows=False,
+                                stata=stata,
+                                spss=spss)
+        read_multithreaded_test(subset_columns=True, 
+                                filter_rows=False,
+                                stata=stata,
+                                spss=spss)
+        read_multithreaded_test(subset_columns=False,
+                                filter_rows=True,
+                                stata=stata,
+                                spss=spss)
+        read_multithreaded_test(subset_columns=True,
+                                filter_rows=True,
+                                stata=stata,
+                                spss=spss)
 
-    def read_multithreaded_test_sas7bdat(subset_columns:bool=False,
-                                    filter_rows:bool=False,
-                                    use_pyreadstat:bool=False):
-        import time
+    test(stata=False,
+         spss=False)
 
-        path = "/home/jrothbaum/Downloads/sas_pil/psam_p17.sas7bdat"
-
-        columns = None
-        if subset_columns:
-            columns = ["SERIALNO",
-                       "STATE",
-                       "PINCP"]
-            
-        
-        start_pl = time.time()
-        df = scan_readstat(path)
-        if subset_columns:
-            df = df.select(columns)
-        if filter_rows:
-            df = df.filter(pl.col("PINCP") >= 5000)
-        
-        df = df.collect()
-        elapsed_pl = time.time() - start_pl
-        #   print(df.schema)
-        print(df.shape)
-        #   print(df.glimpse())
-        df_describe = df.describe()
-        del df
-
-        if use_pyreadstat:
-            import pyreadstat as prs
-            start_pd = time.time()
-            (dfp,_) = prs.read_file_multiprocessing(prs.read_sas7bdat,
-                                                    path,
-                                                    num_processes=pl.thread_pool_size(),
-                                                    usecols=columns)
-            if filter_rows:
-                dfp = dfp[dfp['PINCP'] >= 5000]
-            dfp = pl.from_pandas(dfp)
-            elapsed_pd = time.time() - start_pd
-        else:
-            import pandas as pd
-
-            start_pd = time.time()
-            dfp = pd.read_sas(path)
-            if subset_columns:
-                dfp = dfp[columns]
-            if filter_rows:
-                dfp = dfp[dfp['PINCP'] >= 5000]
-            dfp = pl.from_pandas(dfp)
-            elapsed_pd = time.time() - start_pd
-            # print(dfp)
-        
-        #   print(dfp.schema)
-        print(dfp.shape)
-        dfp = dfp.with_columns(pl.col(pl.Binary).cast(pl.String))
-        #   print(dfp.glimpse())
-        dfp_describe = dfp.describe()
-        del dfp
-        
-        
-        print(f"Subset: {subset_columns}, Filter: {filter_rows}")
-        print(f"    Polars: {elapsed_pl}")
-        if use_pyreadstat:
-            print(f"    Pyreadstat: {elapsed_pd}")
-        else:
-            print(f"    Pandas: {elapsed_pd}")
-        print(f"    Are identical: {dfp_describe.equals(df_describe)}")
-
-    def sas7bdat_test(use_pyreadstat:bool=False):
-
-        path = "/home/jrothbaum/Downloads/sas_pil/psam_p17.sas7bdat"
-        
-        print("\n\n\nSAS")
-        read_multithreaded_test_sas7bdat(subset_columns=False,
-                                         filter_rows=False,
-                                         use_pyreadstat=use_pyreadstat)
-        read_multithreaded_test_sas7bdat(subset_columns=True,
-                                         filter_rows=False,
-                                         use_pyreadstat=use_pyreadstat)
-        read_multithreaded_test_sas7bdat(subset_columns=False,
-                                         filter_rows=True,
-                                         use_pyreadstat=use_pyreadstat)
-        read_multithreaded_test_sas7bdat(subset_columns=True,
-                                         filter_rows=True,
-                                         use_pyreadstat=use_pyreadstat)
-
-    sas7bdat_test(use_pyreadstat=True)
-    # dta_test(use_pyreadstat=False)
-
-    # read_test("/home/jrothbaum/python/polars_readstat/crates/polars_readstat_rs/tests/data/sample.sav")
-    # read_test("/home/jrothbaum/Downloads/pyreadstat-master/test_data/ínternátionál/sample.sas7bdat")
-
-    # for filei in [
-    #                 "/home/jrothbaum/Downloads/pyreadstat-master/test_data/missing_data/missing_test.dta",
-    #                 "/home/jrothbaum/Downloads/pyreadstat-master/test_data/multiple_response/simple_alltypes.sav",
-    #                 "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/hebrews.sav",
-    #                 "/home/jrothbaum/Downloads/pyreadstat-master/test_data/basic/ordered_category.sav",
-    #               "/home/jrothbaum/Downloads/haven-main/tests/testthat/stata/datetime-d.dta"
-    #               ]:
-        
-    #     df = scan_readstat(filei)
-    #     # df = df.head(2)
-    #     print(df.collect())
