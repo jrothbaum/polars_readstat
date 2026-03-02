@@ -58,9 +58,8 @@ def test_columns_projection_uses_rs_sas_fixture(sas_fixture: Path, package_modul
 
     df = package_module.scan_readstat(
         str(sas_fixture),
-        columns=cols,
         preserve_order=True,
-    ).collect()
+    ).select(cols).collect()
 
     assert df.columns == cols
     assert df.shape[0] == base.shape[0]

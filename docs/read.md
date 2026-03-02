@@ -14,7 +14,6 @@ Key parameters:
 | `schema_overrides` | `None` | Dict of `{column: polars_dtype}`. |
 | `batch_size` | `100_000` | Rows per internal chunk during collect. |
 | `informative_nulls` | `None` | Capture user-defined missing indicators. |
-| `columns` | `None` | Optional column subset (projection pushdown). |
 | `threads` | `None` | Defaults to the Polars thread pool size. |
 | `compress` | `None` | Optional type compression after scan. |
 
@@ -69,6 +68,12 @@ opts = InformativeNullOpts(
     suffix="_missing",
     use_value_labels=True,
 )
+```
+
+Column projection should use standard Polars lazy syntax:
+
+```python
+lf = scan_readstat("file.sas7bdat").select(["income", "age"])
 ```
 
 ## Preserve order options

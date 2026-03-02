@@ -1,5 +1,5 @@
 use crate::compress_df_if_enabled;
-use crate::sas::polars_output::sas_batch_iter;
+use crate::sas::polars_output::sas_batch_iter_with_reader;
 use crate::spss::polars_output::spss_batch_iter;
 use crate::stata::polars_output::stata_batch_iter;
 use crate::{ReadStatFormat, ScanOptions};
@@ -79,15 +79,14 @@ pub fn readstat_batch_iter(
     let preserve_order = opts.preserve_order.unwrap_or(false);
     let iter: Box<dyn Iterator<Item = PolarsResult<DataFrame>> + Send> = match format {
         ReadStatFormat::Sas => {
-            let col_indices = if let Some(cols) = columns {
-                let reader = crate::sas::reader::Sas7bdatReader::open(path)
-                    .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
-                let indices = resolve_sas_column_indices(&reader, &cols)?;
-                Some(indices)
-            } else {
-                None
-            };
-            let iter = sas_batch_iter(
+            let reader = crate::sas::reader::Sas7bdatReader::open(path)
+                .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+            let col_indices = columns
+                .as_ref()
+                .map(|cols| resolve_sas_column_indices(&reader, cols))
+                .transpose()?;
+            let iter = sas_batch_iter_with_reader(
+                &reader,
                 path.to_path_buf(),
                 opts.threads,
                 missing_string_as_null,

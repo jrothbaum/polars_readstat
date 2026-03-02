@@ -813,12 +813,18 @@ fn append_value(
                 return Ok(());
             }
 
-            let mut end = if plan.string_len_bytes > 0 {
-                plan.string_len_bytes.min(buf.len())
+            let long_string_storage;
+            let raw = if plan.string_len_bytes > 255 {
+                long_string_storage = reconstruct_very_long_string_bytes(buf, plan.string_len_bytes);
+                long_string_storage.as_slice()
             } else {
-                buf.len()
+                let end = if plan.string_len_bytes > 0 {
+                    plan.string_len_bytes.min(buf.len())
+                } else {
+                    buf.len()
+                };
+                &buf[..end]
             };
-            let raw = &buf[..end];
 
             let mut filtered_storage;
             let raw = if encoding == encoding_rs::UTF_8 {
@@ -837,7 +843,7 @@ fn append_value(
                 raw
             };
 
-            end = raw.len();
+            let mut end = raw.len();
             while end > 0 && (raw[end - 1] == b' ' || raw[end - 1] == 0) {
                 end -= 1;
             }
@@ -933,6 +939,26 @@ fn is_missing_numeric(plan: &ColumnPlan, v: f64, bits: u64) -> bool {
     } else {
         plan.missing_double_bits.iter().any(|b| *b == bits)
     }
+}
+
+fn reconstruct_very_long_string_bytes(buf: &[u8], declared_len: usize) -> Vec<u8> {
+    let target_len = declared_len.min(buf.len());
+    if target_len <= 255 {
+        return buf[..target_len].to_vec();
+    }
+
+    // ReadStat/SPSS SAV very-long strings store 255 payload bytes per 256-byte chunk.
+    let mut out = Vec::with_capacity(target_len);
+    let mut row_offset = 0usize;
+    while target_len.saturating_sub(out.len()) > 255 && row_offset + 255 <= buf.len() {
+        out.extend_from_slice(&buf[row_offset..row_offset + 255]);
+        row_offset += 256;
+    }
+    let remaining = target_len.saturating_sub(out.len());
+    if remaining > 0 && row_offset + remaining <= buf.len() {
+        out.extend_from_slice(&buf[row_offset..row_offset + remaining]);
+    }
+    out
 }
 
 /// Returns the user-declared missing indicator string for a numeric SPSS value, or `None`

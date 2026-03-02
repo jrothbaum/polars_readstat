@@ -315,8 +315,7 @@ pub struct PyPolarsReadstat {
     infer_compress_length: Option<usize>,
     inferred_schema: Option<Schema>,
     inferred_cast_map: Option<HashMap<String, DataType>>,
-    total_rows: usize,
-    total_chunks: usize,
+    n_rows: Option<usize>,
     iter: Option<Mutex<polars_readstat_rs::ReadstatBatchIter>>,
     informative_nulls: Option<InformativeNullOpts>,
 }
@@ -345,26 +344,7 @@ impl PyPolarsReadstat {
         };
 
         let format = detect_format(&path)?;
-        let total_rows = match format {
-            ReadstatFormat::Sas => {
-                let reader = Sas7bdatReader::open(&path)
-                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-                reader.metadata().row_count
-            }
-            ReadstatFormat::Stata => {
-                let reader =
-                    StataReader::open(&path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-                reader.metadata().row_count as usize
-            }
-            ReadstatFormat::Spss => {
-                let reader =
-                    SpssReader::open(&path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-                reader.metadata().row_count as usize
-            }
-        };
-        let total_rows = n_rows.unwrap_or(total_rows).min(total_rows);
         let batch_size = size_hint.max(1);
-        let total_chunks = (total_rows + batch_size - 1) / batch_size;
         let parsed_compress = parse_compress_opts(compress)?;
         let parsed_informative_nulls = parse_informative_null_opts(informative_nulls)?;
 
@@ -382,8 +362,7 @@ impl PyPolarsReadstat {
             infer_compress_length: parsed_compress.infer_compress_length,
             inferred_schema: None,
             inferred_cast_map: None,
-            total_rows,
-            total_chunks,
+            n_rows,
             iter: None,
             informative_nulls: parsed_informative_nulls,
         })
@@ -421,7 +400,7 @@ impl PyPolarsReadstat {
     }
 
     fn next(&mut self) -> PyResult<Option<PyDataFrame>> {
-        if self.total_chunks == 0 {
+        if self.n_rows == Some(0) {
             return Ok(None);
         }
 
@@ -510,10 +489,13 @@ impl PyPolarsReadstat {
             return Ok(());
         }
 
-        let infer_rows = self
-            .infer_compress_length
-            .map(|n| n.min(self.total_rows))
-            .or(Some(self.total_rows));
+        let infer_rows = match self.infer_compress_length {
+            Some(n) => Some(match self.n_rows {
+                Some(limit) => n.min(limit),
+                None => n,
+            }),
+            None => self.n_rows,
+        };
 
         let (schema, cast_map) = infer_compressed_schema_and_cast_map(
             &self.path,
@@ -546,7 +528,7 @@ impl PyPolarsReadstat {
             Some(opts),
             None, // auto-detect from file extension
             self.with_columns.clone(),
-            Some(self.total_rows),
+            self.n_rows,
             Some(self.batch_size),
         )
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;

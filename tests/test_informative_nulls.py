@@ -6,7 +6,7 @@ Each test group verifies:
 3. At least some indicator cells are non-null (user-declared missings were found).
 4. Both scan_readstat (lazy) and read_readstat (eager) paths work.
 5. All three modes work: separate_column, struct, merged_string.
-6. Column selection (columns=[...]) works.
+6. Column selection via LazyFrame.select([...]) works.
 """
 from __future__ import annotations
 

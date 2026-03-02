@@ -13,11 +13,29 @@ const SAV_RECORD_VALUE_LABEL: u32 = 3;
 const SAV_RECORD_VALUE_LABEL_VARS: u32 = 4;
 const SAV_RECORD_HAS_DATA: u32 = 7;
 const SAV_RECORD_DICT_TERMINATION: u32 = 999;
+const SUBTYPE_INTEGER_INFO: u32 = 3;
+const SUBTYPE_FP_INFO: u32 = 4;
+const SUBTYPE_VAR_DISPLAY: u32 = 11;
 const SUBTYPE_LONG_VAR_NAME: u32 = 13;
+const SUBTYPE_VERY_LONG_STR: u32 = 14;
+const SUBTYPE_NUMBER_OF_CASES: u32 = 16;
 const SUBTYPE_CHAR_ENCODING: u32 = 20;
 const SPSS_SEC_SHIFT: i64 = 12_219_379_200;
 
+const SPSS_FORMAT_A: u8 = 1;
+const SPSS_FORMAT_F: u8 = 5;
 const SAV_MISSING_DOUBLE: u64 = 0xFFEFFFFFFFFFFFFF;
+const SAV_HIGHEST_DOUBLE: u64 = 0x7FEFFFFFFFFFFFFF;
+const SAV_LOWEST_DOUBLE: u64 = 0xFFEFFFFFFFFFFFFE;
+const SAV_FLOATING_POINT_REP_IEEE: i32 = 1;
+const SAV_ENDIANNESS_BIG: i32 = 1;
+const SAV_ENDIANNESS_LITTLE: i32 = 2;
+const SAV_CONTINUATION_FORMAT: i32 = 0x011d01;
+
+const SAV_MEASURE_NOMINAL: i32 = 1;
+const SAV_MEASURE_SCALE: i32 = 3;
+const SAV_ALIGNMENT_LEFT: i32 = 0;
+const SAV_ALIGNMENT_RIGHT: i32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SpssValueLabelKey(u64);
@@ -114,11 +132,16 @@ impl SpssWriter {
             columns.iter().map(|c| c.width).sum(),
         )?;
         write_variable_records(&mut writer, &columns, encoding)?;
-        write_long_var_names_record(&mut writer, &columns, encoding)?;
-        write_encoding_record(&mut writer, encoding)?;
         if let Some(labels) = value_labels.as_ref() {
             write_value_labels(&mut writer, &columns, labels, encoding)?;
         }
+        write_integer_info_record(&mut writer, encoding)?;
+        write_floating_point_info_record(&mut writer)?;
+        write_variable_display_record(&mut writer, &columns)?;
+        write_long_var_names_record(&mut writer, &columns, encoding)?;
+        write_very_long_string_record(&mut writer, &columns)?;
+        write_encoding_record(&mut writer, encoding)?;
+        write_number_of_cases_record(&mut writer, df.height() as u64)?;
         write_dict_termination(&mut writer)?;
         write_data(&mut writer, df, &columns, encoding)?;
         Ok(())
@@ -133,7 +156,9 @@ struct ColumnSpec {
     string_len: usize,
     width: usize,
     offset: usize,
-    format_type: Option<u8>,
+    format_type: u8,
+    format_width: u8,
+    format_decimals: u8,
     label: Option<String>,
 }
 
@@ -149,7 +174,8 @@ fn infer_columns(
         let mut offset = 0usize;
         for (idx, col) in schema.columns.iter().enumerate() {
             validate_long_name(&col.name)?;
-            let (var_type, string_len, width, format_type) = dtype_to_spss(col, df)?;
+            let (var_type, string_len, width, format_type, format_width, format_decimals) =
+                dtype_to_spss(col, df)?;
             let label = variable_labels.and_then(|labels| labels.get(&col.name).cloned());
             cols.push(ColumnSpec {
                 name: col.name.clone(),
@@ -159,6 +185,8 @@ fn infer_columns(
                 width,
                 offset,
                 format_type,
+                format_width,
+                format_decimals,
                 label,
             });
             offset += width;
@@ -178,7 +206,8 @@ fn infer_columns(
         let series = column.as_materialized_series();
         let name = series.name().to_string();
         validate_long_name(&name)?;
-        let (var_type, string_len, width, format_type) = infer_series(series)?;
+        let (var_type, string_len, width, format_type, format_width, format_decimals) =
+            infer_series(series)?;
         let label = variable_labels.and_then(|labels| labels.get(&name).cloned());
         cols.push(ColumnSpec {
             name,
@@ -188,6 +217,8 @@ fn infer_columns(
             width,
             offset,
             format_type,
+            format_width,
+            format_decimals,
             label,
         });
         offset += width;
@@ -198,7 +229,7 @@ fn infer_columns(
 fn dtype_to_spss(
     col: &SpssWriteColumn,
     df: &DataFrame,
-) -> Result<(VarType, usize, usize, Option<u8>)> {
+) -> Result<(VarType, usize, usize, u8, u8, u8)> {
     match col.dtype {
         DataType::String => {
             let width = if let Some(w) = col.string_width_bytes {
@@ -211,37 +242,60 @@ fn dtype_to_spss(
                 max_string_width(series)?
             };
             let (var_type, string_len, width) = string_layout(width)?;
-            Ok((var_type, string_len, width, None))
+            Ok((
+                var_type,
+                string_len,
+                width,
+                SPSS_FORMAT_A,
+                string_len.min(255) as u8,
+                0,
+            ))
         }
-        DataType::Date => Ok((VarType::Numeric, 0, 1, Some(20))),
-        DataType::Datetime(_, _) => Ok((VarType::Numeric, 0, 1, Some(22))),
-        DataType::Time => Ok((VarType::Numeric, 0, 1, Some(21))),
-        _ => Ok((VarType::Numeric, 0, 1, None)),
+        DataType::Date => Ok((VarType::Numeric, 0, 1, 20, 11, 0)),
+        DataType::Datetime(_, _) => Ok((VarType::Numeric, 0, 1, 22, 20, 0)),
+        DataType::Time => Ok((VarType::Numeric, 0, 1, 21, 8, 0)),
+        DataType::Float32 | DataType::Float64 => {
+            Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 2))
+        }
+        _ => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 0)),
     }
 }
 
-fn infer_series(series: &Series) -> Result<(VarType, usize, usize, Option<u8>)> {
+fn infer_series(series: &Series) -> Result<(VarType, usize, usize, u8, u8, u8)> {
     match series.dtype() {
         DataType::String => {
             let width = max_string_width(series)?;
             let (var_type, string_len, width) = string_layout(width)?;
-            Ok((var_type, string_len, width, None))
+            Ok((
+                var_type,
+                string_len,
+                width,
+                SPSS_FORMAT_A,
+                string_len.min(255) as u8,
+                0,
+            ))
         }
-        DataType::Date => Ok((VarType::Numeric, 0, 1, Some(20))),
-        DataType::Datetime(_, _) => Ok((VarType::Numeric, 0, 1, Some(22))),
-        DataType::Time => Ok((VarType::Numeric, 0, 1, Some(21))),
-        _ => Ok((VarType::Numeric, 0, 1, None)),
+        DataType::Date => Ok((VarType::Numeric, 0, 1, 20, 11, 0)),
+        DataType::Datetime(_, _) => Ok((VarType::Numeric, 0, 1, 22, 20, 0)),
+        DataType::Time => Ok((VarType::Numeric, 0, 1, 21, 8, 0)),
+        DataType::Float32 | DataType::Float64 => {
+            Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 2))
+        }
+        _ => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 0)),
     }
 }
 
 fn string_layout(len: usize) -> Result<(VarType, usize, usize)> {
-    if len > 255 {
-        return Err(Error::ParseError(
-            "SPSS writer does not support strings > 255 bytes".to_string(),
-        ));
+    let len = len.max(1);
+    if len <= 255 {
+        let width = len.div_ceil(8);
+        return Ok((VarType::Str, len, width));
     }
-    let width = (len.max(1) + 7) / 8;
-    Ok((VarType::Str, len.max(1), width))
+    let n_segments = long_string_segment_count(len);
+    let last_payload = len - (n_segments - 1) * 252;
+    let last_storage = last_payload.div_ceil(8) * 8;
+    let storage_bytes = (n_segments - 1) * 256 + last_storage;
+    Ok((VarType::Str, len, storage_bytes / 8))
 }
 
 fn max_string_width(series: &Series) -> Result<usize> {
@@ -477,11 +531,85 @@ fn write_variable_records<W: Write>(
     encoding: &'static encoding_rs::Encoding,
 ) -> Result<()> {
     for col in columns {
-        write_variable_record(writer, col, encoding)?;
-        if col.width > 1 {
-            for _ in 1..col.width {
-                write_variable_continuation(writer)?;
+        if col.var_type == VarType::Str && col.string_len > 255 {
+            write_very_long_variable_records(writer, col, encoding)?;
+        } else {
+            write_variable_record(writer, col, encoding)?;
+            if col.width > 1 {
+                for _ in 1..col.width {
+                    write_variable_continuation(writer)?;
+                }
             }
+        }
+    }
+    Ok(())
+}
+
+fn write_very_long_variable_records<W: Write>(
+    writer: &mut W,
+    col: &ColumnSpec,
+    encoding: &'static encoding_rs::Encoding,
+) -> Result<()> {
+    let segments = long_string_segment_sizes(col.string_len);
+    if segments.is_empty() {
+        return Ok(());
+    }
+
+    // Base segment uses the column short name and can carry label metadata.
+    write_very_long_segment_record(
+        writer,
+        &col.short_name,
+        segments[0],
+        col.label.as_ref(),
+        col.format_type,
+        255,
+        col.format_decimals,
+        encoding,
+    )?;
+
+    let stem = &col.short_name[..col.short_name.len().min(5)];
+    for (seg_idx, seg_size) in segments.iter().enumerate().skip(1) {
+        let ghost = make_long_string_ghost_name(stem, seg_idx)?;
+        write_very_long_segment_record(
+            writer,
+            &ghost,
+            *seg_size,
+            None,
+            col.format_type,
+            (*seg_size).min(255) as u8,
+            col.format_decimals,
+            encoding,
+        )?;
+    }
+    Ok(())
+}
+
+fn write_very_long_segment_record<W: Write>(
+    writer: &mut W,
+    name: &str,
+    seg_size: usize,
+    label: Option<&String>,
+    format_type: u8,
+    format_width: u8,
+    format_decimals: u8,
+    encoding: &'static encoding_rs::Encoding,
+) -> Result<()> {
+    write_u32(writer, SAV_RECORD_VARIABLE)?;
+    write_i32(writer, seg_size as i32)?;
+    write_i32(writer, if label.is_some() { 1 } else { 0 })?;
+    write_i32(writer, 0)?;
+    let fmt = encode_format(format_type, format_width, format_decimals);
+    write_i32(writer, fmt)?;
+    write_i32(writer, fmt)?;
+    write_name(writer, name)?;
+    if let Some(lbl) = label {
+        // Very long strings can still carry a variable label on the base segment.
+        write_variable_label(writer, lbl, encoding)?;
+    }
+    let seg_width = seg_size.div_ceil(8);
+    if seg_width > 1 {
+        for _ in 1..seg_width {
+            write_variable_continuation(writer)?;
         }
     }
     Ok(())
@@ -502,7 +630,7 @@ fn write_variable_record<W: Write>(
     let has_label = if col.label.is_some() { 1 } else { 0 };
     write_i32(writer, has_label)?;
     write_i32(writer, 0)?;
-    let fmt = col.format_type.map(|v| (v as i32) << 16).unwrap_or(0);
+    let fmt = encode_format(col.format_type, col.format_width, col.format_decimals);
     write_i32(writer, fmt)?;
     write_i32(writer, fmt)?;
     write_name(writer, &col.short_name)?;
@@ -517,8 +645,8 @@ fn write_variable_continuation<W: Write>(writer: &mut W) -> Result<()> {
     write_i32(writer, -1)?;
     write_i32(writer, 0)?;
     write_i32(writer, 0)?;
-    write_i32(writer, 0)?;
-    write_i32(writer, 0)?;
+    write_i32(writer, SAV_CONTINUATION_FORMAT)?;
+    write_i32(writer, SAV_CONTINUATION_FORMAT)?;
     write_name(writer, "")?;
     Ok(())
 }
@@ -590,7 +718,7 @@ fn write_long_var_names_record<W: Write>(
     columns: &[ColumnSpec],
     encoding: &'static encoding_rs::Encoding,
 ) -> Result<()> {
-    let mut entries: Vec<u8> = Vec::new();
+    let mut tuples: Vec<Vec<u8>> = Vec::new();
     for col in columns {
         if col.name == col.short_name {
             continue;
@@ -599,25 +727,138 @@ fn write_long_var_names_record<W: Write>(
         if long.is_empty() {
             continue;
         }
-        entries.extend_from_slice(col.short_name.as_bytes());
-        entries.push(b'=');
         let (bytes, _, had_errors) = encoding.encode(&long);
         if had_errors {
             return Err(Error::ParseError(
                 "long variable name not representable in target encoding".to_string(),
             ));
         }
-        entries.extend_from_slice(&bytes);
+        let mut tuple = Vec::with_capacity(col.short_name.len() + bytes.len() + 1);
+        tuple.extend_from_slice(col.short_name.as_bytes());
+        tuple.push(b'=');
+        tuple.extend_from_slice(&bytes);
+        tuples.push(tuple);
+    }
+    if tuples.is_empty() {
+        return Ok(());
+    }
+    let entries_len: usize = tuples.iter().map(|t| t.len()).sum::<usize>() + tuples.len() - 1;
+    write_u32(writer, SAV_RECORD_HAS_DATA)?;
+    write_u32(writer, SUBTYPE_LONG_VAR_NAME)?;
+    write_u32(writer, 1)?;
+    write_u32(writer, entries_len as u32)?;
+    for (idx, tuple) in tuples.iter().enumerate() {
+        if idx > 0 {
+            writer.write_all(b"\t")?;
+        }
+        writer.write_all(tuple)?;
+    }
+    Ok(())
+}
+
+fn write_very_long_string_record<W: Write>(writer: &mut W, columns: &[ColumnSpec]) -> Result<()> {
+    let mut entries: Vec<u8> = Vec::new();
+    for col in columns {
+        if col.var_type != VarType::Str || col.string_len <= 255 {
+            continue;
+        }
+        entries.extend_from_slice(col.short_name.as_bytes());
+        entries.push(b'=');
+        let len_str = (col.string_len % 100_000).to_string();
+        entries.extend_from_slice(len_str.as_bytes());
+        entries.push(0);
         entries.push(b'\t');
     }
     if entries.is_empty() {
         return Ok(());
     }
     write_u32(writer, SAV_RECORD_HAS_DATA)?;
-    write_u32(writer, SUBTYPE_LONG_VAR_NAME)?;
+    write_u32(writer, SUBTYPE_VERY_LONG_STR)?;
     write_u32(writer, 1)?;
     write_u32(writer, entries.len() as u32)?;
     writer.write_all(&entries)?;
+    Ok(())
+}
+
+fn write_integer_info_record<W: Write>(
+    writer: &mut W,
+    encoding: &'static encoding_rs::Encoding,
+) -> Result<()> {
+    write_u32(writer, SAV_RECORD_HAS_DATA)?;
+    write_u32(writer, SUBTYPE_INTEGER_INFO)?;
+    write_u32(writer, 4)?;
+    write_u32(writer, 8)?;
+
+    // Match ReadStat defaults for broad importer compatibility.
+    write_i32(writer, 20)?; // version_major
+    write_i32(writer, 0)?; // version_minor
+    write_i32(writer, 0)?; // version_revision
+    write_i32(writer, -1)?; // machine_code
+    write_i32(writer, SAV_FLOATING_POINT_REP_IEEE)?;
+    write_i32(writer, 1)?; // compression_code
+    let endianness = if cfg!(target_endian = "little") {
+        SAV_ENDIANNESS_LITTLE
+    } else {
+        SAV_ENDIANNESS_BIG
+    };
+    write_i32(writer, endianness)?;
+    let char_code = if encoding == encoding_rs::UTF_8 {
+        65001
+    } else {
+        1252
+    };
+    write_i32(writer, char_code)?;
+    Ok(())
+}
+
+fn write_floating_point_info_record<W: Write>(writer: &mut W) -> Result<()> {
+    write_u32(writer, SAV_RECORD_HAS_DATA)?;
+    write_u32(writer, SUBTYPE_FP_INFO)?;
+    write_u32(writer, 8)?;
+    write_u32(writer, 3)?;
+    writer.write_all(&SAV_MISSING_DOUBLE.to_le_bytes())?;
+    writer.write_all(&SAV_HIGHEST_DOUBLE.to_le_bytes())?;
+    writer.write_all(&SAV_LOWEST_DOUBLE.to_le_bytes())?;
+    Ok(())
+}
+
+fn write_variable_display_record<W: Write>(writer: &mut W, columns: &[ColumnSpec]) -> Result<()> {
+    write_u32(writer, SAV_RECORD_HAS_DATA)?;
+    write_u32(writer, SUBTYPE_VAR_DISPLAY)?;
+    write_u32(writer, 4)?;
+    write_u32(writer, (columns.iter().map(|c| c.width).sum::<usize>() * 3) as u32)?;
+    for col in columns {
+        let measure = if col.var_type == VarType::Str {
+            SAV_MEASURE_NOMINAL
+        } else {
+            SAV_MEASURE_SCALE
+        };
+        let display_width = if col.var_type == VarType::Str {
+            col.string_len.min(255).max(1) as i32
+        } else {
+            8
+        };
+        let alignment = if col.var_type == VarType::Str {
+            SAV_ALIGNMENT_LEFT
+        } else {
+            SAV_ALIGNMENT_RIGHT
+        };
+        for _ in 0..col.width {
+            write_i32(writer, measure)?;
+            write_i32(writer, display_width)?;
+            write_i32(writer, alignment)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_number_of_cases_record<W: Write>(writer: &mut W, row_count: u64) -> Result<()> {
+    write_u32(writer, SAV_RECORD_HAS_DATA)?;
+    write_u32(writer, SUBTYPE_NUMBER_OF_CASES)?;
+    write_u32(writer, 8)?;
+    write_u32(writer, 2)?;
+    writer.write_all(&1u64.to_le_bytes())?;
+    writer.write_all(&row_count.to_le_bytes())?;
     Ok(())
 }
 
@@ -701,8 +942,7 @@ fn write_data<W: Write>(
                                 "string not representable in target encoding".to_string(),
                             ));
                         }
-                        let copy_len = bytes.len().min(col.string_len);
-                        buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
+                        write_spss_string_value(buf, bytes.as_ref(), col.string_len);
                     }
                     writer.write_all(&buf)?;
                 }
@@ -961,6 +1201,60 @@ mod tests {
             let _ = std::fs::remove_file(&out_path);
         }
     }
+
+    #[test]
+    fn test_spss_roundtrip_very_long_string_preserves_suffix() {
+        let long = format!("{}{}", "x".repeat(3000), "_end");
+        let col = Series::new("longstr".into(), &[long.as_str()]);
+        let df = DataFrame::new(1, vec![col.into()]).unwrap();
+        let out_path = temp_path("spss_roundtrip_long_string", "sav");
+        SpssWriter::new(&out_path).write_df(&df).unwrap();
+        let out = SpssReader::open(&out_path).unwrap().read().finish().unwrap();
+        let got = out
+            .column("longstr")
+            .unwrap()
+            .as_materialized_series()
+            .str()
+            .unwrap()
+            .get(0)
+            .unwrap_or("");
+        assert_eq!(got.len(), long.len(), "long string length changed");
+        assert!(
+            got.ends_with("_end"),
+            "expected suffix _end, got tail: {:?}",
+            &got[got.len().saturating_sub(16)..]
+        );
+        let _ = std::fs::remove_file(&out_path);
+    }
+
+    #[test]
+    fn test_spss_lazy_scan_very_long_string_preserves_suffix() {
+        let long = format!("{}{}", "x".repeat(3000), "_end");
+        let col = Series::new("longstr".into(), &[long.as_str()]);
+        let df = DataFrame::new(1, vec![col.into()]).unwrap();
+        let out_path = temp_path("spss_scan_long_string", "sav");
+        SpssWriter::new(&out_path).write_df(&df).unwrap();
+
+        let out = crate::spss::scan_sav(out_path.clone(), crate::ScanOptions::default())
+            .unwrap()
+            .collect()
+            .unwrap();
+        let got = out
+            .column("longstr")
+            .unwrap()
+            .as_materialized_series()
+            .str()
+            .unwrap()
+            .get(0)
+            .unwrap_or("");
+        assert_eq!(got.len(), long.len(), "lazy long string length changed");
+        assert!(
+            got.ends_with("_end"),
+            "expected suffix _end, got tail: {:?}",
+            &got[got.len().saturating_sub(16)..]
+        );
+        let _ = std::fs::remove_file(&out_path);
+    }
 }
 
 fn anyvalue_to_f64(v: AnyValue) -> Option<f64> {
@@ -1014,4 +1308,67 @@ fn write_u32<W: Write>(writer: &mut W, v: u32) -> Result<()> {
 fn write_i32<W: Write>(writer: &mut W, v: i32) -> Result<()> {
     writer.write_all(&v.to_le_bytes())?;
     Ok(())
+}
+
+fn encode_format(format_type: u8, width: u8, decimals: u8) -> i32 {
+    ((format_type as i32) << 16) | ((width as i32) << 8) | decimals as i32
+}
+
+fn long_string_segment_count(string_len: usize) -> usize {
+    if string_len <= 255 {
+        1
+    } else {
+        string_len.div_ceil(252)
+    }
+}
+
+fn long_string_segment_sizes(string_len: usize) -> Vec<usize> {
+    if string_len <= 255 {
+        return vec![string_len.max(1)];
+    }
+    let n_segments = long_string_segment_count(string_len);
+    let mut out = vec![255; n_segments.saturating_sub(1)];
+    out.push(string_len - (n_segments - 1) * 252);
+    out
+}
+
+fn make_long_string_ghost_name(stem: &str, segment_index: usize) -> Result<String> {
+    // ReadStat convention: first 5 chars of short name + base36(segment index).
+    let idx = segment_index % 36;
+    let suffix = if idx < 10 {
+        (b'0' + (idx as u8)) as char
+    } else {
+        (b'A' + ((idx - 10) as u8)) as char
+    };
+    let mut out = String::with_capacity(6);
+    out.push_str(stem);
+    out.push(suffix);
+    if out.len() > 8 {
+        return Err(Error::ParseError(
+            "failed to build SPSS long-string ghost name".to_string(),
+        ));
+    }
+    Ok(out)
+}
+
+fn write_spss_string_value(buf: &mut [u8], value: &[u8], declared_len: usize) {
+    let copy_len = value.len().min(declared_len);
+    if declared_len <= 255 {
+        buf[..copy_len].copy_from_slice(&value[..copy_len]);
+        return;
+    }
+
+    // ReadStat SAV long-string layout stores up to 255 payload bytes per 256-byte chunk.
+    let mut row_offset = 0usize;
+    let mut val_offset = 0usize;
+    while copy_len.saturating_sub(val_offset) > 255 {
+        buf[row_offset..row_offset + 255].copy_from_slice(&value[val_offset..val_offset + 255]);
+        row_offset += 256;
+        val_offset += 255;
+    }
+    let remaining = copy_len.saturating_sub(val_offset);
+    if remaining > 0 {
+        buf[row_offset..row_offset + remaining]
+            .copy_from_slice(&value[val_offset..val_offset + remaining]);
+    }
 }
