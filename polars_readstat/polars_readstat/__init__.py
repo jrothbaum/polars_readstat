@@ -304,7 +304,6 @@ def scan_readstat(
     use_mmap: bool = False,
     missing_string_as_null: bool = False,
     value_labels_as_strings: bool = False,
-    columns: list[str] | None = None,
     preserve_order: bool | PreserveOrderOpts | Dict[str, Any] = False,
     compress: CompressOptions | Dict[str, Any] | None = None,
     reader: ScanReadstat | None = None,
@@ -445,9 +444,6 @@ def scan_readstat(
         if batch_size is None:
             batch_size = 100_000
 
-        # Prefer explicit columns arg, otherwise use Polars pushdown.
-        use_columns = columns if columns is not None else with_columns
-
         src = PyPolarsReadstat(
             path=path,
             size_hint=batch_size,
@@ -460,8 +456,8 @@ def scan_readstat(
             informative_nulls=informative_nulls.to_dict() if informative_nulls is not None else None,
             row_index_name=row_index_name,
         )
-        if use_columns is not None:
-            src.set_with_columns(use_columns)
+        if with_columns is not None:
+            src.set_with_columns(with_columns)
 
         while (out := src.next()) is not None:
             if predicate is not None:
