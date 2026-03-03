@@ -95,7 +95,6 @@ all times in seconds (speedup relative to pandas in parenthesis below each)
 |---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
 | polars_readstat<br>[New rust engine](https://crates.io/crates/polars-readstat-rs) | 0.22<br>(6.6×) | 0.15<br>(9.1×) | 0.25<br>(6.0×) | 0.26<br>(4.5×) |
 | pandas | 1.46 | 1.36 | 1.49 | 1.16 |
-| pyreadstat | 9.25<br>(0.2×) | 4.85<br>(0.3×) | 9.39<br>(0.2×) | 4.75<br>(0.2×) |
 
 Detailed benchmark notes and dataset descriptions are in `BENCHMARKS.md`.
 
