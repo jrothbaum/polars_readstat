@@ -1,7 +1,7 @@
 # polars_readstat
 Polars plugin for SAS (`.sas7bdat`), Stata (`.dta`), and SPSS (`.sav`/`.zsav`) files.
 
-The Python package wraps the Rust core in [polars_readstat_rs(https://crates.io/crates/polars-readstat-rs) and exposes a Polars-first API. The project includes cross-library parity tests and roundtrip checks to reduce regressions.
+The Python package wraps the Rust core in [polars_readstat_rs](https://crates.io/crates/polars-readstat-rs) and exposes a Polars-first API. The project includes cross-library parity tests and roundtrip checks to reduce regressions.
 
 The Rust engine is generally faster for many workloads, but performance varies by file shape and options. If you need the legacy C/C++ engine, use version 0.11.1 (see the [prior version](https://github.com/jrothbaum/polars_readstat/tree/250f516a4424fbbe84c931a41cb82b454c5ca205)).
 
