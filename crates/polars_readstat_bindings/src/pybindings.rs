@@ -2,8 +2,8 @@ use num_cpus;
 use polars::prelude::*;
 use polars_readstat_rs::{
     readstat_batch_iter, readstat_metadata_json, readstat_scan, readstat_schema,
-    InformativeNullColumns, InformativeNullMode, InformativeNullOpts, Sas7bdatReader, ScanOptions,
-    SpssReader, SpssWriter, StataReader, StataWriter,
+    InformativeNullColumns, InformativeNullMode, InformativeNullOpts, Sas7bdatReader, SasWriter,
+    ScanOptions, SpssReader, SpssWriter, StataReader, StataWriter,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -89,9 +89,7 @@ fn parse_compress_opts(compress: Option<&Bound<PyDict>>) -> PyResult<ParsedCompr
     })
 }
 
-fn parse_informative_null_opts(
-    d: Option<&Bound<PyDict>>,
-) -> PyResult<Option<InformativeNullOpts>> {
+fn parse_informative_null_opts(d: Option<&Bound<PyDict>>) -> PyResult<Option<InformativeNullOpts>> {
     let dict = match d {
         Some(d) => d,
         None => return Ok(None),
@@ -293,7 +291,6 @@ fn append_row_index_schema(schema: &mut Schema, name: &str) -> PyResult<()> {
     Ok(())
 }
 
-
 #[pymodule]
 pub fn polars_readstat_bindings(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyPolarsReadstat>()?;
@@ -303,6 +300,7 @@ pub fn polars_readstat_bindings(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sink_stata, m)?)?;
     m.add_function(wrap_pyfunction!(write_stata, m)?)?;
     m.add_function(wrap_pyfunction!(write_spss, m)?)?;
+    m.add_function(wrap_pyfunction!(write_sas_csv_import, m)?)?;
     m.add_function(wrap_pyfunction!(scan_readstat_rs, m)?)?;
     Ok(())
 }
@@ -416,7 +414,7 @@ impl PyPolarsReadstat {
         }
 
         let result: Result<Option<DataFrame>, String> =
-            Python::with_gil(|py| py.allow_threads(|| self.next_batch()));
+            Python::attach(|py| py.detach(|| self.next_batch()));
 
         match result {
             Ok(Some(df)) => {
@@ -437,28 +435,28 @@ impl PyPolarsReadstat {
         }
     }
 
-    fn get_metadata(&self, py: Python) -> PyResult<PyObject> {
+    fn get_metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let json = readstat_metadata_json(&self.path, None).map_err(PyValueError::new_err)?;
         let json_mod = py.import("json")?;
         let obj = json_mod.call_method1("loads", (json,))?;
-        Ok(obj.into())
+        Ok(obj.unbind())
     }
 
-    fn get_column_info(&self, py: Python) -> PyResult<PyObject> {
+    fn get_column_info(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let md_obj = self.get_metadata(py)?;
-        let md = md_obj.bind(py).downcast::<PyDict>()?;
+        let md = md_obj.bind(py).cast::<PyDict>()?;
         if let Ok(Some(cols)) = md.get_item("columns") {
-            return Ok(cols.unbind().into());
+            return Ok(cols.unbind());
         }
         if let Ok(Some(vars)) = md.get_item("variables") {
-            return Ok(vars.unbind().into());
+            return Ok(vars.unbind());
         }
         Err(PyValueError::new_err("No columns/variables in metadata"))
     }
 
-    fn get_file_info(&self, py: Python) -> PyResult<PyObject> {
+    fn get_file_info(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let md_obj = self.get_metadata(py)?;
-        let md = md_obj.bind(py).downcast::<PyDict>()?;
+        let md = md_obj.bind(py).cast::<PyDict>()?;
         let info = PyDict::new(py);
 
         if let Ok(Some(rows)) = md.get_item("row_count") {
@@ -467,10 +465,10 @@ impl PyPolarsReadstat {
         if let Ok(Some(cols)) = md.get_item("column_count") {
             info.set_item("columns", cols)?;
         } else if let Ok(Some(cols)) = md.get_item("columns") {
-            let cols = cols.downcast::<PyList>()?;
+            let cols = cols.cast::<PyList>()?;
             info.set_item("columns", cols.len())?;
         } else if let Ok(Some(vars)) = md.get_item("variables") {
-            let vars = vars.downcast::<PyList>()?;
+            let vars = vars.cast::<PyList>()?;
             info.set_item("columns", vars.len())?;
         }
         if let Ok(Some(encoding)) = md.get_item("encoding") {
@@ -486,7 +484,7 @@ impl PyPolarsReadstat {
             info.set_item("creator_proc", creator_proc)?;
         }
 
-        Ok(info.into())
+        Ok(info.into_any().unbind())
     }
 }
 
@@ -913,11 +911,45 @@ fn write_spss(
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+#[pyfunction]
+#[pyo3(signature = (
+    df,
+    path,
+    dataset_name=None,
+    value_labels=None,
+    variable_labels=None
+))]
+fn write_sas_csv_import(
+    df: PyDataFrame,
+    path: String,
+    dataset_name: Option<String>,
+    value_labels: Option<&Bound<PyDict>>,
+    variable_labels: Option<&Bound<PyDict>>,
+) -> PyResult<(String, String)> {
+    let mut writer = SasWriter::new(path);
+    if let Some(name) = dataset_name {
+        writer = writer.with_dataset_name(name);
+    }
+    if let Some(labels) = value_labels {
+        writer = writer.with_value_labels(parse_sas_value_labels(labels)?);
+    }
+    if let Some(labels) = variable_labels {
+        writer = writer.with_variable_labels(parse_sas_variable_labels(labels)?);
+    }
+    let (csv_path, sas_path) = writer
+        .write_df(&df.0)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok((
+        csv_path.to_string_lossy().into_owned(),
+        sas_path.to_string_lossy().into_owned(),
+    ))
+}
+
 fn parse_stata_value_labels(labels: &Bound<PyDict>) -> PyResult<polars_readstat_rs::ValueLabels> {
-    let mut out: polars_readstat_rs::ValueLabels = HashMap::new();
+    let mut out: polars_readstat_rs::ValueLabels = HashMap::with_capacity(labels.len());
     for (col_obj, map_obj) in labels.iter() {
         let col = col_obj.extract::<String>()?;
-        let map = map_obj.downcast::<PyDict>()?;
+        let map = map_obj.cast::<PyDict>()?;
         let mut inner: polars_readstat_rs::ValueLabelMap = BTreeMap::new();
         for (key_obj, val_obj) in map.iter() {
             let key_i64 = key_obj.extract::<i64>()?;
@@ -937,23 +969,17 @@ fn parse_stata_value_labels(labels: &Bound<PyDict>) -> PyResult<polars_readstat_
 fn parse_stata_variable_labels(
     labels: &Bound<PyDict>,
 ) -> PyResult<polars_readstat_rs::VariableLabels> {
-    let mut out: polars_readstat_rs::VariableLabels = HashMap::new();
-    for (col_obj, label_obj) in labels.iter() {
-        let col = col_obj.extract::<String>()?;
-        let label = label_obj.extract::<String>()?;
-        out.insert(col, label);
-    }
-    Ok(out)
+    parse_variable_labels_dict(labels)
 }
 
 fn parse_spss_value_labels(
     labels: &Bound<PyDict>,
 ) -> PyResult<polars_readstat_rs::SpssValueLabels> {
-    let mut out: polars_readstat_rs::SpssValueLabels = HashMap::new();
+    let mut out: polars_readstat_rs::SpssValueLabels = HashMap::with_capacity(labels.len());
     for (col_obj, map_obj) in labels.iter() {
         let col = col_obj.extract::<String>()?;
-        let map = map_obj.downcast::<PyDict>()?;
-        let mut inner: polars_readstat_rs::SpssValueLabelMap = HashMap::new();
+        let map = map_obj.cast::<PyDict>()?;
+        let mut inner: polars_readstat_rs::SpssValueLabelMap = HashMap::with_capacity(map.len());
         for (key_obj, val_obj) in map.iter() {
             let key = if let Ok(v) = key_obj.extract::<f64>() {
                 polars_readstat_rs::SpssValueLabelKey::from(v)
@@ -975,7 +1001,43 @@ fn parse_spss_value_labels(
 fn parse_spss_variable_labels(
     labels: &Bound<PyDict>,
 ) -> PyResult<polars_readstat_rs::SpssVariableLabels> {
-    let mut out: polars_readstat_rs::SpssVariableLabels = HashMap::new();
+    parse_variable_labels_dict(labels)
+}
+
+fn parse_sas_value_labels(labels: &Bound<PyDict>) -> PyResult<polars_readstat_rs::SasValueLabels> {
+    let mut out: polars_readstat_rs::SasValueLabels = HashMap::with_capacity(labels.len());
+    for (col_obj, map_obj) in labels.iter() {
+        let col = col_obj.extract::<String>()?;
+        let map = map_obj.cast::<PyDict>()?;
+        let mut inner: polars_readstat_rs::SasValueLabelMap = HashMap::with_capacity(map.len());
+        for (key_obj, val_obj) in map.iter() {
+            let key = if let Ok(v) = key_obj.extract::<i64>() {
+                polars_readstat_rs::SasValueLabelKey::from(v as f64)
+            } else if let Ok(v) = key_obj.extract::<f64>() {
+                polars_readstat_rs::SasValueLabelKey::from(v)
+            } else if let Ok(v) = key_obj.extract::<String>() {
+                polars_readstat_rs::SasValueLabelKey::from(v.as_str())
+            } else {
+                return Err(PyValueError::new_err(
+                    "SAS value label keys must be int, float, or str",
+                ));
+            };
+            let value = val_obj.extract::<String>()?;
+            inner.insert(key, value);
+        }
+        out.insert(col, inner);
+    }
+    Ok(out)
+}
+
+fn parse_sas_variable_labels(
+    labels: &Bound<PyDict>,
+) -> PyResult<polars_readstat_rs::SasVariableLabels> {
+    parse_variable_labels_dict(labels)
+}
+
+fn parse_variable_labels_dict(labels: &Bound<PyDict>) -> PyResult<HashMap<String, String>> {
+    let mut out: HashMap<String, String> = HashMap::with_capacity(labels.len());
     for (col_obj, label_obj) in labels.iter() {
         let col = col_obj.extract::<String>()?;
         let label = label_obj.extract::<String>()?;

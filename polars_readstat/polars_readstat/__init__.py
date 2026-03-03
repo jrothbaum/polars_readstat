@@ -8,10 +8,27 @@ from polars_readstat.polars_readstat_bindings import (
     PyPolarsReadstat,
     read_readstat_rs,
     sink_stata,
+    write_sas_csv_import as _write_sas_csv_import_rs,
     write_stata,
     write_spss,
 )
 import warnings
+
+
+def _warn_engine_deprecated() -> None:
+    warnings.warn(
+        "Engine is deprecated as all calls use the new polars_readstat_rs rust engine.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
+def _warn_use_mmap_deprecated() -> None:
+    warnings.warn(
+        "use_mmap is deprecated as it has not been implemented in the polars_readstat_rs rust engine.",
+        UserWarning,
+        stacklevel=3,
+    )
 
 
 class ScanReadstat:
@@ -31,10 +48,10 @@ class ScanReadstat:
     ):
         self.path = str(path)
         if engine != "":
-            print(f"Engine is deprecated as all calls use the new polars_readstat_rs rust engine.", flush=True)
+            _warn_engine_deprecated()
 
         if use_mmap:
-            print(f"use_mmap is deprecated as it has not been implemented in the polars_readstat_rs rust engine.", flush=True)
+            _warn_use_mmap_deprecated()
 
         self.engine = engine
         self.use_mmap = use_mmap
@@ -364,9 +381,9 @@ def scan_readstat(
     preserve_order_opts = _normalize_preserve_order_opts(preserve_order)
 
     if engine != "":
-        print(f"Engine is deprecated as all calls use the new polars_readstat_rs rust engine.", flush=True)
+        _warn_engine_deprecated()
     if use_mmap:
-        print(f"use_mmap is deprecated as it has not been implemented in the polars_readstat_rs rust engine.", flush=True)
+        _warn_use_mmap_deprecated()
 
     if reader is None:
         reader = ScanReadstat(
@@ -517,9 +534,9 @@ def read_readstat(
     """
     path = str(path)
     if engine != "":
-        print(f"Engine is deprecated as all calls use the new polars_readstat_rs rust engine.", flush=True)
+        _warn_engine_deprecated()
     if use_mmap:
-        print(f"use_mmap is deprecated as it has not been implemented in the polars_readstat_rs rust engine.", flush=True)
+        _warn_use_mmap_deprecated()
 
     if threads is None:
         threads = pl.thread_pool_size()
@@ -563,23 +580,11 @@ def write_readstat(
         `value_labels` (dict[str, dict[int, str]]) and `variable_labels` (dict[str, str]).
         SPSS supports `value_labels` (dict[str, dict[float|int, str]]) and
         `variable_labels` (dict[str, str]).
+        SAS binary writing is not supported; use `write_sas_csv_import`.
     """
     path = str(path)
     fmt = (format or Path(path).suffix.lstrip(".")).lower()
-
-    if isinstance(df, pl.LazyFrame):
-        # if fmt in ("dta", "stata"):
-        #     sink_readstat(df, path, format=fmt, **kwargs)
-        #     return
-        df = df.collect()
-    if not isinstance(df, pl.DataFrame):
-        raise TypeError("df must be a polars DataFrame or LazyFrame")
-
-    # pyo3-polars currently fails on narrow unsigned write inputs.
-    df = df.with_columns(
-        pl.col(pl.UInt8).cast(pl.Int16),
-        pl.col(pl.UInt16).cast(pl.Int32),
-    )
+    df = _prepare_write_df(df)
 
     if fmt in ("dta", "stata"):
         compress = kwargs.pop("compress", None)
@@ -612,72 +617,81 @@ def write_readstat(
         write_spss(df, path, value_labels=value_labels, variable_labels=variable_labels)
         return
     if fmt in ("sas7bdat", "sas"):
-        raise NotImplementedError("SAS writing is not supported yet")
+        raise NotImplementedError(
+            "SAS binary (.sas7bdat) writing is not supported; "
+            "use write_sas_csv_import(...) to emit a CSV + SAS import script."
+        )
 
     raise ValueError(f"Unsupported output format: {fmt}")
 
 
-# def sink_readstat(
-#     lf: pl.LazyFrame,
-#     path: Any,
-#     *,
-#     format: str | None = None,
-#     **kwargs: Any,
-# ) -> None:
-#     """
-#     Sink a LazyFrame to a ReadStat-supported file.
+def write_sas_csv_import(
+    df: pl.DataFrame | pl.LazyFrame,
+    path: Any,
+    *,
+    dataset_name: str | None = None,
+    value_labels: dict[str, dict[float | int | str, str]] | None = None,
+    variable_labels: dict[str, str] | None = None,
+) -> tuple[str, str]:
+    """
+    Write a SAS-import bundle as `CSV + .sas` script.
 
-#     Notes
-#     -----
-#     - Stata (`.dta`) uses Rust batch streaming via `sink_batches`.
-#     - SPSS (`.sav`/`.zsav`) currently materializes and writes non-streaming.
-#     """
-#     if not isinstance(lf, pl.LazyFrame):
-#         raise TypeError("lf must be a polars LazyFrame")
+    This does not create a binary `.sas7bdat` file.
 
-#     path = str(path)
-#     fmt = (format or Path(path).suffix.lstrip(".")).lower()
+    Parameters
+    ----------
+    df : polars.DataFrame or polars.LazyFrame
+        Data to write.
+    path : str
+        Output directory or file stem for the generated bundle.
+    dataset_name : str, optional
+        SAS dataset name used in the generated script.
+    value_labels : dict, optional
+        Mapping of column name to `{coded_value: label}`.
+        Keys may be numeric or string.
+    variable_labels : dict, optional
+        Mapping of column name to variable label text.
 
-#     if fmt in ("dta", "stata"):
-#         compress = kwargs.pop("compress", None)
-#         threads = kwargs.pop("threads", None)
-#         value_labels = kwargs.pop("value_labels", None)
-#         variable_labels = kwargs.pop("variable_labels", None)
-#         batch_size = kwargs.pop("batch_size", None)
-#         preserve_order = kwargs.pop("preserve_order", True)
-#         if kwargs:
-#             raise TypeError(f"Unsupported kwargs for Stata sink: {sorted(kwargs.keys())}")
-#         warnings.warn(
-#             "Stata sink streaming is currently disabled in Python; "
-#             "falling back to materialized write.",
-#             RuntimeWarning,
-#             stacklevel=2,
-#         )
-#         try:
-#             df = lf.collect(engine="streaming")
-#         except Exception:
-#             df = lf.collect()
-#         write_readstat(
-#             df,
-#             path,
-#             format="dta",
-#             compress=compress,
-#             threads=threads,
-#             value_labels=value_labels,
-#             variable_labels=variable_labels,
-#         )
-#         return
+    Returns
+    -------
+    tuple[str, str]
+        `(csv_path, sas_script_path)`
+    """
+    df = _prepare_write_df(df)
 
-#     if fmt in ("sav", "zsav", "spss"):
-#         warnings.warn(
-#             "SPSS sink currently materializes LazyFrame before writing; output is not streamed.",
-#             RuntimeWarning,
-#             stacklevel=2,
-#         )
-#         write_readstat(lf.collect(engine="streaming"), path, format=fmt, **kwargs)
-#         return
+    return _write_sas_csv_import_rs(
+        df,
+        str(path),
+        dataset_name=dataset_name,
+        value_labels=value_labels,
+        variable_labels=variable_labels,
+    )
 
-#     if fmt in ("sas7bdat", "sas"):
-#         raise NotImplementedError("SAS writing is not supported yet")
 
-#     raise ValueError(f"Unsupported output format: {fmt}")
+def _prepare_write_df(df: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
+    if isinstance(df, pl.LazyFrame):
+        df = df.collect()
+    if not isinstance(df, pl.DataFrame):
+        raise TypeError("df must be a polars DataFrame or LazyFrame")
+
+    # pyo3-polars currently fails on narrow unsigned write inputs.
+    # Fast path: avoid materializing a new frame when no narrow unsigned columns are present.
+    has_u8 = False
+    has_u16 = False
+    for dtype in df.schema.values():
+        if dtype == pl.UInt8:
+            has_u8 = True
+        elif dtype == pl.UInt16:
+            has_u16 = True
+        if has_u8 and has_u16:
+            break
+    if not has_u8 and not has_u16:
+        return df
+
+    exprs: list[pl.Expr] = []
+    if has_u8:
+        exprs.append(pl.col(pl.UInt8).cast(pl.Int16))
+    if has_u16:
+        exprs.append(pl.col(pl.UInt16).cast(pl.Int32))
+    return df.with_columns(exprs)
+

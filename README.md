@@ -9,7 +9,7 @@ The Rust engine is generally faster for many workloads, but performance varies b
 
 - In project benchmarks, the new Rust-backed engine is typically faster than pandas/pyreadstat on large SAS/Stata files, especially for subset/filter workloads.
 - It avoids the older C/C++ toolchain complexity and ships as standard Python wheels.
-- API is Polars-first (`scan_readstat`, `read_readstat`, `write_readstat`).
+- API is Polars-first (`scan_readstat`, `read_readstat`, `write_readstat`, `write_sas_csv_import`).
 
 ## Install
 
@@ -43,17 +43,19 @@ lf = reader.df              # LazyFrame — same as calling scan_readstat(path)
 - `"label"` — variable label (description), if present
 - `"value_labels"` — dict mapping coded values to label strings, if present
 
-### 3) Write (Stata/SPSS) - ***EXPERIMENTAL***
+### 3) Write (Experimental)
 Writing support is experimental and compatibility varies across tools. Stata roundtrip tests are included; SPSS roundtrip coverage is limited. Please report issues.
 
 ```python
-from polars_readstat import write_readstat
+from polars_readstat import write_readstat, write_sas_csv_import
 
 write_readstat(df, "/path/out.dta")
 write_readstat(df, "/path/out.sav")
+write_sas_csv_import(df, "/path/out/sas_bundle", dataset_name="my_data")
 ```
 
-`write_readstat` supports Stata (`dta`) and SPSS (`sav`). SAS writing is not supported.
+`write_readstat` supports Stata (`dta`) and SPSS (`sav`).  
+Use `write_sas_csv_import` for SAS-ingestible output (`.csv` + `.sas` import script). Binary `.sas7bdat` writing is not currently supported.
 
 ## Docs
 

@@ -22,7 +22,7 @@ df = lf.select(["SERIALNO", "AGEP"]).filter(pl.col("AGEP") >= 18).collect()
 ```
 
 
-### Getting metadata from the file (SAS write not supported)
+### Getting metadata from the file
 
 ```python
 import polars as pl
@@ -34,13 +34,17 @@ metadata = sr.metadata
 df = sr.df.collect()
 ```
 
-### Writing a Stata or SPSS file (SAS write not supported)
+### Writing output files
 
 ```python
 import polars as pl
-from polars_readstat import write_readstat
+from polars_readstat import write_readstat, write_sas_csv_import
 
 write_readstat(df, "/path/out.dta")
+write_readstat(df, "/path/out.sav")
+
+# Writes two files: /path/out/sas_bundle.csv and /path/out/sas_bundle.sas
+write_sas_csv_import(df, "/path/out/sas_bundle", dataset_name="my_data")
 ```
 
 See [Read](read.md) for the full read API and [Write](write.md) for output options.
