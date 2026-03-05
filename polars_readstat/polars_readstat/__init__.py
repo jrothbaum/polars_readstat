@@ -349,6 +349,28 @@ class InformativeNullOpts:
         }
 
 
+def _resolve_struct_mode_overrides(
+    schema_overrides: "Dict[str, Any] | None",
+    base_schema: "pl.Schema",
+    informative_nulls: "InformativeNullOpts | None",
+) -> "Dict[str, Any] | None":
+    """Auto-wrap non-struct schema_overrides into the Struct produced by informative_nulls
+    struct mode, so users can write ``schema_overrides={"x": pl.Int64}`` instead of
+    ``{"x": pl.Struct({"x": pl.Int64, "null_indicator": pl.String})}``.
+    The value field in the struct is always named after the column itself.
+    """
+    if not schema_overrides or informative_nulls is None or informative_nulls.mode != "struct":
+        return schema_overrides
+    resolved = {}
+    for col, dtype in schema_overrides.items():
+        base_dtype = base_schema.get(col)
+        if base_dtype is not None and isinstance(base_dtype, pl.Struct) and not isinstance(dtype, pl.Struct):
+            resolved[col] = pl.Struct({col: dtype, "null_indicator": pl.String})
+        else:
+            resolved[col] = dtype
+    return resolved
+
+
 def _normalize_informative_null_opts(
     informative_nulls: "InformativeNullOpts | Dict[str, Any] | None",
 ) -> InformativeNullOpts | None:
@@ -449,7 +471,14 @@ def scan_readstat(
     preserve_order_flag, row_index_name, sort_in_python = _resolve_preserve_order_opts(
         preserve_order_opts
     )
-        
+
+    # Resolve schema_overrides: if informative_nulls mode is "struct", auto-wrap
+    # non-struct overrides so users can write schema_overrides={"x": pl.Int64}
+    # instead of {"x": pl.Struct({"x": pl.Int64, "null_indicator": pl.String})}.
+    effective_overrides = _resolve_struct_mode_overrides(
+        schema_overrides, reader.schema, informative_nulls
+    )
+
     # if return_batches:
     #     warnings.warn(
     #         "scan_readstat(..., return_batches=True) is deprecated; return_batches is for internal/backward-compat use only.",
@@ -493,9 +522,9 @@ def scan_readstat(
 
     def schema_generator() -> pl.Schema:
         base_schema = reader.schema
-        if schema_overrides:
+        if effective_overrides:
             new_schema = dict(base_schema)
-            for col, dtype in schema_overrides.items():
+            for col, dtype in effective_overrides.items():
                 if col in new_schema:
                     new_schema[col] = dtype
             return pl.Schema(new_schema)
@@ -531,9 +560,9 @@ def scan_readstat(
             if predicate is not None:
                 out = out.filter(predicate)
 
-            if schema_overrides:
+            if effective_overrides:
                 cols_to_cast = {}
-                for col, dtype in schema_overrides.items():
+                for col, dtype in effective_overrides.items():
                     if col in out.columns:
                         cols_to_cast[col] = dtype
                 if cols_to_cast:

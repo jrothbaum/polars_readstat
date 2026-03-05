@@ -389,3 +389,77 @@ def test_bad_columns_string_raises(sas_info_nulls: Path) -> None:
             str(sas_info_nulls),
             informative_nulls={"columns": "some_invalid_string"},
         )
+
+
+# ─────────────────────────── schema_overrides + informative_nulls ────────────
+
+
+def test_sas_struct_mode_with_matching_schema_override(sas_info_nulls: Path) -> None:
+    """Passing a schema_overrides entry whose dtype matches the Struct that
+    informative_nulls produces should not error and should yield identical results."""
+    df_no_override = prs.read_readstat(
+        str(sas_info_nulls),
+        informative_nulls={"columns": "all", "mode": "struct"},
+    )
+    struct_cols = [c for c in df_no_override.columns if isinstance(df_no_override[c].dtype, pl.Struct)]
+    if not struct_cols:
+        pytest.skip("no struct columns produced by struct mode")
+
+    col = struct_cols[0]
+    struct_dtype = df_no_override[col].dtype  # e.g. Struct({"value": Float64, "null_indicator": String})
+
+    df_with_override = prs.scan_readstat(
+        str(sas_info_nulls),
+        informative_nulls=prs.InformativeNullOpts(mode="struct"),
+        schema_overrides={col: struct_dtype},
+        preserve_order=True,
+    ).collect()
+
+    assert df_with_override[col].dtype == struct_dtype, (
+        f"schema_override dtype mismatch: expected {struct_dtype}, got {df_with_override[col].dtype}"
+    )
+    assert df_with_override.equals(df_no_override), (
+        "result with matching schema_override should equal result without it"
+    )
+
+
+def test_sas_struct_mode_schema_override_changes_value_field_type(sas_info_nulls: Path) -> None:
+    """schema_overrides with a plain (non-struct) type should automatically apply
+    to the value field of the struct produced by informative_nulls struct mode.
+
+    i.e. schema_overrides={"x": pl.Int64} is equivalent to
+    {"x": pl.Struct({"x": pl.Int64, "null_indicator": pl.String})}.
+    """
+    base = prs.read_readstat(str(sas_info_nulls))
+    float_cols = [c for c in base.columns if base[c].dtype == pl.Float64]
+    if not float_cols:
+        pytest.skip("no Float64 columns in SAS fixture")
+
+    col = float_cols[0]
+
+    # Read without override — Rust infers Float64 for the value field
+    df_no_override = prs.scan_readstat(
+        str(sas_info_nulls),
+        informative_nulls=prs.InformativeNullOpts(mode="struct"),
+        preserve_order=True,
+    ).collect()
+    assert df_no_override[col].dtype == pl.Struct({col: pl.Float64, "null_indicator": pl.String})
+
+    # Override with just Int64 — should auto-wrap into Struct({col: Int64, null_indicator: String})
+    df_override = prs.scan_readstat(
+        str(sas_info_nulls),
+        informative_nulls=prs.InformativeNullOpts(mode="struct"),
+        schema_overrides={col: pl.Int64},
+        preserve_order=True,
+    ).collect()
+
+    assert df_override[col].dtype == pl.Struct({col: pl.Int64, "null_indicator": pl.String}), (
+        f"expected Struct({{col: Int64, null_indicator: String}}), got {df_override[col].dtype}"
+    )
+
+    # Non-null value counts should be unchanged
+    non_null_override = df_override.select(pl.col(col).struct.field(col)).drop_nulls()
+    non_null_base = df_no_override.select(pl.col(col).struct.field(col)).drop_nulls()
+    assert non_null_override.height == non_null_base.height, (
+        "override lost rows compared to no-override read"
+    )
