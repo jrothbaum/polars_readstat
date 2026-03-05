@@ -17,7 +17,7 @@ import pytest
 
 import polars_readstat as prs
 
-RS_TESTS_ROOT = (Path(__file__).resolve().parents[2] / "polars_readstat_rs/tests").resolve()
+RS_TESTS_ROOT = (Path(__file__).resolve().parents[1] / "crates/polars_readstat_rs/tests").resolve()
 
 
 # ─────────────────────────── fixtures ───────────────────────────────────────

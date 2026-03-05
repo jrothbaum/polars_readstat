@@ -7,7 +7,7 @@ import pytest
 import polars_readstat as prs
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-RS_TESTS_ROOT = (REPO_ROOT / "../polars_readstat_rs/tests").resolve()
+RS_TESTS_ROOT = (REPO_ROOT / "crates/polars_readstat_rs/tests").resolve()
 
 
 @pytest.fixture(scope="session")
