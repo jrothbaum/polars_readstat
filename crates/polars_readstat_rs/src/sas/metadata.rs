@@ -125,6 +125,13 @@ fn read_metadata_inner<R: Read + Seek>(
     // If no DATA pages were encountered, fall back to the total pages read.
     let first_data_page = first_data_page.unwrap_or(pages_read.saturating_sub(1));
 
+    // Fast path: require complete metadata before trusting an early-stop result.
+    // This catches old SAS files where column subheaders are interleaved with data pages —
+    // build() might succeed with partial data, but is_complete() ensures we saw everything.
+    if stop_at_first_data_page && !metadata_builder.is_complete() {
+        return Err(Error::MissingMetadata);
+    }
+
     // Don't collect data_subheaders - causes issues with page state management
     // Instead, filter during data reading phase
     let data_subheaders = Vec::new();
@@ -506,6 +513,27 @@ impl MetadataBuilder {
         });
 
         Ok(())
+    }
+
+    /// Returns true if we have enough metadata to produce a correct result without
+    /// needing to read further pages (e.g. AMD pages after data pages).
+    /// Used by the fast path to decide whether to trust early-stop results.
+    fn is_complete(&self) -> bool {
+        // Must have the basic row-level metadata.
+        if self.row_count.is_none() || self.row_length.is_none() {
+            return false;
+        }
+        // Must know the column count.
+        let Some(expected) = self.resolve_column_count() else {
+            return false;
+        };
+        if expected == 0 {
+            return true;
+        }
+        // Must have a full set of name and attribute entries.
+        // Partial entries mean some column subheaders are on pages we haven't read.
+        self.column_name_entries.len() >= expected
+            && self.column_attr_entries.len() >= expected
     }
 
     fn resolve_column_count(&self) -> Option<usize> {
