@@ -1,4 +1,4 @@
-use polars_readstat_rs::{readstat_batch_iter, ReadStatFormat, ScanOptions};
+use polars_readstat_rs::{readstat_batch_iter, ReadStatFormat, Sas7bdatReader, ScanOptions};
 use std::path::PathBuf;
 use std::sync::{atomic::{AtomicU64, Ordering}, Arc};
 use std::time::Instant;
@@ -231,5 +231,28 @@ fn test_sas_pu2023_stream_discard() {
             "{:<28} {:>10} {:>8.2?}  {:>6.2} GB  ({} batches)",
             label, rows, elapsed, peak_gb, batches
         );
+    }
+}
+
+/// Benchmark Sas7bdatReader::open() on pu2023.sas7bdat to measure fast-path metadata read.
+/// Run with: cargo test --release test_sas_pu2023_open_time -- --nocapture --ignored
+#[test]
+#[ignore]
+fn test_sas_pu2023_open_time() {
+    let path = pu2023();
+    if !path.exists() {
+        println!("pu2023.sas7bdat not found, skipping");
+        return;
+    }
+
+    println!("\nSas7bdatReader::open() timing on pu2023.sas7bdat (11 GB)");
+    println!("{:<8} {:>12} {:>10}", "run", "open_time", "rows");
+    println!("{}", "-".repeat(34));
+
+    for i in 0..3 {
+        let t0 = Instant::now();
+        let reader = Sas7bdatReader::open(&path).expect("open");
+        let elapsed = t0.elapsed();
+        println!("{:<8} {:>10.2?}  {:>10}", i, elapsed, reader.metadata().row_count);
     }
 }

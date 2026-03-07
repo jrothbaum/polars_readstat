@@ -1,7 +1,7 @@
 use crate::data::{DataReader, DataSubheader};
 use crate::error::Result;
 use crate::header::{check_header, read_header};
-use crate::metadata::read_metadata;
+use crate::metadata::read_metadata_from_path;
 use crate::page::PageReader;
 use crate::types::{Endian, Format, Header, Metadata};
 use polars::prelude::*;
@@ -61,10 +61,8 @@ impl Sas7bdatReader {
         let (endian, format) = check_header(&mut file)?;
         let header = read_header(&mut file, endian, format)?;
 
-        let mut file = File::open(&path)?;
-        file.seek(SeekFrom::Start(header.header_length as u64))?;
         let (metadata, initial_data_subheaders, first_data_page, mix_data_rows) =
-            read_metadata(file, &header, endian, format)?;
+            read_metadata_from_path(&path, &header, endian, format)?;
 
         Ok(Self {
             path,
@@ -87,11 +85,9 @@ impl Sas7bdatReader {
         let header = read_header(&mut file, endian, format)?;
         let header_ms = header_start.elapsed().as_secs_f64() * 1000.0;
 
-        let mut file = File::open(&path)?;
-        file.seek(SeekFrom::Start(header.header_length as u64))?;
         let metadata_start = Instant::now();
         let (metadata, initial_data_subheaders, first_data_page, mix_data_rows) =
-            read_metadata(file, &header, endian, format)?;
+            read_metadata_from_path(&path, &header, endian, format)?;
         let metadata_ms = metadata_start.elapsed().as_secs_f64() * 1000.0;
 
         Ok((

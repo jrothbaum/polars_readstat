@@ -5,7 +5,29 @@ use crate::error::{Error, Result};
 use crate::data::DataSubheader;
 use crate::page::{PageHeader, PageReader, PageSubheader};
 use crate::types::{Column, ColumnType, Compression, Endian, Format, Header, Metadata};
-use std::io::{Read, Seek};
+use std::fs::File;
+use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::path::Path;
+
+/// Try a fast metadata read that stops at the first DATA page, then falls back
+/// to a full file scan (which handles rare AMD pages after data pages).
+pub fn read_metadata_from_path(
+    path: &Path,
+    header: &Header,
+    endian: Endian,
+    format: Format,
+) -> Result<(Metadata, Vec<DataSubheader>, usize, usize)> {
+    let mut file = BufReader::new(File::open(path)?);
+    file.seek(SeekFrom::Start(header.header_length as u64))?;
+    match read_metadata_inner(file, header, endian, format, true) {
+        Ok(result) => return Ok(result),
+        Err(_) => {}
+    }
+    // Fast path failed (incomplete metadata or AMD pages needed) — full scan.
+    let mut file = BufReader::new(File::open(path)?);
+    file.seek(SeekFrom::Start(header.header_length as u64))?;
+    read_metadata_inner(file, header, endian, format, false)
+}
 
 /// Read metadata from SAS7BDAT file.
 /// Returns (metadata, initial_data_subheaders, first_data_page, mix_data_rows).
@@ -17,6 +39,16 @@ pub fn read_metadata<R: Read + Seek>(
     header: &Header,
     endian: Endian,
     format: Format,
+) -> Result<(Metadata, Vec<DataSubheader>, usize, usize)> {
+    read_metadata_inner(reader, header, endian, format, false)
+}
+
+fn read_metadata_inner<R: Read + Seek>(
+    reader: R,
+    header: &Header,
+    endian: Endian,
+    format: Format,
+    stop_at_first_data_page: bool,
 ) -> Result<(Metadata, Vec<DataSubheader>, usize, usize)> {
     use crate::types::PageType;
 
@@ -44,10 +76,15 @@ pub fn read_metadata<R: Read + Seek>(
 
         let page_header = page_reader.get_page_header()?;
 
-        // Record the first DATA page index, but keep scanning to capture AMD pages.
         if !is_metadata_page(&page_header) {
             if first_data_page.is_none() {
                 first_data_page = Some(page_idx);
+            }
+            // Fast path: stop scanning as soon as we hit the first DATA page.
+            // AMD pages (which can appear after data pages) are extremely rare;
+            // if build() fails, the caller will fall back to a full scan.
+            if stop_at_first_data_page {
+                break;
             }
             continue;
         }
@@ -83,10 +120,6 @@ pub fn read_metadata<R: Read + Seek>(
                 }
             }
         }
-
-        // Continue reading metadata pages until we hit a data page
-        // Don't stop early - we need to read ALL metadata pages to get
-        // COLUMN_NAME, COLUMN_ATTRIBUTES, and FORMAT_AND_LABEL subheaders
     }
 
     // If no DATA pages were encountered, fall back to the total pages read.
