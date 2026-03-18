@@ -17,16 +17,42 @@ pub fn read_metadata_from_path(
     endian: Endian,
     format: Format,
 ) -> Result<(Metadata, Vec<DataSubheader>, usize, usize)> {
+    let log_fallback = std::env::var_os("POLARS_READSTAT_METADATA_FALLBACK_LOG").is_some();
+
     let mut file = BufReader::new(File::open(path)?);
     file.seek(SeekFrom::Start(header.header_length as u64))?;
     match read_metadata_inner(file, header, endian, format, true) {
-        Ok(result) => return Ok(result),
-        Err(_) => {}
+        Ok(result) => {
+            if log_fallback {
+                eprintln!("[metadata] fast-pass used for {}", path.display());
+            }
+            return Ok(result);
+        }
+        Err(err) => {
+            if log_fallback {
+                eprintln!(
+                    "[metadata] fast-pass failed for {}: {err}",
+                    path.display()
+                );
+            }
+            // Fast path failed (incomplete metadata or AMD pages needed) — full scan.
+        }
     }
+
     // Fast path failed (incomplete metadata or AMD pages needed) — full scan.
     let mut file = BufReader::new(File::open(path)?);
     file.seek(SeekFrom::Start(header.header_length as u64))?;
-    read_metadata_inner(file, header, endian, format, false)
+    let result = read_metadata_inner(file, header, endian, format, false);
+    if log_fallback {
+        match &result {
+            Ok(_) => eprintln!("[metadata] fallback succeeded for {}", path.display()),
+            Err(err) => eprintln!(
+                "[metadata] fallback failed for {}: {err}",
+                path.display()
+            ),
+        }
+    }
+    result
 }
 
 /// Read metadata from SAS7BDAT file.
@@ -75,8 +101,7 @@ fn read_metadata_inner<R: Read + Seek>(
         pages_read += 1;
 
         let page_header = page_reader.get_page_header()?;
-
-        if !is_metadata_page(&page_header) {
+        if !is_metadata_page_type(&page_header) {
             if first_data_page.is_none() {
                 first_data_page = Some(page_idx);
             }
@@ -93,8 +118,26 @@ fn read_metadata_inner<R: Read + Seek>(
         let page_buffer = page_reader.page_buffer();
         let buf = Buffer::from_vec(page_buffer.to_vec(), endian);
 
-        for subheader in subheaders {
+        for subheader in subheaders.iter() {
             metadata_builder.process_subheader(&buf, &subheader, format)?;
+        }
+
+        // For MIX pages in fast mode, stop if we can tell this page is data-bearing.
+        if stop_at_first_data_page
+            && is_fast_stop_on_mix_page(
+                &page_header,
+                &subheaders,
+                page_buffer,
+                format,
+                metadata_builder.row_length,
+                page_bit_offset,
+                header.page_length,
+            )
+        {
+            if first_data_page.is_none() {
+                first_data_page = Some(page_idx);
+            }
+            break;
         }
 
         // For MIX pages, count data rows they contain (uncompressed files only).
@@ -139,7 +182,141 @@ fn read_metadata_inner<R: Read + Seek>(
     Ok((metadata, data_subheaders, first_data_page, mix_data_rows))
 }
 
-fn is_metadata_page(page_header: &PageHeader) -> bool {
+fn is_fast_stop_on_mix_page(
+    page_header: &PageHeader,
+    subheaders: &[PageSubheader],
+    page_buffer: &[u8],
+    format: Format,
+    row_length: Option<usize>,
+    page_bit_offset: usize,
+    page_length: usize,
+) -> bool {
+    use crate::types::PageType;
+
+    if !matches!(page_header.page_type, PageType::Mix1 | PageType::Mix2) {
+        return false;
+    }
+
+    let Some(row_length) = row_length.filter(|&value| value > 0) else {
+        return false;
+    };
+
+    // Empty MIX page with no subheaders is most likely row-data payload.
+    if subheaders.is_empty() {
+        return true;
+    }
+
+    // If any subheader looks like a data row subheader, this is a data-bearing MIX page.
+    if subheaders
+        .iter()
+        .any(|subheader| is_mix_data_subheader(subheader, page_buffer, row_length))
+    {
+        return true;
+    }
+
+    // If metadata signatures consume all subheaders but there is room for at least one row,
+    // treat as MIX data page to avoid scanning large metadata tails.
+    let integer_size = match format {
+        Format::Bit64 => 8,
+        Format::Bit32 => 4,
+    };
+    let mut data_start = page_bit_offset + 8 + page_header.subheader_count as usize * (3 * integer_size);
+    if data_start % 8 == 4 {
+        data_start += 4;
+    }
+    page_length >= data_start.saturating_add(row_length)
+}
+
+fn is_mix_data_subheader(
+    subheader: &PageSubheader,
+    page_buffer: &[u8],
+    row_length: usize,
+) -> bool {
+    if subheader.compression != 0 && subheader.compression != 4 {
+        return false;
+    }
+    if subheader.subheader_type != 1 {
+        return false;
+    }
+    if subheader.length == 0 || subheader.length > row_length {
+        return false;
+    }
+
+    let signature = if subheader.offset + 8 <= page_buffer.len() {
+        &page_buffer[subheader.offset..subheader.offset + 8]
+    } else if subheader.offset + 4 <= page_buffer.len() {
+        &page_buffer[subheader.offset..subheader.offset + 4]
+    } else {
+        return false;
+    };
+
+    if is_metadata_signature_or_pad(signature) {
+        return false;
+    }
+
+    if subheader.length == row_length {
+        // Full-row entries are strong evidence for MIX data payloads.
+        return true;
+    }
+
+    // Small rows can still be compressed fragments.
+    true
+}
+
+fn is_metadata_signature_or_pad(sig: &[u8]) -> bool {
+    if sig.len() < 4 {
+        return false;
+    }
+
+    if matches!(
+        &sig[..4],
+        [0x00, 0xFC, 0xFF, 0xFF] | [0xFF, 0xFF, 0xFC, 0x00]
+    ) {
+        return true;
+    }
+
+    is_known_metadata_signature(sig)
+}
+
+fn is_known_metadata_signature(sig: &[u8]) -> bool {
+    if sig.len() < 4 {
+        return false;
+    }
+    let sig4 = &sig[..4];
+    if matches!(
+        sig4,
+        [0xF7, 0xF7, 0xF7, 0xF7]
+            | [0xF6, 0xF6, 0xF6, 0xF6]
+            | [0xFD, 0xFF, 0xFF, 0xFF]
+            | [0xFF, 0xFF, 0xFF, 0xFD]
+            | [0xFF, 0xFF, 0xFF, 0xFF]
+            | [0xFC, 0xFF, 0xFF, 0xFF]
+            | [0xFF, 0xFF, 0xFF, 0xFC]
+            | [0xFE, 0xFB, 0xFF, 0xFF]
+            | [0xFF, 0xFF, 0xFB, 0xFE]
+            | [0xFE, 0xFF, 0xFF, 0xFF]
+            | [0xFF, 0xFF, 0xFF, 0xFE]
+    ) {
+        return true;
+    }
+
+    if sig4 == &[0x00, 0x00, 0x00, 0x00] && sig.len() >= 8 {
+        let sig4_hi = &sig[4..8];
+        return matches!(
+            sig4_hi,
+            [0xF7, 0xF7, 0xF7, 0xF7]
+                | [0xF6, 0xF6, 0xF6, 0xF6]
+                | [0xFD, 0xFF, 0xFF, 0xFF]
+                | [0xFC, 0xFF, 0xFF, 0xFF]
+                | [0xFE, 0xFB, 0xFF, 0xFF]
+                | [0xFE, 0xFF, 0xFF, 0xFF]
+        );
+    }
+
+    false
+}
+
+fn is_metadata_page_type(page_header: &PageHeader) -> bool {
     use crate::types::PageType;
     matches!(
         page_header.page_type,
