@@ -521,14 +521,7 @@ def scan_readstat(
     #     return source_generator_batches()
 
     def schema_generator() -> pl.Schema:
-        base_schema = reader.schema
-        if effective_overrides:
-            new_schema = dict(base_schema)
-            for col, dtype in effective_overrides.items():
-                if col in new_schema:
-                    new_schema[col] = dtype
-            return pl.Schema(new_schema)
-        return base_schema
+        return reader.schema
 
     def source_generator(
         with_columns: list[str] | None,
@@ -560,17 +553,15 @@ def scan_readstat(
             if predicate is not None:
                 out = out.filter(predicate)
 
-            if effective_overrides:
-                cols_to_cast = {}
-                for col, dtype in effective_overrides.items():
-                    if col in out.columns:
-                        cols_to_cast[col] = dtype
-                if cols_to_cast:
-                    out = out.cast(cols_to_cast)
-
             yield out
 
     lf = register_io_source(io_source=source_generator, schema=schema_generator())
+    if effective_overrides:
+        lf = lf.with_columns([
+            pl.col(col).cast(dtype)
+            for col, dtype in effective_overrides.items()
+            if col in reader.schema
+        ])
     if sort_in_python and row_index_name is not None:
         lf = lf.sort(row_index_name).drop([row_index_name])
     return lf

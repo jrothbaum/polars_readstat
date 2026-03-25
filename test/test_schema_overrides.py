@@ -49,10 +49,24 @@ def test_schema_overrides_types():
 
 def test_schema_overrides_non_existent_column():
     """
-    Verifies that overriding a column that doesn't exist 
+    Verifies that overriding a column that doesn't exist
     does not crash the reader (it should just be ignored).
     """
     file_path = get_test_file_path()
     overrides = {"this_col_does_not_exist": pl.Int64}
     df = scan_readstat(file_path, schema_overrides=overrides).collect()
     assert not df.is_empty()
+
+
+def test_schema_overrides_overflow_raises(tmp_path):
+    """
+    Verifies that schema_overrides raises an error (not a freeze) when a value
+    overflows the target type, even when the overflow is not in the first batch.
+    """
+    df = pl.DataFrame({"a": [2**32 + 1.1] + 10_000_000 * [1]})
+    path = str(tmp_path / "test.dta")
+    from polars_readstat import write_readstat
+    write_readstat(df=df, path=path)
+
+    with pytest.raises((pl.exceptions.InvalidOperationError, pl.exceptions.ComputeError)):
+        scan_readstat(path, schema_overrides={"a": pl.Int32}).collect()
