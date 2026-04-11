@@ -35,6 +35,7 @@ pub(crate) enum ColumnKind {
 }
 
 /// Pre-computed plan for parsing a column directly from raw row bytes.
+#[derive(Clone)]
 pub(crate) struct ColumnPlan {
     pub start: usize,
     pub end: usize,
@@ -419,22 +420,6 @@ enum ChunkMessage {
 
 pub(crate) type SasBatchIter = Box<dyn Iterator<Item = PolarsResult<DataFrame>> + Send>;
 
-fn split_batch_ranges(total_batches: usize, n_workers: usize) -> Vec<(usize, usize)> {
-    if total_batches == 0 || n_workers == 0 {
-        return Vec::new();
-    }
-    let n = n_workers.min(total_batches);
-    let base = total_batches / n;
-    let rem = total_batches % n;
-    let mut ranges = Vec::with_capacity(n);
-    let mut start = 0usize;
-    for i in 0..n {
-        let len = base + if i < rem { 1 } else { 0 };
-        ranges.push((start, len));
-        start += len;
-    }
-    ranges
-}
 
 struct ParallelSasBatchIter {
     rx: mpsc::Receiver<ChunkMessage>,
@@ -936,18 +921,18 @@ pub(crate) fn sas_batch_iter_with_reader(
         });
         return Ok(Box::new(SasBackgroundIter { rx, handle: Some(handle) }));
     }
-    // Bounded channel: one slot per worker — each worker can have one batch queued
-    // while building the next, keeping peak in-flight memory to ~2×n_workers batches.
-    let (tx, rx) = mpsc::sync_channel::<ChunkMessage>(n_workers);
-    let header = Arc::new(reader.header().clone());
+    // N independent readers each opening the file at their own row range.
+    // Concurrent I/O scales on both local NVMe and Lustre (file striped across OSTs).
+    // No shared work queue — each thread works fully independently, no mutex contention.
+
+    let header = reader.header().clone();
     let metadata = Arc::new(reader.metadata().clone());
+    let row_length = metadata.row_length;
     let endian = reader.endian();
     let format = reader.format();
     let initial_data_subheaders = reader.initial_data_subheaders().to_vec();
 
-    // Build page index once — pure arithmetic, one 6-byte validation read.
-    // Each worker uses this to seek directly to its first page, then reads
-    // sequentially within its assigned row range.
+    // Build page index once — shared read-only across all workers for fast seeking.
     let page_index = Arc::new(compute_page_index(
         &path,
         &header,
@@ -957,129 +942,108 @@ pub(crate) fn sas_batch_iter_with_reader(
         reader.first_data_page(),
         reader.mix_data_rows(),
     ));
+
+    // Plans are immutable and shared across all workers.
+    let plans_arc = Arc::new(ColumnPlan::build_plans(
+        &metadata,
+        col_indices.as_deref(),
+        endian,
+        missing_string_as_null,
+    ));
+
+    let (tx, rx) = mpsc::sync_channel::<ChunkMessage>(n_workers * 2);
+
+    // Split rows evenly across workers; assign each a non-overlapping batch-index range
+    // so the BTreeMap consumer can reassemble in order without any shared state.
+    let rows_per_worker = (total + n_workers - 1) / n_workers;
+    let batches_per_worker = (rows_per_worker + batch_size - 1) / batch_size;
+
     let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(n_workers);
 
-    // Split total batches into contiguous ranges for sequential per-thread reads.
-    let ranges = split_batch_ranges(total_chunks, n_workers);
+    for worker_idx in 0..n_workers {
+        let worker_row_start = offset + worker_idx * rows_per_worker;
+        if worker_row_start >= offset + total {
+            break;
+        }
+        let worker_rows = rows_per_worker.min((offset + total) - worker_row_start);
+        let batch_start_idx = worker_idx * batches_per_worker;
 
-    for (batch_start, batch_count) in ranges.into_iter() {
-        let tx = tx.clone();
         let path = path.clone();
         let header = header.clone();
         let metadata = metadata.clone();
         let page_index = page_index.clone();
-        let col_indices = col_indices.clone();
         let initial_data_subheaders = initial_data_subheaders.clone();
+        let plans = plans_arc.clone();
+        let col_indices = col_indices.clone();
         let row_index_name = row_index_name.clone();
-        let handle = std::thread::spawn(move || {
-            if batch_count == 0 {
-                return;
-            }
+        let tx = tx.clone();
 
-            let start_row = offset + batch_start * batch_size;
-            if start_row >= offset + total {
-                return;
-            }
-            let range_rows = (batch_count * batch_size).min(total - batch_start * batch_size);
+        let handle = std::thread::spawn(move || {
             let mut data_reader = match data_reader_at_row(
                 &path,
                 &header,
                 &metadata,
                 endian,
                 format,
-                start_row,
+                worker_row_start,
                 &initial_data_subheaders,
                 &page_index,
             ) {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = tx.send(ChunkMessage::Err {
-                        idx: batch_start,
-                        msg: e.to_string(),
-                    });
+                    let _ = tx.send(ChunkMessage::Err { idx: batch_start_idx, msg: e.to_string() });
                     return;
                 }
             };
 
-            let plans = ColumnPlan::build_plans(
-                &metadata,
-                col_indices.as_deref(),
-                endian,
-                missing_string_as_null,
-            );
+            let mut remaining = worker_rows;
+            let mut batch_idx = batch_start_idx;
+            let mut row_cursor = worker_row_start;
 
-            let mut remaining = range_rows;
-            let mut local_idx = 0usize;
-            let mut next_row = start_row;
             while remaining > 0 {
                 let take = batch_size.min(remaining);
-                let mut builder = match col_indices.as_deref() {
-                    Some(idx) => DataFrameBuilder::new_with_columns(&metadata, idx, take),
-                    None => DataFrameBuilder::new(metadata.as_ref(), take),
-                };
-
-                let mut read = 0usize;
-                while read < take {
-                    match data_reader.read_row_borrowed() {
-                        Ok(Some(row_bytes)) => {
-                            builder.add_row_raw(row_bytes, &plans);
-                            read += 1;
-                        }
-                        Ok(None) => break,
-                        Err(e) => {
-                            let _ = tx.send(ChunkMessage::Err {
-                                idx: batch_start + local_idx,
-                                msg: e.to_string(),
-                            });
-                            return;
-                        }
-                    }
-                }
-
-                if read == 0 {
-                    break;
-                }
-
-                let mut df = match builder.build() {
-                    Ok(df) => df,
+                let mut buf = Vec::with_capacity(take * row_length);
+                let n_read = match data_reader.read_rows_bulk(take, &mut buf) {
+                    Ok(n) => n,
                     Err(e) => {
-                        let _ = tx.send(ChunkMessage::Err {
-                            idx: batch_start + local_idx,
-                            msg: e.to_string(),
-                        });
+                        let _ = tx.send(ChunkMessage::Err { idx: batch_idx, msg: e.to_string() });
                         return;
                     }
                 };
+                if n_read == 0 {
+                    break;
+                }
 
+                let mut builder = match col_indices.as_deref() {
+                    Some(ci) => DataFrameBuilder::new_with_columns(&metadata, ci, n_read),
+                    None => DataFrameBuilder::new(&metadata, n_read),
+                };
+                for i in 0..n_read {
+                    let rs = i * row_length;
+                    builder.add_row_raw(&buf[rs..rs + row_length], &plans);
+                }
+                let mut df = match builder.build() {
+                    Ok(df) => df,
+                    Err(e) => {
+                        let _ = tx.send(ChunkMessage::Err { idx: batch_idx, msg: e.to_string() });
+                        return;
+                    }
+                };
                 if let Some(ref name) = row_index_name {
-                    let row_start = next_row;
-                    next_row = next_row.saturating_add(read);
-                    match crate::append_row_index(df, name.as_str(), row_start) {
+                    match crate::append_row_index(df, name.as_str(), row_cursor) {
                         Ok(with_idx) => df = with_idx,
                         Err(e) => {
-                            let _ = tx.send(ChunkMessage::Err {
-                                idx: batch_start + local_idx,
-                                msg: e.to_string(),
-                            });
+                            let _ = tx.send(ChunkMessage::Err { idx: batch_idx, msg: e.to_string() });
                             return;
                         }
                     }
-                } else {
-                    next_row = next_row.saturating_add(read);
                 }
-
-                if tx
-                    .send(ChunkMessage::Data {
-                        idx: batch_start + local_idx,
-                        df,
-                    })
-                    .is_err()
-                {
-                    return;
+                if tx.send(ChunkMessage::Data { idx: batch_idx, df }).is_err() {
+                    return; // consumer dropped
                 }
-
-                local_idx += 1;
-                remaining -= read;
+                batch_idx += 1;
+                row_cursor += n_read;
+                remaining -= n_read;
             }
         });
         handles.push(handle);

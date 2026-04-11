@@ -171,6 +171,117 @@ impl<R: Read + Seek> DataReader<R> {
         }
     }
 
+    /// Read up to `n` rows into `buf` as flat bytes (`row_length` bytes per row, consecutive).
+    /// `buf` is NOT cleared — caller should clear/reserve before calling if needed.
+    /// Returns the number of rows actually read.
+    ///
+    /// For uncompressed DATA pages the inner loop is replaced by a single bulk
+    /// `extend_from_slice`, which is important on network filesystems where the
+    /// OS page-cache is cold and per-row function-call overhead is significant.
+    pub fn read_rows_bulk(&mut self, n: usize, buf: &mut Vec<u8>) -> Result<usize> {
+        let row_length = self.metadata.row_length;
+        if row_length == 0 || n == 0 {
+            return Ok(0);
+        }
+        buf.reserve(n * row_length);
+        let mut count = 0;
+
+        while count < n {
+            if self.current_row >= self.metadata.row_count {
+                break;
+            }
+
+            // Fast path: bulk-copy all available rows from an uncompressed DATA page.
+            let bulk = self.try_bulk_copy_data_page(n - count, buf, row_length)?;
+            if bulk > 0 {
+                count += bulk;
+                continue;
+            }
+
+            // Slow path: per-row copy (MIX/META pages, or compressed data).
+            let (offset, length) = match self.ensure_row_ready()? {
+                Some(v) => v,
+                None => break,
+            };
+            if offset + length > self.page_reader.page_buffer().len() {
+                return Err(Error::BufferOutOfBounds { offset, length });
+            }
+            if length < row_length {
+                // Compressed: borrow raw bytes, decompress, then copy out.
+                let raw_bytes = &self.page_reader.page_buffer()[offset..offset + length];
+                self.decompressor
+                    .decompress_into(raw_bytes, &mut self.decompress_buf)?;
+                buf.extend_from_slice(&self.decompress_buf[..row_length]);
+            } else {
+                buf.extend_from_slice(&self.page_reader.page_buffer()[offset..offset + length]);
+            }
+            self.advance_row();
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    /// Fast-path bulk copy for uncompressed DATA pages.
+    ///
+    /// All rows on a DATA page are laid out contiguously in the page buffer, so
+    /// we can copy `min(max_rows, available)` rows with a single `extend_from_slice`
+    /// instead of `available` individual calls.  Returns 0 if not applicable.
+    fn try_bulk_copy_data_page(
+        &mut self,
+        max_rows: usize,
+        buf: &mut Vec<u8>,
+        row_length: usize,
+    ) -> Result<usize> {
+        if self.metadata.compression != crate::types::Compression::None {
+            return Ok(0);
+        }
+
+        // Extract the byte range while holding only an immutable borrow, so
+        // that we can drop the borrow before calling advance_rows (which needs
+        // &mut self).
+        let (start_byte, available) = match &self.page_state {
+            Some(PageState::Data {
+                offset,
+                row_length: page_rl,
+                block_count,
+                current_index,
+            }) => {
+                if *page_rl != row_length || *current_index >= *block_count {
+                    return Ok(0);
+                }
+                let avail = block_count - current_index;
+                (offset + current_index * row_length, avail)
+            }
+            _ => return Ok(0),
+        }; // immutable borrow of self.page_state ends here
+
+        let to_copy = max_rows.min(available);
+        if to_copy == 0 {
+            return Ok(0);
+        }
+
+        let byte_end = start_byte + to_copy * row_length;
+        let actual = {
+            let page_buf = self.page_reader.page_buffer();
+            if byte_end <= page_buf.len() {
+                buf.extend_from_slice(&page_buf[start_byte..byte_end]);
+                to_copy
+            } else {
+                // Clamp to what actually fits in the page.
+                let fits = page_buf.len().saturating_sub(start_byte) / row_length;
+                if fits == 0 {
+                    return Ok(0);
+                }
+                buf.extend_from_slice(&page_buf[start_byte..start_byte + fits * row_length]);
+                fits
+            }
+        }; // immutable borrow of page_buf ends here
+
+        self.advance_rows(actual);
+        Ok(actual)
+    }
+
     /// Skip n rows
     pub fn skip_rows(&mut self, n: usize) -> Result<()> {
         let mut remaining = n.min(self.metadata.row_count.saturating_sub(self.current_row));
