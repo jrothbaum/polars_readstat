@@ -110,7 +110,11 @@ fn test_large_file_parallel_integrity() {
         r.metadata().row_count
     };
     let baseline = collect_sas(&path, 1, 65536);
-    assert_eq!(baseline.height(), expected_rows, "baseline row count mismatch");
+    assert_eq!(
+        baseline.height(),
+        expected_rows,
+        "baseline row count mismatch"
+    );
     let baseline_checksum = float_checksum(&baseline);
 
     for threads in [2usize, 4] {

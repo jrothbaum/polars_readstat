@@ -474,6 +474,80 @@ impl Iterator for SlicedBatchIter {
     }
 }
 
+struct RowIndexedIter {
+    inner: SasBatchIter,
+    row_index_name: String,
+    row_cursor: usize,
+}
+
+impl Iterator for RowIndexedIter {
+    type Item = PolarsResult<DataFrame>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let df = self.inner.next()?;
+        Some(df.and_then(|df| {
+            let n = df.height();
+            let result = crate::append_row_index(df, self.row_index_name.as_str(), self.row_cursor);
+            self.row_cursor += n;
+            result
+        }))
+    }
+}
+
+struct AdaptivePageIter {
+    path: PathBuf,
+    header: Header,
+    metadata: Arc<Metadata>,
+    row_length: usize,
+    endian: Endian,
+    format: Format,
+    plans: Arc<Vec<ColumnPlan>>,
+    col_indices: Option<Vec<usize>>,
+    batch_size: usize,
+    next_page: usize,
+    remaining_pages: usize,
+    pages_per_chunk: usize,
+    n_workers: usize,
+    current: Option<SasBatchIter>,
+}
+
+impl Iterator for AdaptivePageIter {
+    type Item = PolarsResult<DataFrame>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(current) = self.current.as_mut() {
+                if let Some(batch) = current.next() {
+                    return Some(batch);
+                }
+                self.current = None;
+            }
+
+            if self.remaining_pages == 0 {
+                return None;
+            }
+
+            let page_count = self.pages_per_chunk.min(self.remaining_pages);
+            self.current = Some(ordered_parallel_page_iter(
+                self.path.clone(),
+                self.header.clone(),
+                self.metadata.clone(),
+                self.row_length,
+                self.endian,
+                self.format,
+                self.plans.clone(),
+                self.col_indices.clone(),
+                self.batch_size,
+                self.next_page,
+                page_count,
+                self.n_workers,
+            ));
+            self.next_page += page_count;
+            self.remaining_pages -= page_count;
+        }
+    }
+}
+
 // Unordered: all workers share one channel; batches arrive in completion order.
 struct UnorderedParallelIter {
     rx: Option<mpsc::Receiver<PolarsResult<DataFrame>>>,
@@ -550,6 +624,159 @@ impl Drop for OrderedParallelIter {
             let _ = h.join();
         }
     }
+}
+
+fn estimate_data_rows_per_page(
+    path: &PathBuf,
+    header: &Header,
+    endian: Endian,
+    format: Format,
+    first_data_page: usize,
+    total_data_rows: usize,
+    data_pages: usize,
+) -> usize {
+    let avg = total_data_rows.div_ceil(data_pages.max(1)).max(1);
+    let page_bit_offset = match format {
+        Format::Bit64 => 32u64,
+        Format::Bit32 => 16u64,
+    };
+    let byte_offset = header.header_length as u64
+        + first_data_page as u64 * header.page_length as u64
+        + page_bit_offset;
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(_) => return avg,
+    };
+    if file.seek(SeekFrom::Start(byte_offset)).is_err() {
+        return avg;
+    }
+    let mut buf = [0u8; 6];
+    if std::io::Read::read_exact(&mut file, &mut buf).is_err() {
+        return avg;
+    }
+    let block_count = match endian {
+        Endian::Little => u16::from_le_bytes([buf[2], buf[3]]),
+        Endian::Big => u16::from_be_bytes([buf[2], buf[3]]),
+    } as usize;
+    block_count.max(1).min(avg)
+}
+
+fn spawn_page_worker(
+    tx: mpsc::SyncSender<PolarsResult<DataFrame>>,
+    path: PathBuf,
+    header: Header,
+    metadata: Arc<Metadata>,
+    row_length: usize,
+    endian: Endian,
+    format: Format,
+    plans: Arc<Vec<ColumnPlan>>,
+    col_indices: Option<Vec<usize>>,
+    batch_size: usize,
+    worker_page_start: usize,
+    worker_page_count: usize,
+) -> JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut data_reader = match data_reader_at_page_range(
+            &path,
+            &header,
+            &metadata,
+            endian,
+            format,
+            worker_page_start,
+            worker_page_count,
+            0,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
+                return;
+            }
+        };
+
+        loop {
+            let mut buf = Vec::new();
+            let n_read = match data_reader.read_rows_bulk(batch_size, &mut buf) {
+                Ok(n) => n,
+                Err(e) => {
+                    let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
+                    return;
+                }
+            };
+            if n_read == 0 {
+                break;
+            }
+            let mut builder = match col_indices.as_deref() {
+                Some(ci) => DataFrameBuilder::new_with_columns(&metadata, ci, n_read),
+                None => DataFrameBuilder::new(&metadata, n_read),
+            };
+            for i in 0..n_read {
+                let rs = i * row_length;
+                builder.add_row_raw(&buf[rs..rs + row_length], &plans);
+            }
+            match builder.build() {
+                Ok(df) => {
+                    if tx.send(Ok(df)).is_err() {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
+                    return;
+                }
+            }
+        }
+    })
+}
+
+fn ordered_parallel_page_iter(
+    path: PathBuf,
+    header: Header,
+    metadata: Arc<Metadata>,
+    row_length: usize,
+    endian: Endian,
+    format: Format,
+    plans: Arc<Vec<ColumnPlan>>,
+    col_indices: Option<Vec<usize>>,
+    batch_size: usize,
+    page_start: usize,
+    page_count: usize,
+    n_workers: usize,
+) -> SasBatchIter {
+    let worker_count = min(n_workers.max(1), page_count.max(1));
+    let pages_per_worker = page_count.div_ceil(worker_count);
+    let mut channels = std::collections::VecDeque::with_capacity(worker_count);
+    let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(worker_count);
+
+    for worker_idx in 0..worker_count {
+        let worker_page_start = page_start + worker_idx * pages_per_worker;
+        if worker_page_start >= page_start + page_count {
+            break;
+        }
+        let worker_page_count = pages_per_worker.min(page_start + page_count - worker_page_start);
+        let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(4);
+        channels.push_back(rx);
+        handles.push(spawn_page_worker(
+            tx,
+            path.clone(),
+            header.clone(),
+            metadata.clone(),
+            row_length,
+            endian,
+            format,
+            plans.clone(),
+            col_indices.clone(),
+            batch_size,
+            worker_page_start,
+            worker_page_count,
+        ));
+    }
+
+    Box::new(OrderedParallelIter {
+        channels,
+        handles,
+        row_index_name: None,
+        row_cursor: 0,
+    })
 }
 
 // For serial SAS paths (compressed files or single-thread): wraps SerialSasBatchIter
@@ -1081,6 +1308,123 @@ pub(crate) fn sas_batch_iter_with_reader(
         });
     }
 
+    if partial_read {
+        if offset > 0 {
+            let initial_data_subheaders = reader.initial_data_subheaders().to_vec();
+            let serial = SerialSasBatchIter::new(
+                path.to_path_buf(),
+                header,
+                metadata.as_ref().clone(),
+                endian,
+                format,
+                initial_data_subheaders,
+                col_indices,
+                batch_size,
+                total,
+                missing_string_as_null,
+                None,
+                offset,
+                row_index_name,
+            )?;
+            let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(2);
+            let handle = std::thread::spawn(move || {
+                for batch in serial {
+                    if tx.send(batch).is_err() {
+                        return;
+                    }
+                }
+            });
+            return Ok(Box::new(SasBackgroundIter {
+                rx,
+                handle: Some(handle),
+            }));
+        }
+
+        let requested_mix_rows = if offset < mix_data_rows {
+            (mix_data_rows - offset).min(total)
+        } else {
+            0
+        };
+        let mut exact_iter: SasBatchIter = if requested_mix_rows > 0 {
+            let initial_subs = reader.initial_data_subheaders().to_vec();
+            Box::new(SerialSasBatchIter::new(
+                path.clone(),
+                header.clone(),
+                metadata.as_ref().clone(),
+                endian,
+                format,
+                initial_subs,
+                col_indices.clone(),
+                batch_size,
+                requested_mix_rows,
+                missing_string_as_null,
+                None,
+                offset,
+                None,
+            )?)
+        } else {
+            Box::new(std::iter::empty())
+        };
+
+        let requested_data_rows = total.saturating_sub(requested_mix_rows);
+        if requested_data_rows > 0 {
+            let total_data_rows = reader.metadata().row_count.saturating_sub(mix_data_rows);
+            let data_offset = offset.saturating_sub(mix_data_rows);
+            let est_rows_per_page = estimate_data_rows_per_page(
+                &path,
+                &header,
+                endian,
+                format,
+                first_data_page,
+                total_data_rows,
+                data_pages,
+            );
+            let est_start_page_idx = data_offset / est_rows_per_page;
+            let lookback_pages = est_start_page_idx.min(n_workers.max(8));
+            let start_page_idx = est_start_page_idx.saturating_sub(lookback_pages);
+            let skip_in_estimate = data_offset.saturating_sub(start_page_idx * est_rows_per_page);
+            let initial_pages = (skip_in_estimate + requested_data_rows)
+                .div_ceil(est_rows_per_page)
+                .saturating_add(1)
+                .max(n_workers)
+                .min(data_pages - start_page_idx)
+                .max(1);
+
+            let adaptive = AdaptivePageIter {
+                path: path.clone(),
+                header: header.clone(),
+                metadata: metadata.clone(),
+                row_length,
+                endian,
+                format,
+                plans: plans_arc.clone(),
+                col_indices: col_indices.clone(),
+                batch_size,
+                next_page: first_data_page + start_page_idx,
+                remaining_pages: data_pages - start_page_idx,
+                pages_per_chunk: initial_pages,
+                n_workers,
+                current: None,
+            };
+            let data_iter: SasBatchIter = Box::new(SlicedBatchIter {
+                inner: Box::new(adaptive),
+                skip: skip_in_estimate,
+                remaining: requested_data_rows,
+            });
+            exact_iter = Box::new(exact_iter.chain(data_iter));
+        }
+
+        return Ok(if let Some(name) = row_index_name {
+            Box::new(RowIndexedIter {
+                inner: exact_iter,
+                row_index_name: name,
+                row_cursor: offset,
+            }) as SasBatchIter
+        } else {
+            exact_iter
+        });
+    }
+
     // Phase 2: parallel workers for DATA pages only (starting at first_data_page).
     // row_start is 0 per worker — page budget is the sole stopping condition.
     let pages_per_worker = data_pages.div_ceil(n_workers);
@@ -1088,69 +1432,6 @@ pub(crate) fn sas_batch_iter_with_reader(
 
     // Helper: spawn one worker thread that reads pages [page_start, page_start+page_count)
     // and sends each batch (≤ batch_size rows) down `tx`.
-    macro_rules! spawn_worker {
-        ($tx:expr, $worker_page_start:expr, $worker_page_count:expr) => {{
-            let path = path.clone();
-            let header = header.clone();
-            let metadata = metadata.clone();
-            let plans = plans_arc.clone();
-            let col_indices = col_indices.clone();
-            let tx = $tx;
-            let worker_page_start: usize = $worker_page_start;
-            let worker_page_count: usize = $worker_page_count;
-            std::thread::spawn(move || {
-                let mut data_reader = match data_reader_at_page_range(
-                    &path,
-                    &header,
-                    &metadata,
-                    endian,
-                    format,
-                    worker_page_start,
-                    worker_page_count,
-                    0,
-                ) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
-                        return;
-                    }
-                };
-                loop {
-                    let mut buf = Vec::new();
-                    let n_read = match data_reader.read_rows_bulk(batch_size, &mut buf) {
-                        Ok(n) => n,
-                        Err(e) => {
-                            let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
-                            return;
-                        }
-                    };
-                    if n_read == 0 {
-                        break;
-                    }
-                    let mut builder = match col_indices.as_deref() {
-                        Some(ci) => DataFrameBuilder::new_with_columns(&metadata, ci, n_read),
-                        None => DataFrameBuilder::new(&metadata, n_read),
-                    };
-                    for i in 0..n_read {
-                        let rs = i * row_length;
-                        builder.add_row_raw(&buf[rs..rs + row_length], &plans);
-                    }
-                    match builder.build() {
-                        Ok(df) => {
-                            if tx.send(Ok(df)).is_err() {
-                                return;
-                            }
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
-                            return;
-                        }
-                    }
-                }
-            })
-        }};
-    }
-
     // Row index assignment happens in the iterator, not in workers, so the counter
     // is always exact based on realized row counts rather than geometry estimates.
     let row_index_start = mix_data_rows;
@@ -1168,7 +1449,20 @@ pub(crate) fn sas_batch_iter_with_reader(
             let wp_count = pages_per_worker.min(total_pages - wp_start);
             let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(4);
             channels.push_back(rx);
-            handles.push(spawn_worker!(tx, wp_start, wp_count));
+            handles.push(spawn_page_worker(
+                tx,
+                path.clone(),
+                header.clone(),
+                metadata.clone(),
+                row_length,
+                endian,
+                format,
+                plans_arc.clone(),
+                col_indices.clone(),
+                batch_size,
+                wp_start,
+                wp_count,
+            ));
         }
         let parallel = OrderedParallelIter {
             channels,
@@ -1188,7 +1482,20 @@ pub(crate) fn sas_batch_iter_with_reader(
                 break;
             }
             let wp_count = pages_per_worker.min(total_pages - wp_start);
-            handles.push(spawn_worker!(shared_tx.clone(), wp_start, wp_count));
+            handles.push(spawn_page_worker(
+                shared_tx.clone(),
+                path.clone(),
+                header.clone(),
+                metadata.clone(),
+                row_length,
+                endian,
+                format,
+                plans_arc.clone(),
+                col_indices.clone(),
+                batch_size,
+                wp_start,
+                wp_count,
+            ));
         }
         drop(shared_tx);
         let parallel = UnorderedParallelIter {
