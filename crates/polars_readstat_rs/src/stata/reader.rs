@@ -86,7 +86,11 @@ impl StataReader {
         let limit = _opts
             .limit
             .unwrap_or(self.metadata.row_count.saturating_sub(_opts.offset as u64) as usize);
-        let threads = if _opts.parallel { _opts.num_threads } else { Some(1) };
+        let threads = if _opts.parallel {
+            _opts.num_threads
+        } else {
+            Some(1)
+        };
         let mut iter = crate::stata::polars_output::stata_batch_iter_with_reader(
             self,
             self.path.clone(),

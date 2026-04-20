@@ -11,17 +11,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Entry in the data page index for fast parallel seeking
-#[derive(Debug, Clone)]
-pub(crate) struct DataPageEntry {
-    /// Page number (0-indexed from start of file pages, after header)
-    page_number: usize,
-    /// Cumulative row count at the START of this page
-    row_start: usize,
-    /// Number of data rows on this page
-    row_count: usize,
-}
-
 /// Main reader for SAS7BDAT files
 pub struct Sas7bdatReader {
     path: PathBuf,
@@ -128,10 +117,10 @@ impl Sas7bdatReader {
     pub fn initial_data_subheaders(&self) -> &[DataSubheader] {
         &self.initial_data_subheaders
     }
-    pub(crate) fn first_data_page(&self) -> usize {
+    pub fn first_data_page(&self) -> usize {
         self.first_data_page
     }
-    pub(crate) fn mix_data_rows(&self) -> usize {
+    pub fn mix_data_rows(&self) -> usize {
         self.mix_data_rows
     }
 
@@ -143,7 +132,11 @@ impl Sas7bdatReader {
             .unwrap_or(self.metadata.row_count.saturating_sub(opts.offset));
 
         let missing_null = opts.missing_string_as_null;
-        let threads = if opts.parallel { opts.num_threads } else { Some(1) };
+        let threads = if opts.parallel {
+            opts.num_threads
+        } else {
+            Some(1)
+        };
         let mut iter = crate::sas::polars_output::sas_batch_iter_with_reader(
             self,
             self.path.clone(),
@@ -161,8 +154,7 @@ impl Sas7bdatReader {
 
         let mut df: Option<DataFrame> = None;
         while let Some(batch) = iter.next() {
-            let batch =
-                batch.map_err(|e| crate::error::Error::ParseError(e.to_string()))?;
+            let batch = batch.map_err(|e| crate::error::Error::ParseError(e.to_string()))?;
             if let Some(acc) = df.as_mut() {
                 acc.vstack_mut(&batch)?;
             } else {
@@ -272,162 +264,29 @@ impl<'a> ReadBuilder<'a> {
     }
 }
 
-/// Build a page index analytically — zero I/O, pure arithmetic from header/metadata.
-/// For uncompressed SAS files all pages after the metadata section are DATA pages
-/// with a constant rows-per-page value derived from page_length and row_length.
-/// We simply enumerate them without touching the file.
-pub(crate) fn compute_page_index(
+/// Create a DataReader seeked to `page_number` and limited to `page_count` data-bearing pages.
+/// The reader does NOT call skip_rows — it relies purely on the page budget for stopping.
+/// `row_start` initialises the current_row counter (for row-index tracking only; does not
+/// affect when reading stops).
+pub(crate) fn data_reader_at_page_range(
     path: &Path,
     header: &Header,
     metadata: &Metadata,
     endian: Endian,
     format: Format,
-    first_data_page: usize,
-    mix_data_rows: usize,
-) -> Vec<DataPageEntry> {
-    let row_length = metadata.row_length;
-    if row_length == 0 {
-        return Vec::new();
-    }
-
-    let page_bit_offset: usize = match format {
-        Format::Bit64 => 32,
-        Format::Bit32 => 16,
-    };
-    let data_start = page_bit_offset + 8;
-    let rows_per_page = header.page_length.saturating_sub(data_start) / row_length;
-    if rows_per_page == 0 {
-        return Vec::new();
-    }
-
-    // Validate: read the actual block_count from the first DATA page header.
-    // If it doesn't match our analytical rows_per_page the assumption is broken
-    // and we return an empty index so all workers fall back to skip_rows.
-    if let Ok(actual_block_count) = read_first_data_page_block_count(
-        path, header, endian, page_bit_offset, first_data_page,
-    ) {
-        if actual_block_count != rows_per_page {
-            return Vec::new();
-        }
-    } else {
-        return Vec::new();
-    }
-
-    // DATA-page rows start after any MIX-page data rows.
-    let total_rows = metadata.row_count;
-    let data_page_rows = total_rows.saturating_sub(mix_data_rows);
-    let n_data_pages = (data_page_rows + rows_per_page - 1) / rows_per_page;
-
-    let mut entries = Vec::with_capacity(n_data_pages);
-    for i in 0..n_data_pages {
-        let row_start = mix_data_rows + i * rows_per_page;
-        let row_count = rows_per_page.min(total_rows - row_start);
-        entries.push(DataPageEntry {
-            page_number: first_data_page + i,
-            row_start,
-            row_count,
-        });
-    }
-    entries
-}
-
-/// Read the block_count field from the first DATA page header.
-/// This is a single seek + 6-byte read — essentially free.
-fn read_first_data_page_block_count(
-    path: &Path,
-    header: &Header,
-    endian: Endian,
-    page_bit_offset: usize,
-    first_data_page: usize,
-) -> crate::error::Result<usize> {
-    use std::io::Read;
-    let byte_offset = header.header_length as u64
-        + first_data_page as u64 * header.page_length as u64
-        + page_bit_offset as u64;
-    let mut file = File::open(path)?;
-    file.seek(SeekFrom::Start(byte_offset))?;
-    let mut buf = [0u8; 6];
-    file.read_exact(&mut buf)?;
-    // page_type: buf[0..2], block_count: buf[2..4]
-    let block_count = match endian {
-        Endian::Little => u16::from_le_bytes([buf[2], buf[3]]),
-        Endian::Big => u16::from_be_bytes([buf[2], buf[3]]),
-    };
-    Ok(block_count as usize)
-}
-
-/// Create a DataReader positioned at `target_row` using the page index when possible.
-/// Falls back to the sequential skip_rows path when the target row is in the MIX prefix.
-pub(crate) fn data_reader_at_row(
-    path: &Path,
-    header: &Header,
-    metadata: &Metadata,
-    endian: Endian,
-    format: Format,
-    target_row: usize,
-    initial_data_subheaders: &[DataSubheader],
-    page_index: &[DataPageEntry],
+    page_number: usize,
+    page_count: usize,
+    row_start: usize,
 ) -> Result<DataReader<BufReader<File>>> {
-    if target_row >= metadata.row_count {
-        // Construct a reader at EOF (caller should handle empty range).
-        let mut file = BufReader::new(File::open(path)?);
-        file.seek(SeekFrom::Start(header.header_length as u64))?;
-        let page_reader = PageReader::new(file, header.clone(), endian, format);
-        let mut data_reader = DataReader::new(
-            page_reader,
-            metadata.clone(),
-            endian,
-            format,
-            initial_data_subheaders.to_vec(),
-        )?;
-        data_reader.set_current_row(metadata.row_count);
-        return Ok(data_reader);
-    }
-
-    let page_idx = page_index
-        .partition_point(|p| p.row_start + p.row_count <= target_row);
-
-    let use_index = page_idx < page_index.len()
-        && target_row >= page_index.first().map_or(0, |e| e.row_start);
-
-    if !use_index {
-        let mut file = BufReader::new(File::open(path)?);
-        file.seek(SeekFrom::Start(header.header_length as u64))?;
-        let page_reader = PageReader::new(file, header.clone(), endian, format);
-        let mut data_reader = DataReader::new(
-            page_reader,
-            metadata.clone(),
-            endian,
-            format,
-            initial_data_subheaders.to_vec(),
-        )?;
-        if target_row > 0 {
-            data_reader.skip_rows(target_row)?;
-        }
-        return Ok(data_reader);
-    }
-
-    let entry = &page_index[page_idx];
-    let within_page_skip = target_row - entry.row_start;
-
-    let page_byte_offset =
-        header.header_length as u64 + (entry.page_number as u64 * header.page_length as u64);
+    let byte_offset = header.header_length as u64 + page_number as u64 * header.page_length as u64;
     let mut file = BufReader::new(File::open(path)?);
-    file.seek(SeekFrom::Start(page_byte_offset))?;
-
+    file.seek(SeekFrom::Start(byte_offset))?;
     let page_reader = PageReader::new(file, header.clone(), endian, format);
-    let mut data_reader = DataReader::new(
-        page_reader,
-        metadata.clone(),
-        endian,
-        format,
-        Vec::new(),
-    )?;
-
-    data_reader.set_current_row(entry.row_start);
-    if within_page_skip > 0 {
-        data_reader.skip_rows(within_page_skip)?;
-    }
+    let mut data_reader =
+        DataReader::new(page_reader, metadata.clone(), endian, format, Vec::new())?;
+    // DataReader::new() already consumed one page; set the budget for remaining pages.
+    data_reader.set_max_pages(page_count.saturating_sub(1));
+    data_reader.set_current_row(row_start);
     Ok(data_reader)
 }
 

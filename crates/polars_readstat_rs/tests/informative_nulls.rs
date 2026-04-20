@@ -7,8 +7,8 @@
 /// 4. Name collision detection works.
 use polars::prelude::*;
 use polars_readstat_rs::{
-    scan_sas7bdat, scan_sav, scan_dta,
-    InformativeNullColumns, InformativeNullMode, InformativeNullOpts, ScanOptions,
+    scan_dta, scan_sas7bdat, scan_sav, InformativeNullColumns, InformativeNullMode,
+    InformativeNullOpts, ScanOptions,
 };
 use std::path::PathBuf;
 
@@ -182,7 +182,10 @@ fn test_sas_informative_nulls_no_indicators_without_option() -> PolarsResult<()>
         .iter_names()
         .filter(|n| n.as_str().ends_with("_null"))
         .count();
-    assert_eq!(ind_col_count, 0, "no indicator columns should exist without the option");
+    assert_eq!(
+        ind_col_count, 0,
+        "no indicator columns should exist without the option"
+    );
     Ok(())
 }
 
@@ -412,7 +415,10 @@ fn test_stata8_informative_nulls_indicators_present() -> PolarsResult<()> {
         .cloned()
         .collect();
 
-    assert!(!ind_cols.is_empty(), "stata8_115.dta should produce indicator columns");
+    assert!(
+        !ind_cols.is_empty(),
+        "stata8_115.dta should produce indicator columns"
+    );
 
     let total_non_null: usize = ind_cols
         .iter()

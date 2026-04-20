@@ -439,8 +439,7 @@ pub fn read_data_frame_streaming(
         for builder in builders {
             cols.push(builder.finish().into());
         }
-        let df =
-            DataFrame::new_infer_height(cols).map_err(|e| Error::ParseError(e.to_string()))?;
+        let df = DataFrame::new_infer_height(cols).map_err(|e| Error::ParseError(e.to_string()))?;
         if !on_batch(df) {
             return Ok(());
         }
@@ -1165,7 +1164,13 @@ pub fn read_data_frame_range_with_indicators(
     let rules = missing_rules(ds_format);
 
     let (col_indices, mut builders, col_offsets, col_widths, col_labels, mut string_scratch) =
-        build_column_builders(metadata, columns, limit, label_maps, value_labels_as_strings)?;
+        build_column_builders(
+            metadata,
+            columns,
+            limit,
+            label_maps,
+            value_labels_as_strings,
+        )?;
 
     // Build parallel indicator builders for columns in indicator_cols
     let mut null_builders: Vec<Option<StringChunkedBuilder>> = col_indices
@@ -1182,7 +1187,11 @@ pub fn read_data_frame_range_with_indicators(
         })
         .collect();
 
-    let record_len = metadata.storage_widths.iter().map(|v| *v as usize).sum::<usize>();
+    let record_len = metadata
+        .storage_widths
+        .iter()
+        .map(|v| *v as usize)
+        .sum::<usize>();
     let mut row_buf = vec![0u8; record_len];
 
     let total_rows = metadata.row_count as usize;
@@ -1243,7 +1252,8 @@ pub fn read_data_frame_range_with_indicators(
     }
 
     // Build the DataFrame: data columns first, then indicator columns appended
-    let mut cols: Vec<Column> = Vec::with_capacity(builders.len() + null_builders.iter().filter(|b| b.is_some()).count());
+    let mut cols: Vec<Column> =
+        Vec::with_capacity(builders.len() + null_builders.iter().filter(|b| b.is_some()).count());
     for builder in builders {
         cols.push(builder.finish().into());
     }
@@ -1275,62 +1285,117 @@ fn append_value_tagged(
         (ColumnBuilder::Int8(b), VarType::Numeric(NumericType::Byte)) => {
             let (val, offset) = read_i8_tagged(buf, rules);
             match (val, offset) {
-                (Some(v), _) => { b.append_value(v); null_builder.append_null(); }
+                (Some(v), _) => {
+                    b.append_value(v);
+                    null_builder.append_null();
+                }
                 (None, Some(k)) => {
                     b.append_null();
                     let raw = rules.system_missing_int8 as i32 + k as i32;
-                    null_builder.append_value(&indicator_from_offset(k, raw, label_map, use_value_labels));
+                    null_builder.append_value(&indicator_from_offset(
+                        k,
+                        raw,
+                        label_map,
+                        use_value_labels,
+                    ));
                 }
-                (None, None) => { b.append_null(); null_builder.append_null(); }
+                (None, None) => {
+                    b.append_null();
+                    null_builder.append_null();
+                }
             }
         }
         (ColumnBuilder::Int16(b), VarType::Numeric(NumericType::Int)) => {
             let (val, offset) = read_i16_tagged(buf, endian, rules);
             match (val, offset) {
-                (Some(v), _) => { b.append_value(v); null_builder.append_null(); }
+                (Some(v), _) => {
+                    b.append_value(v);
+                    null_builder.append_null();
+                }
                 (None, Some(k)) => {
                     b.append_null();
                     let raw = rules.system_missing_int16 as i32 + k as i32;
-                    null_builder.append_value(&indicator_from_offset(k, raw, label_map, use_value_labels));
+                    null_builder.append_value(&indicator_from_offset(
+                        k,
+                        raw,
+                        label_map,
+                        use_value_labels,
+                    ));
                 }
-                (None, None) => { b.append_null(); null_builder.append_null(); }
+                (None, None) => {
+                    b.append_null();
+                    null_builder.append_null();
+                }
             }
         }
         (ColumnBuilder::Int32(b), VarType::Numeric(NumericType::Long)) => {
             let (val, offset) = read_i32_tagged(buf, endian, rules);
             match (val, offset) {
-                (Some(v), _) => { b.append_value(v); null_builder.append_null(); }
+                (Some(v), _) => {
+                    b.append_value(v);
+                    null_builder.append_null();
+                }
                 (None, Some(k)) => {
                     b.append_null();
                     let raw = rules.system_missing_int32 + k as i32;
-                    null_builder.append_value(&indicator_from_offset(k, raw, label_map, use_value_labels));
+                    null_builder.append_value(&indicator_from_offset(
+                        k,
+                        raw,
+                        label_map,
+                        use_value_labels,
+                    ));
                 }
-                (None, None) => { b.append_null(); null_builder.append_null(); }
+                (None, None) => {
+                    b.append_null();
+                    null_builder.append_null();
+                }
             }
         }
         (ColumnBuilder::Float32(b), VarType::Numeric(NumericType::Float)) => {
             let (val, offset) = read_f32_tagged(buf, endian, rules);
             match (val, offset) {
-                (Some(v), _) => { b.append_value(v); null_builder.append_null(); }
+                (Some(v), _) => {
+                    b.append_value(v);
+                    null_builder.append_null();
+                }
                 (None, Some(k)) => {
                     b.append_null();
                     // For float, reconstruct raw bits for label lookup
                     let raw_bits = (rules.missing_float as u64) + (k as u64) * 0x0008_0000;
-                    null_builder.append_value(&indicator_from_offset_f(k, raw_bits, label_map, use_value_labels));
+                    null_builder.append_value(&indicator_from_offset_f(
+                        k,
+                        raw_bits,
+                        label_map,
+                        use_value_labels,
+                    ));
                 }
-                (None, None) => { b.append_null(); null_builder.append_null(); }
+                (None, None) => {
+                    b.append_null();
+                    null_builder.append_null();
+                }
             }
         }
         (ColumnBuilder::Float64(b), VarType::Numeric(NumericType::Double)) => {
             let (val, offset) = read_f64_tagged(buf, endian, rules);
             match (val, offset) {
-                (Some(v), _) => { b.append_value(v); null_builder.append_null(); }
+                (Some(v), _) => {
+                    b.append_value(v);
+                    null_builder.append_null();
+                }
                 (None, Some(k)) => {
                     b.append_null();
                     let raw_bits = rules.missing_double + k as u64;
-                    null_builder.append_value(&indicator_from_offset_f(k, raw_bits, label_map, use_value_labels));
+                    null_builder.append_value(&indicator_from_offset_f(
+                        k,
+                        raw_bits,
+                        label_map,
+                        use_value_labels,
+                    ));
                 }
-                (None, None) => { b.append_null(); null_builder.append_null(); }
+                (None, None) => {
+                    b.append_null();
+                    null_builder.append_null();
+                }
             }
         }
         // For labeled numeric columns (Utf8 builder), tagged path uses the same logic but

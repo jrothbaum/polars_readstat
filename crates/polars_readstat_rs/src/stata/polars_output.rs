@@ -219,7 +219,6 @@ impl Drop for StataBackgroundIter {
     }
 }
 
-
 pub(crate) fn stata_batch_iter(
     path: PathBuf,
     threads: Option<usize>,
@@ -265,10 +264,7 @@ pub(crate) fn stata_batch_iter_with_reader(
     n_rows: Option<usize>,
     informative_nulls: Option<crate::InformativeNullOpts>,
 ) -> PolarsResult<StataBatchIter> {
-    let max_rows = reader
-        .metadata()
-        .row_count
-        .saturating_sub(offset as u64) as usize;
+    let max_rows = reader.metadata().row_count.saturating_sub(offset as u64) as usize;
     let total = n_rows.unwrap_or(max_rows).min(max_rows);
     let batch_size = chunk_size.unwrap_or(100_000).max(1);
     let selected = cols
@@ -334,77 +330,76 @@ pub(crate) fn stata_batch_iter_with_reader(
             let pool = match ThreadPoolBuilder::new().num_threads(n_workers).build() {
                 Ok(pool) => pool,
                 Err(e) => {
-                    let _ = tx.send((
-                        0,
-                        Err(PolarsError::ComputeError(e.to_string().into())),
-                    ));
+                    let _ = tx.send((0, Err(PolarsError::ComputeError(e.to_string().into()))));
                     return;
                 }
             };
             pool.install(|| {
-                ranges.into_par_iter().for_each_with(tx, |sender, (batch_start, batch_count)| {
-                    if batch_count == 0 {
-                        return;
-                    }
-                    let start_row = offset + batch_start * batch_size;
-                    if start_row >= offset + total {
-                        return;
-                    }
-                    let range_rows =
-                        (batch_count * batch_size).min(total - batch_start * batch_size);
-                    let mut local_idx = 0usize;
-                    let row_index_name = row_index_name.clone();
-                    let mut next_row = start_row;
-                    let mut on_batch = |mut df: DataFrame| -> bool {
-                        if let Err(e) = apply_stata_time_formats(&mut df, &formats) {
+                ranges
+                    .into_par_iter()
+                    .for_each_with(tx, |sender, (batch_start, batch_count)| {
+                        if batch_count == 0 {
+                            return;
+                        }
+                        let start_row = offset + batch_start * batch_size;
+                        if start_row >= offset + total {
+                            return;
+                        }
+                        let range_rows =
+                            (batch_count * batch_size).min(total - batch_start * batch_size);
+                        let mut local_idx = 0usize;
+                        let row_index_name = row_index_name.clone();
+                        let mut next_row = start_row;
+                        let mut on_batch = |mut df: DataFrame| -> bool {
+                            if let Err(e) = apply_stata_time_formats(&mut df, &formats) {
+                                let _ = sender.send((
+                                    batch_start + local_idx,
+                                    Err(PolarsError::ComputeError(e.to_string().into())),
+                                ));
+                                return false;
+                            }
+                            if let Some(ref name) = row_index_name {
+                                let row_start = next_row;
+                                next_row = next_row.saturating_add(df.height());
+                                match crate::append_row_index(df, name.as_str(), row_start) {
+                                    Ok(with_idx) => df = with_idx,
+                                    Err(e) => {
+                                        let _ = sender.send((
+                                            batch_start + local_idx,
+                                            Err(PolarsError::ComputeError(e.to_string().into())),
+                                        ));
+                                        return false;
+                                    }
+                                }
+                            } else {
+                                next_row = next_row.saturating_add(df.height());
+                            }
+                            let idx = batch_start + local_idx;
+                            local_idx += 1;
+                            sender.send((idx, Ok(df))).is_ok()
+                        };
+
+                        let result = read_data_frame_streaming(
+                            &path,
+                            &metadata,
+                            endian,
+                            version,
+                            cols_idx.as_deref(),
+                            start_row,
+                            range_rows,
+                            missing_null,
+                            labels_as_strings,
+                            &shared,
+                            batch_size,
+                            &mut on_batch,
+                        );
+                        if let Err(e) = result {
                             let _ = sender.send((
                                 batch_start + local_idx,
                                 Err(PolarsError::ComputeError(e.to_string().into())),
                             ));
-                            return false;
                         }
-                        if let Some(ref name) = row_index_name {
-                            let row_start = next_row;
-                            next_row = next_row.saturating_add(df.height());
-                            match crate::append_row_index(df, name.as_str(), row_start) {
-                                Ok(with_idx) => df = with_idx,
-                                Err(e) => {
-                                    let _ = sender.send((
-                                        batch_start + local_idx,
-                                        Err(PolarsError::ComputeError(e.to_string().into())),
-                                    ));
-                                    return false;
-                                }
-                            }
-                        } else {
-                            next_row = next_row.saturating_add(df.height());
-                        }
-                        let idx = batch_start + local_idx;
-                        local_idx += 1;
-                        sender.send((idx, Ok(df))).is_ok()
-                    };
-
-                    let result = read_data_frame_streaming(
-                        &path,
-                        &metadata,
-                        endian,
-                        version,
-                        cols_idx.as_deref(),
-                        start_row,
-                        range_rows,
-                        missing_null,
-                        labels_as_strings,
-                        &shared,
-                        batch_size,
-                        &mut on_batch,
-                    );
-                    if let Err(e) = result {
-                        let _ = sender.send((
-                            batch_start + local_idx,
-                            Err(PolarsError::ComputeError(e.to_string().into())),
-                        ));
-                    }
-                });
+                    });
             });
         });
 
@@ -435,7 +430,9 @@ pub(crate) fn stata_batch_iter_with_reader(
         // Compute pairs/indicator_set before spawning so errors surface immediately.
         let var_names: Vec<String> = metadata.variables.iter().map(|v| v.name.clone()).collect();
         let var_name_refs: Vec<&str> = var_names.iter().map(|s| s.as_str()).collect();
-        let eligible: Vec<&str> = metadata.variables.iter()
+        let eligible: Vec<&str> = metadata
+            .variables
+            .iter()
             .filter(|v| matches!(v.var_type, VarType::Numeric(_)))
             .map(|v| v.name.as_str())
             .collect();
@@ -459,22 +456,33 @@ pub(crate) fn stata_batch_iter_with_reader(
         let metadata_clone = metadata.clone();
         let formats_clone = formats.clone();
         let handle = std::thread::spawn(move || {
-            let shared = match build_shared_decode(&path_clone, &metadata_clone, endian, version, labels) {
-                Ok(s) => s,
-                Err(e) => {
-                    let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
-                    return;
-                }
-            };
+            let shared =
+                match build_shared_decode(&path_clone, &metadata_clone, endian, version, labels) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
+                        return;
+                    }
+                };
             let mut cur_offset = offset;
             let mut remaining = total;
             while remaining > 0 {
                 let take = batch_size.min(remaining);
                 let row_start = cur_offset;
                 let result = read_data_frame_range_with_indicators(
-                    &path_clone, &metadata_clone, endian, version,
-                    col_indices_clone.as_deref(), cur_offset, take, missing_null, labels,
-                    &shared, &indicator_set, null_opts.use_value_labels, &suffix,
+                    &path_clone,
+                    &metadata_clone,
+                    endian,
+                    version,
+                    col_indices_clone.as_deref(),
+                    cur_offset,
+                    take,
+                    missing_null,
+                    labels,
+                    &shared,
+                    &indicator_set,
+                    null_opts.use_value_labels,
+                    &suffix,
                 )
                 .map_err(|e| PolarsError::ComputeError(e.to_string().into()))
                 .and_then(|mut df| {
@@ -496,7 +504,10 @@ pub(crate) fn stata_batch_iter_with_reader(
                 remaining -= take;
             }
         });
-        return Ok(Box::new(StataBackgroundIter { rx, handle: Some(handle) }));
+        return Ok(Box::new(StataBackgroundIter {
+            rx,
+            handle: Some(handle),
+        }));
     }
 
     // Normal serial: build SharedDecode once, then read one batch at a time.
@@ -514,8 +525,16 @@ pub(crate) fn stata_batch_iter_with_reader(
             let take = batch_size.min(remaining);
             let row_start = cur_offset;
             let result = read_data_frame_range(
-                &path, &metadata, endian, version, col_indices.as_deref(),
-                cur_offset, take, missing_null, labels, &shared,
+                &path,
+                &metadata,
+                endian,
+                version,
+                col_indices.as_deref(),
+                cur_offset,
+                take,
+                missing_null,
+                labels,
+                &shared,
             )
             .map_err(|e| PolarsError::ComputeError(e.to_string().into()))
             .and_then(|mut df| {
@@ -536,7 +555,10 @@ pub(crate) fn stata_batch_iter_with_reader(
             remaining -= take;
         }
     });
-    Ok(Box::new(StataBackgroundIter { rx, handle: Some(handle) }))
+    Ok(Box::new(StataBackgroundIter {
+        rx,
+        handle: Some(handle),
+    }))
 }
 
 impl AnonymousScan for StataScan {

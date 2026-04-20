@@ -33,11 +33,7 @@ impl Decompressor {
 
     /// Decompress into a pre-allocated buffer, avoiding allocation.
     /// The buffer must be at least `expected_output_size` bytes.
-    pub fn decompress_into(
-        &mut self,
-        input: &[u8],
-        output: &mut [u8],
-    ) -> Result<()> {
+    pub fn decompress_into(&mut self, input: &[u8], output: &mut [u8]) -> Result<()> {
         match self {
             Self::None => {
                 output[..input.len()].copy_from_slice(input);

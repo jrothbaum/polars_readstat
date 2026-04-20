@@ -319,7 +319,8 @@ mod tests {
         let (_, x_off) = decode_numeric_bytes_mask_tagged(Endian::Little, &x_bits.to_le_bytes());
         let (_, z_off) = decode_numeric_bytes_mask_tagged(Endian::Little, &z_bits.to_le_bytes());
         let (_, us_off) = decode_numeric_bytes_mask_tagged(Endian::Little, &us_bits.to_le_bytes());
-        let (_, sys_off) = decode_numeric_bytes_mask_tagged(Endian::Little, &sys_bits.to_le_bytes());
+        let (_, sys_off) =
+            decode_numeric_bytes_mask_tagged(Endian::Little, &sys_bits.to_le_bytes());
 
         assert_eq!(a_off, Some(1)); // .A
         assert_eq!(x_off, Some(24)); // .X
@@ -359,4 +360,3 @@ mod tests {
         }
     }
 }
-

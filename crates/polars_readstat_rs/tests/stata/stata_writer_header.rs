@@ -43,5 +43,9 @@ fn test_writer_defaults_to_release_118_for_small_dataset() {
     let k_open = find_subslice(&bytes, b"<K>").expect("missing <K> tag");
     let k_start = k_open + "<K>".len();
     let k_end = find_subslice_from(&bytes, b"</K>", k_start).expect("missing </K> tag");
-    assert_eq!(k_end - k_start, 2, "expected 2-byte K field for release 118");
+    assert_eq!(
+        k_end - k_start,
+        2,
+        "expected 2-byte K field for release 118"
+    );
 }

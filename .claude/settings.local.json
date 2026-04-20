@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(pytest:*)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(cargo build:*)",
+      "Bash(git stash:*)",
+      "Bash(grep:*)",
+      "Bash(git pull:*)"
     ]
   }
 }

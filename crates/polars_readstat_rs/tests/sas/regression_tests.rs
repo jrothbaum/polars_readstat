@@ -1,9 +1,52 @@
 mod common;
 
 use polars_readstat_rs::reader::Sas7bdatReader;
-use polars_readstat_rs::{scan_sas7bdat, ScanOptions};
+use polars_readstat_rs::{readstat_batch_iter, scan_sas7bdat, ScanOptions};
 use common::{test_data_path, all_sas_files};
 use polars::prelude::*;
+
+fn collect_via_batch_iter(path: &std::path::Path, threads: usize, batch_size: usize) -> DataFrame {
+    let opts = ScanOptions {
+        threads: Some(threads),
+        chunk_size: Some(batch_size),
+        ..Default::default()
+    };
+    let iter = readstat_batch_iter(path, Some(opts), None, None, None, Some(batch_size))
+        .expect("failed to create iter");
+    let frames: Vec<DataFrame> = iter.map(|r| r.expect("batch error")).collect();
+    polars::functions::concat_df_diagonal(&frames).expect("concat failed")
+}
+
+/// Parallel SAS reader must produce the same data regardless of thread count or batch size.
+#[test]
+fn test_parallel_reader_data_integrity() {
+    let files = [
+        test_data_path("data_poe/cps.sas7bdat"),
+        test_data_path("data_poe/cola.sas7bdat"),
+        test_data_path("sas_to_csv/drugprob.sas7bdat"),
+    ];
+    for path in &files {
+        if !path.exists() {
+            continue;
+        }
+        let expected_rows = {
+            let r = Sas7bdatReader::open(path).expect("open");
+            r.metadata().row_count
+        };
+        for threads in [1usize, 2, 3, 4] {
+            for batch_size in [512usize, 2048, 4096] {
+                let df = collect_via_batch_iter(path, threads, batch_size);
+                assert_eq!(
+                    df.height(),
+                    expected_rows,
+                    "{}: threads={threads} batch={batch_size} got {} rows, expected {expected_rows}",
+                    path.display(),
+                    df.height()
+                );
+            }
+        }
+    }
+}
 
 /// Regression test: verify specific data values using the Lazy API
 #[test]

@@ -111,7 +111,6 @@ fn trim_sas_bytes(bytes: &[u8]) -> &[u8] {
     &bytes[..end]
 }
 
-
 /// Debug helper: extract raw bytes for a column across a row range.
 pub fn debug_dump_raw_column(
     path: impl AsRef<Path>,

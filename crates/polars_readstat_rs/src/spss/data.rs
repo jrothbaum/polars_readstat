@@ -97,7 +97,11 @@ pub fn read_data_frame_streaming(
     let data_offset = metadata
         .data_offset
         .ok_or_else(|| Error::ParseError("missing data offset".to_string()))?;
-    let record_len = metadata.variables.iter().map(|v| v.width * 8).sum::<usize>();
+    let record_len = metadata
+        .variables
+        .iter()
+        .map(|v| v.width * 8)
+        .sum::<usize>();
     reader.seek(SeekFrom::Start(data_offset))?;
 
     let total_rows = metadata.row_count as usize;
@@ -150,44 +154,45 @@ pub fn read_data_frame_streaming(
     }
 
     // Inline helper: create a fresh set of column builders for one batch.
-    let make_builders = |cap: usize| -> Vec<ColumnBuilder> {
-        col_indices
-            .iter()
-            .map(|&idx| {
-                let var = &metadata.variables[idx];
-                let name = var.name.as_str();
-                let has_label = var
-                    .value_label
-                    .as_ref()
-                    .map(|n| label_maps.contains_key(n))
-                    .unwrap_or(false);
-                match (var.var_type, has_label && value_labels_as_strings) {
-                    (VarType::Numeric, true) => ColumnBuilder::Utf8 {
-                        builder: StringChunkedBuilder::new(name.into(), cap),
-                        num_cache: Some(NumericStringCache::new()),
-                    },
-                    (VarType::Numeric, false) => match var.format_class {
-                        Some(FormatClass::Date) => ColumnBuilder::Date(
-                            PrimitiveChunkedBuilder::<Int32Type>::new(name.into(), cap),
-                        ),
-                        Some(FormatClass::DateTime) => ColumnBuilder::DateTime(
-                            PrimitiveChunkedBuilder::<Int64Type>::new(name.into(), cap),
-                        ),
-                        Some(FormatClass::Time) => ColumnBuilder::Time(
-                            PrimitiveChunkedBuilder::<Int64Type>::new(name.into(), cap),
-                        ),
-                        None => ColumnBuilder::Float64(
-                            PrimitiveChunkedBuilder::<Float64Type>::new(name.into(), cap),
-                        ),
-                    },
-                    (VarType::Str, _) => ColumnBuilder::Utf8 {
-                        builder: StringChunkedBuilder::new(name.into(), cap),
-                        num_cache: None,
-                    },
-                }
-            })
-            .collect()
-    };
+    let make_builders =
+        |cap: usize| -> Vec<ColumnBuilder> {
+            col_indices
+                .iter()
+                .map(|&idx| {
+                    let var = &metadata.variables[idx];
+                    let name = var.name.as_str();
+                    let has_label = var
+                        .value_label
+                        .as_ref()
+                        .map(|n| label_maps.contains_key(n))
+                        .unwrap_or(false);
+                    match (var.var_type, has_label && value_labels_as_strings) {
+                        (VarType::Numeric, true) => ColumnBuilder::Utf8 {
+                            builder: StringChunkedBuilder::new(name.into(), cap),
+                            num_cache: Some(NumericStringCache::new()),
+                        },
+                        (VarType::Numeric, false) => match var.format_class {
+                            Some(FormatClass::Date) => ColumnBuilder::Date(
+                                PrimitiveChunkedBuilder::<Int32Type>::new(name.into(), cap),
+                            ),
+                            Some(FormatClass::DateTime) => ColumnBuilder::DateTime(
+                                PrimitiveChunkedBuilder::<Int64Type>::new(name.into(), cap),
+                            ),
+                            Some(FormatClass::Time) => ColumnBuilder::Time(
+                                PrimitiveChunkedBuilder::<Int64Type>::new(name.into(), cap),
+                            ),
+                            None => ColumnBuilder::Float64(
+                                PrimitiveChunkedBuilder::<Float64Type>::new(name.into(), cap),
+                            ),
+                        },
+                        (VarType::Str, _) => ColumnBuilder::Utf8 {
+                            builder: StringChunkedBuilder::new(name.into(), cap),
+                            num_cache: None,
+                        },
+                    }
+                })
+                .collect()
+        };
 
     // Inline helper: finish builders into a DataFrame.
     let finish_batch = |builders: Vec<ColumnBuilder>| -> Result<DataFrame> {
@@ -815,7 +820,8 @@ fn append_value(
 
             let long_string_storage;
             let raw = if plan.string_len_bytes > 255 {
-                long_string_storage = reconstruct_very_long_string_bytes(buf, plan.string_len_bytes);
+                long_string_storage =
+                    reconstruct_very_long_string_bytes(buf, plan.string_len_bytes);
                 long_string_storage.as_slice()
             } else {
                 let end = if plan.string_len_bytes > 0 {
@@ -1053,8 +1059,7 @@ fn compute_col_indicator(
                 return None; // empty → system-missing-like, no indicator
             }
             let s: String = if encoding == encoding_rs::UTF_8 {
-                let filtered: Vec<u8> =
-                    buf[..end].iter().filter(|&&b| b != 0).copied().collect();
+                let filtered: Vec<u8> = buf[..end].iter().filter(|&&b| b != 0).copied().collect();
                 String::from_utf8_lossy(&filtered).into_owned()
             } else {
                 encoding
@@ -1260,12 +1265,11 @@ pub fn read_data_frame_with_indicators(
                 Some(FormatClass::Date) => ColumnBuilder::Date(
                     PrimitiveChunkedBuilder::<Int32Type>::new(name.into(), limit),
                 ),
-                Some(FormatClass::DateTime) => {
-                    ColumnBuilder::DateTime(PrimitiveChunkedBuilder::<Int64Type>::new(
-                        name.into(),
-                        limit,
-                    ))
-                }
+                Some(FormatClass::DateTime) => ColumnBuilder::DateTime(PrimitiveChunkedBuilder::<
+                    Int64Type,
+                >::new(
+                    name.into(), limit
+                )),
                 Some(FormatClass::Time) => ColumnBuilder::Time(
                     PrimitiveChunkedBuilder::<Int64Type>::new(name.into(), limit),
                 ),
@@ -1361,9 +1365,8 @@ pub fn read_data_frame_with_indicators(
     }
 
     // Interleave main and indicator columns
-    let mut cols: Vec<Column> = Vec::with_capacity(
-        builders.len() + ind_builders.iter().filter(|b| b.is_some()).count(),
-    );
+    let mut cols: Vec<Column> =
+        Vec::with_capacity(builders.len() + ind_builders.iter().filter(|b| b.is_some()).count());
     for (b, ind_b) in builders.into_iter().zip(ind_builders.into_iter()) {
         cols.push(b.finish().into());
         if let Some(ind_b) = ind_b {

@@ -254,9 +254,7 @@ fn dtype_to_spss(
         DataType::Date => Ok((VarType::Numeric, 0, 1, 20, 11, 0)),
         DataType::Datetime(_, _) => Ok((VarType::Numeric, 0, 1, 22, 20, 0)),
         DataType::Time => Ok((VarType::Numeric, 0, 1, 21, 8, 0)),
-        DataType::Float32 | DataType::Float64 => {
-            Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 2))
-        }
+        DataType::Float32 | DataType::Float64 => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 2)),
         _ => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 0)),
     }
 }
@@ -278,9 +276,7 @@ fn infer_series(series: &Series) -> Result<(VarType, usize, usize, u8, u8, u8)> 
         DataType::Date => Ok((VarType::Numeric, 0, 1, 20, 11, 0)),
         DataType::Datetime(_, _) => Ok((VarType::Numeric, 0, 1, 22, 20, 0)),
         DataType::Time => Ok((VarType::Numeric, 0, 1, 21, 8, 0)),
-        DataType::Float32 | DataType::Float64 => {
-            Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 2))
-        }
+        DataType::Float32 | DataType::Float64 => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 2)),
         _ => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 0)),
     }
 }
@@ -826,7 +822,10 @@ fn write_variable_display_record<W: Write>(writer: &mut W, columns: &[ColumnSpec
     write_u32(writer, SAV_RECORD_HAS_DATA)?;
     write_u32(writer, SUBTYPE_VAR_DISPLAY)?;
     write_u32(writer, 4)?;
-    write_u32(writer, (columns.iter().map(|c| c.width).sum::<usize>() * 3) as u32)?;
+    write_u32(
+        writer,
+        (columns.iter().map(|c| c.width).sum::<usize>() * 3) as u32,
+    )?;
     for col in columns {
         let measure = if col.var_type == VarType::Str {
             SAV_MEASURE_NOMINAL
@@ -1209,7 +1208,11 @@ mod tests {
         let df = DataFrame::new(1, vec![col.into()]).unwrap();
         let out_path = temp_path("spss_roundtrip_long_string", "sav");
         SpssWriter::new(&out_path).write_df(&df).unwrap();
-        let out = SpssReader::open(&out_path).unwrap().read().finish().unwrap();
+        let out = SpssReader::open(&out_path)
+            .unwrap()
+            .read()
+            .finish()
+            .unwrap();
         let got = out
             .column("longstr")
             .unwrap()

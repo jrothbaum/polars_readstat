@@ -4,9 +4,9 @@
 //! It supports all format variants (32/64-bit, big/little endian) and
 //! all compression types (None, RLE, RDC).
 
+mod readstat_stream;
 pub mod sas;
 pub(crate) mod scan_prefetch;
-mod readstat_stream;
 pub mod spss;
 pub mod stata;
 
@@ -35,8 +35,8 @@ pub use sas::{Compression, Endian, Format, Platform};
 pub use sas::{Error, Result, Sas7bdatReader};
 pub use sas::{SasValueLabelKey, SasValueLabelMap, SasValueLabels, SasVariableLabels, SasWriter};
 
-pub use sas::scan_sas7bdat;
 pub use readstat_stream::{readstat_batch_iter, ReadstatBatchIter, ReadstatBatchStream};
+pub use sas::scan_sas7bdat;
 
 pub use spss::{scan_sav, Error as SpssError, Result as SpssResult, SpssReader};
 pub use spss::{
@@ -198,7 +198,8 @@ pub fn informative_null_pairs(
         InformativeNullMode::SeparateColumn { suffix } => suffix.as_str(),
         InformativeNullMode::Struct | InformativeNullMode::MergedString => "_null",
     };
-    let eligible_set: std::collections::HashSet<&str> = eligible_col_names.iter().copied().collect();
+    let eligible_set: std::collections::HashSet<&str> =
+        eligible_col_names.iter().copied().collect();
     match &opts.columns {
         InformativeNullColumns::All => var_names
             .iter()
@@ -221,8 +222,8 @@ pub(crate) fn build_indicator_schema(
     pairs: &[(String, String)],
     mode: &InformativeNullMode,
 ) -> polars::prelude::Schema {
-    use std::collections::{HashMap, HashSet};
     use polars::prelude::{DataType, Field, Schema};
+    use std::collections::{HashMap, HashSet};
 
     if pairs.is_empty() {
         return base;
@@ -234,8 +235,7 @@ pub(crate) fn build_indicator_schema(
                 .iter()
                 .map(|(m, i)| (m.as_str(), i.as_str()))
                 .collect();
-            let indicator_set: HashSet<&str> =
-                pairs.iter().map(|(_, i)| i.as_str()).collect();
+            let indicator_set: HashSet<&str> = pairs.iter().map(|(_, i)| i.as_str()).collect();
             let mut schema = Schema::with_capacity(base.len() + pairs.len());
             for (name, dtype) in base.iter() {
                 if indicator_set.contains(name.as_str()) {
@@ -326,15 +326,16 @@ pub fn apply_informative_null_mode(
             let mut exprs: Vec<Expr> = Vec::with_capacity(pairs.len());
             let mut drop_cols: Vec<String> = Vec::with_capacity(pairs.len());
             for (main, ind) in pairs {
-                exprs.push(
-                    as_struct(vec![col(main), col(ind).alias("null_indicator")])
-                        .alias(main),
-                );
+                exprs
+                    .push(as_struct(vec![col(main), col(ind).alias("null_indicator")]).alias(main));
                 drop_cols.push(ind.clone());
             }
             df.lazy()
                 .with_columns(exprs)
-                .drop(Selector::ByName { names: drop_cols.into_iter().map(Into::into).collect(), strict: false })
+                .drop(Selector::ByName {
+                    names: drop_cols.into_iter().map(Into::into).collect(),
+                    strict: false,
+                })
                 .collect()
         }
         InformativeNullMode::MergedString => {
@@ -350,7 +351,10 @@ pub fn apply_informative_null_mode(
             }
             df.lazy()
                 .with_columns(exprs)
-                .drop(Selector::ByName { names: drop_cols.into_iter().map(Into::into).collect(), strict: false })
+                .drop(Selector::ByName {
+                    names: drop_cols.into_iter().map(Into::into).collect(),
+                    strict: false,
+                })
                 .collect()
         }
     }

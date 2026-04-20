@@ -125,7 +125,11 @@ impl<'a> ReadBuilder<'a> {
         let limit = self
             .limit
             .unwrap_or(self.reader.metadata.row_count as usize);
-        let threads = if self.parallel { self.num_threads } else { Some(1) };
+        let threads = if self.parallel {
+            self.num_threads
+        } else {
+            Some(1)
+        };
         let mut iter = crate::spss::polars_output::spss_batch_iter_with_reader(
             &self.reader,
             self.reader.path.clone(),

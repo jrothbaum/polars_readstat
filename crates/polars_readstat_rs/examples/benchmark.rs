@@ -2,7 +2,9 @@ use polars_readstat_rs::{readstat_batch_iter, ReadStatFormat, ScanOptions};
 use std::time::Instant;
 
 fn main() {
-    let path = std::env::args().nth(1).expect("Usage: benchmark <file> [reps]");
+    let path = std::env::args()
+        .nth(1)
+        .expect("Usage: benchmark <file> [reps]");
     let n_reps: usize = std::env::args()
         .nth(2)
         .and_then(|s| s.parse().ok())

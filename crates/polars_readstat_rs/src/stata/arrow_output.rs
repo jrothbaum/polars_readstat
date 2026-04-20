@@ -23,7 +23,7 @@ fn df_to_struct_array(df: &DataFrame, field: &ArrowField) -> PolarsResult<Struct
         .iter()
         .map(|col| col.clone().rechunk_to_arrow(CompatLevel::newest()))
         .collect();
-    Ok(StructArray::new(struct_dtype, len, arrays, None))
+    StructArray::try_new(struct_dtype, len, arrays, None)
 }
 
 pub fn read_to_arrow_schema_ffi(

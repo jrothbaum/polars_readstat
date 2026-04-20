@@ -2,6 +2,13 @@ mod common;
 
 use polars_readstat_rs::reader::Sas7bdatReader;
 use common::{all_sas_files, test_data_path};
+use polars::prelude::DataFrame;
+
+fn assert_same_df(left: &DataFrame, right: &DataFrame) {
+    assert_eq!(left.shape(), right.shape(), "shape mismatch");
+    assert_eq!(left.get_column_names(), right.get_column_names(), "column mismatch");
+    assert_eq!(left.get_columns(), right.get_columns(), "data mismatch");
+}
 
 #[test]
 fn test_all_files_can_be_opened() {
@@ -162,6 +169,60 @@ fn test_large_file_streaming_default() {
 
                 assert_eq!(df.height(), 5000);
                 println!("✓ Streaming limit test passed for {}", file.display());
+            }
+        }
+    }
+}
+
+#[test]
+fn test_parallel_partial_reads_match_sequential() {
+    let files = [
+        test_data_path("data_AHS2013/owner.sas7bdat"),
+        test_data_path("sas_to_csv/drugprob.sas7bdat"),
+    ];
+
+    for path in files {
+        if !path.exists() {
+            continue;
+        }
+
+        let reader = Sas7bdatReader::open(&path).unwrap();
+        let row_count = reader.metadata().row_count;
+        if row_count < 32 {
+            continue;
+        }
+
+        let cases = [
+            (0usize, row_count.min(17usize)),
+            (5usize.min(row_count), row_count.saturating_sub(5).min(23usize)),
+            (row_count / 3, row_count.saturating_sub(row_count / 3).min(29usize)),
+        ];
+
+        for threads in [2usize, 4] {
+            for (offset, limit) in cases {
+                if limit == 0 {
+                    continue;
+                }
+
+                let parallel = reader
+                    .read()
+                    .with_n_threads(threads)
+                    .with_chunk_size(7)
+                    .with_offset(offset)
+                    .with_limit(limit)
+                    .finish()
+                    .unwrap();
+
+                let sequential = reader
+                    .read()
+                    .sequential()
+                    .with_chunk_size(7)
+                    .with_offset(offset)
+                    .with_limit(limit)
+                    .finish()
+                    .unwrap();
+
+                assert_same_df(&parallel, &sequential);
             }
         }
     }

@@ -1,8 +1,8 @@
 use crate::buffer::Buffer;
 use crate::constants::*;
+use crate::data::DataSubheader;
 use crate::encoding;
 use crate::error::{Error, Result};
-use crate::data::DataSubheader;
 use crate::page::{PageHeader, PageReader, PageSubheader};
 use crate::types::{Column, ColumnType, Compression, Endian, Format, Header, Metadata};
 use std::fs::File;
@@ -30,10 +30,7 @@ pub fn read_metadata_from_path(
         }
         Err(err) => {
             if log_fallback {
-                eprintln!(
-                    "[metadata] fast-pass failed for {}: {err}",
-                    path.display()
-                );
+                eprintln!("[metadata] fast-pass failed for {}: {err}", path.display());
             }
             // Fast path failed (incomplete metadata or AMD pages needed) — full scan.
         }
@@ -46,10 +43,7 @@ pub fn read_metadata_from_path(
     if log_fallback {
         match &result {
             Ok(_) => eprintln!("[metadata] fallback succeeded for {}", path.display()),
-            Err(err) => eprintln!(
-                "[metadata] fallback failed for {}: {err}",
-                path.display()
-            ),
+            Err(err) => eprintln!("[metadata] fallback failed for {}: {err}", path.display()),
         }
     }
     result
@@ -150,9 +144,8 @@ fn read_metadata_inner<R: Read + Seek>(
             ) {
                 if row_length > 0 {
                     let subheader_size = 3 * integer_size;
-                    let mut data_start = page_bit_offset
-                        + 8
-                        + page_header.subheader_count as usize * subheader_size;
+                    let mut data_start =
+                        page_bit_offset + 8 + page_header.subheader_count as usize * subheader_size;
                     if data_start % 8 == 4 {
                         data_start += 4;
                     }
@@ -220,18 +213,15 @@ fn is_fast_stop_on_mix_page(
         Format::Bit64 => 8,
         Format::Bit32 => 4,
     };
-    let mut data_start = page_bit_offset + 8 + page_header.subheader_count as usize * (3 * integer_size);
+    let mut data_start =
+        page_bit_offset + 8 + page_header.subheader_count as usize * (3 * integer_size);
     if data_start % 8 == 4 {
         data_start += 4;
     }
     page_length >= data_start.saturating_add(row_length)
 }
 
-fn is_mix_data_subheader(
-    subheader: &PageSubheader,
-    page_buffer: &[u8],
-    row_length: usize,
-) -> bool {
+fn is_mix_data_subheader(subheader: &PageSubheader, page_buffer: &[u8], row_length: usize) -> bool {
     if subheader.compression != 0 && subheader.compression != 4 {
         return false;
     }
@@ -337,8 +327,8 @@ struct MetadataBuilder {
     compression: Compression,
     creator: String,
     creator_proc: String,
-    lcs: usize, // length of creator string (from row_size subheader)
-    lcp: usize, // length of creator_proc string (from row_size subheader)
+    lcs: usize,                 // length of creator string (from row_size subheader)
+    lcp: usize,                 // length of creator_proc string (from row_size subheader)
     column_texts: Vec<Vec<u8>>, // Keep as bytes to preserve offset indexing
     column_name_entries: Vec<ColumnNameEntry>,
     column_attr_entries: Vec<ColumnAttrEntry>,
@@ -433,7 +423,8 @@ impl MetadataBuilder {
             self.process_format_and_label_subheader(buf, subheader, format)?;
         } else if signature == SAS_SUBHEADER_SIGNATURE_COUNTS
             || signature == SAS_SUBHEADER_SIGNATURE_COLUMN_LIST
-            || (signature & SAS_SUBHEADER_SIGNATURE_COLUMN_MASK) == SAS_SUBHEADER_SIGNATURE_COLUMN_MASK
+            || (signature & SAS_SUBHEADER_SIGNATURE_COLUMN_MASK)
+                == SAS_SUBHEADER_SIGNATURE_COLUMN_MASK
         {
             // Recognized but unused subheaders.
         }
@@ -559,7 +550,9 @@ impl MetadataBuilder {
                             self.creator_proc = s.trim_end_matches('\0').trim().to_string();
                         }
                     }
-                } else if comp_str == COMPRESSION_SIGNATURE_RLE.trim() || comp_str.contains("SASYZCRL") {
+                } else if comp_str == COMPRESSION_SIGNATURE_RLE.trim()
+                    || comp_str.contains("SASYZCRL")
+                {
                     // RLE: creator_proc at comp_off + 24, length lcp
                     if self.lcp > 0 {
                         if let Ok(s) = buf.get_string(offset + comp_off + 24, self.lcp) {
@@ -709,8 +702,7 @@ impl MetadataBuilder {
         }
         // Must have a full set of name and attribute entries.
         // Partial entries mean some column subheaders are on pages we haven't read.
-        self.column_name_entries.len() >= expected
-            && self.column_attr_entries.len() >= expected
+        self.column_name_entries.len() >= expected && self.column_attr_entries.len() >= expected
     }
 
     fn resolve_column_count(&self) -> Option<usize> {
@@ -816,18 +808,34 @@ impl MetadataBuilder {
 
         let mut columns = vec![ColumnBuilder::default(); column_count];
 
-        for (idx, entry) in self.column_name_entries.iter().enumerate().take(column_count) {
-            let name = self.extract_text_from_text_block(entry.text_idx, entry.offset, entry.length)?;
+        for (idx, entry) in self
+            .column_name_entries
+            .iter()
+            .enumerate()
+            .take(column_count)
+        {
+            let name =
+                self.extract_text_from_text_block(entry.text_idx, entry.offset, entry.length)?;
             columns[idx].name = name;
         }
 
-        for (idx, entry) in self.column_attr_entries.iter().enumerate().take(column_count) {
+        for (idx, entry) in self
+            .column_attr_entries
+            .iter()
+            .enumerate()
+            .take(column_count)
+        {
             columns[idx].offset = entry.offset;
             columns[idx].length = entry.length;
             columns[idx].col_type = entry.col_type;
         }
 
-        for (idx, entry) in self.format_label_entries.iter().enumerate().take(column_count) {
+        for (idx, entry) in self
+            .format_label_entries
+            .iter()
+            .enumerate()
+            .take(column_count)
+        {
             let format = self.extract_text_from_text_block(
                 entry.format_idx,
                 entry.format_offset,

@@ -174,8 +174,6 @@ impl Drop for SpssBackgroundIter {
     }
 }
 
-
-
 pub(crate) fn spss_batch_iter(
     path: PathBuf,
     threads: Option<usize>,
@@ -382,60 +380,62 @@ pub(crate) fn spss_batch_iter_with_reader(
                 }
             };
             pool.install(|| {
-                ranges.into_par_iter().for_each_with(tx, |sender, (batch_start, batch_count)| {
-                    if batch_count == 0 {
-                        return;
-                    }
-                    let start_row = offset + batch_start * batch_size;
-                    if start_row >= offset + total {
-                        return;
-                    }
-                    let range_rows =
-                        (batch_count * batch_size).min(total - batch_start * batch_size);
-                    let mut local_idx = 0usize;
-                    let row_index_name = row_index_name.clone();
-                    let mut next_row = start_row;
-                    let mut on_batch = |mut df: DataFrame| -> bool {
-                        if let Some(ref name) = row_index_name {
-                            let row_start = next_row;
-                            next_row = next_row.saturating_add(df.height());
-                            match crate::append_row_index(df, name.as_str(), row_start) {
-                                Ok(with_idx) => df = with_idx,
-                                Err(e) => {
-                                    let _ = sender.send((
-                                        batch_start + local_idx,
-                                        Err(PolarsError::ComputeError(e.to_string().into())),
-                                    ));
-                                    return false;
-                                }
-                            }
-                        } else {
-                            next_row = next_row.saturating_add(df.height());
+                ranges
+                    .into_par_iter()
+                    .for_each_with(tx, |sender, (batch_start, batch_count)| {
+                        if batch_count == 0 {
+                            return;
                         }
-                        let idx = batch_start + local_idx;
-                        local_idx += 1;
-                        sender.send((idx, Ok(df))).is_ok()
-                    };
+                        let start_row = offset + batch_start * batch_size;
+                        if start_row >= offset + total {
+                            return;
+                        }
+                        let range_rows =
+                            (batch_count * batch_size).min(total - batch_start * batch_size);
+                        let mut local_idx = 0usize;
+                        let row_index_name = row_index_name.clone();
+                        let mut next_row = start_row;
+                        let mut on_batch = |mut df: DataFrame| -> bool {
+                            if let Some(ref name) = row_index_name {
+                                let row_start = next_row;
+                                next_row = next_row.saturating_add(df.height());
+                                match crate::append_row_index(df, name.as_str(), row_start) {
+                                    Ok(with_idx) => df = with_idx,
+                                    Err(e) => {
+                                        let _ = sender.send((
+                                            batch_start + local_idx,
+                                            Err(PolarsError::ComputeError(e.to_string().into())),
+                                        ));
+                                        return false;
+                                    }
+                                }
+                            } else {
+                                next_row = next_row.saturating_add(df.height());
+                            }
+                            let idx = batch_start + local_idx;
+                            local_idx += 1;
+                            sender.send((idx, Ok(df))).is_ok()
+                        };
 
-                    let result = read_data_frame_streaming(
-                        &path,
-                        &metadata,
-                        endian,
-                        0,
-                        bias,
-                        cols_idx.as_deref(),
-                        start_row,
-                        range_rows,
-                        missing_null,
-                        labels_as_strings,
-                        batch_size,
-                        &mut on_batch,
-                    )
-                    .map_err(|e| PolarsError::ComputeError(e.to_string().into()));
-                    if let Err(e) = result {
-                        let _ = sender.send((batch_start + local_idx, Err(e)));
-                    }
-                });
+                        let result = read_data_frame_streaming(
+                            &path,
+                            &metadata,
+                            endian,
+                            0,
+                            bias,
+                            cols_idx.as_deref(),
+                            start_row,
+                            range_rows,
+                            missing_null,
+                            labels_as_strings,
+                            batch_size,
+                            &mut on_batch,
+                        )
+                        .map_err(|e| PolarsError::ComputeError(e.to_string().into()));
+                        if let Err(e) = result {
+                            let _ = sender.send((batch_start + local_idx, Err(e)));
+                        }
+                    });
             });
         });
 
@@ -496,7 +496,8 @@ pub(crate) fn spss_batch_iter_with_reader(
                         match crate::append_row_index(df, name.as_str(), row_start) {
                             Ok(with_idx) => df = with_idx,
                             Err(e) => {
-                                let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
+                                let _ =
+                                    tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
                                 return false;
                             }
                         }
@@ -668,8 +669,7 @@ impl AnonymousScan for SpssScan {
         let base_schema = build_schema(metadata, value_labels_as_strings);
 
         if let Some(null_opts) = &self.informative_nulls {
-            let var_names: Vec<&str> =
-                metadata.variables.iter().map(|v| v.name.as_str()).collect();
+            let var_names: Vec<&str> = metadata.variables.iter().map(|v| v.name.as_str()).collect();
             let eligible: Vec<&str> = metadata
                 .variables
                 .iter()

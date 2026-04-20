@@ -60,9 +60,9 @@ pub fn readstat_batch_iter(
 ) -> PolarsResult<ReadstatBatchIter> {
     let path = path.as_ref();
     let opts = opts.unwrap_or_default();
-    let format = format.or_else(|| super::detect_format(path)).ok_or_else(|| {
-        PolarsError::ComputeError("unknown file extension".into())
-    })?;
+    let format = format
+        .or_else(|| super::detect_format(path))
+        .ok_or_else(|| PolarsError::ComputeError("unknown file extension".into()))?;
 
     let row_index_name = opts.row_index_name.clone();
     let mut columns = columns;

@@ -46,9 +46,20 @@ fn test_direct_strl_roundtrip() {
         let read_back = read_col.get(i).unwrap();
         let orig_last10 = &original[original.len().saturating_sub(10)..];
         let read_last10 = &read_back[read_back.len().saturating_sub(10)..];
-        println!("Row {}: len {} -> {} | last10: {:?} -> {:?}",
-            i, original.len(), read_back.len(), orig_last10, read_last10);
-        assert_eq!(original.len(), read_back.len(), "Length mismatch at row {}", i);
+        println!(
+            "Row {}: len {} -> {} | last10: {:?} -> {:?}",
+            i,
+            original.len(),
+            read_back.len(),
+            orig_last10,
+            read_last10
+        );
+        assert_eq!(
+            original.len(),
+            read_back.len(),
+            "Length mismatch at row {}",
+            i
+        );
         assert_eq!(original, read_back, "Content mismatch at row {}", i);
     }
 
@@ -72,10 +83,11 @@ fn test_parquet_to_dta_strl_roundtrip() {
         .unwrap();
 
     // Read from parquet
-    let df_from_parquet = LazyFrame::scan_parquet(parquet_path.to_str().unwrap().into(), Default::default())
-        .unwrap()
-        .collect()
-        .unwrap();
+    let df_from_parquet =
+        LazyFrame::scan_parquet(parquet_path.to_str().unwrap().into(), Default::default())
+            .unwrap()
+            .collect()
+            .unwrap();
 
     println!("DataFrame from parquet:");
     println!("{:?}", df_from_parquet);
@@ -104,9 +116,20 @@ fn test_parquet_to_dta_strl_roundtrip() {
         let original = original_col.get(i).unwrap();
         let roundtrip = roundtrip_col.get(i).unwrap();
 
-        println!("Row {}: original len={}, roundtrip len={}", i, original.len(), roundtrip.len());
-        println!("  Original last 20 chars: {:?}", &original[original.len().saturating_sub(20)..]);
-        println!("  Roundtrip last 20 chars: {:?}", &roundtrip[roundtrip.len().saturating_sub(20)..]);
+        println!(
+            "Row {}: original len={}, roundtrip len={}",
+            i,
+            original.len(),
+            roundtrip.len()
+        );
+        println!(
+            "  Original last 20 chars: {:?}",
+            &original[original.len().saturating_sub(20)..]
+        );
+        println!(
+            "  Roundtrip last 20 chars: {:?}",
+            &roundtrip[roundtrip.len().saturating_sub(20)..]
+        );
 
         assert_eq!(original, roundtrip, "String mismatch at row {}", i);
     }
@@ -138,11 +161,15 @@ fn test_real_parquet_file() {
     // Prepare for Stata (handles UInt8, etc.)
     let df_from_parquet = pandas_prepare_df_for_stata(&df_from_parquet).unwrap();
 
-    println!("Columns in parquet: {:?}", df_from_parquet.get_column_names());
+    println!(
+        "Columns in parquet: {:?}",
+        df_from_parquet.get_column_names()
+    );
     println!("Shape: {:?}", df_from_parquet.shape());
 
     // Find string columns
-    let string_cols: Vec<_> = df_from_parquet.columns()
+    let string_cols: Vec<_> = df_from_parquet
+        .columns()
         .iter()
         .filter(|col| matches!(col.dtype(), DataType::String))
         .map(|col| col.name())
@@ -176,11 +203,23 @@ fn test_real_parquet_file() {
         for i in 0..df_from_parquet.height() {
             if let (Some(original), Some(roundtrip)) = (original_col.get(i), roundtrip_col.get(i)) {
                 if original.len() != roundtrip.len() {
-                    println!("Row {}: LENGTH MISMATCH - original={}, roundtrip={}", i, original.len(), roundtrip.len());
-                    println!("  Original last 50 chars: {:?}", &original[original.len().saturating_sub(50)..]);
+                    println!(
+                        "Row {}: LENGTH MISMATCH - original={}, roundtrip={}",
+                        i,
+                        original.len(),
+                        roundtrip.len()
+                    );
+                    println!(
+                        "  Original last 50 chars: {:?}",
+                        &original[original.len().saturating_sub(50)..]
+                    );
                     println!("  Roundtrip: {:?}", roundtrip);
                 }
-                assert_eq!(original, roundtrip, "String mismatch in column {} at row {}", col_name, i);
+                assert_eq!(
+                    original, roundtrip,
+                    "String mismatch in column {} at row {}",
+                    col_name, i
+                );
             }
         }
     }
@@ -199,13 +238,26 @@ fn test_strl_write_read_exact_lengths() {
 
     println!("\n===== Testing StataWriter/Reader for truncation =====");
     println!("Original strings:");
-    println!("  s1 length: {}, last 10: {:?}", s1.len(), &s1[s1.len()-10..]);
-    println!("  s2 length: {}, last 10: {:?}", s2.len(), &s2[s2.len()-10..]);
-    println!("  s3 length: {}, last 10: {:?}", s3.len(), &s3[s3.len()-10..]);
+    println!(
+        "  s1 length: {}, last 10: {:?}",
+        s1.len(),
+        &s1[s1.len() - 10..]
+    );
+    println!(
+        "  s2 length: {}, last 10: {:?}",
+        s2.len(),
+        &s2[s2.len() - 10..]
+    );
+    println!(
+        "  s3 length: {}, last 10: {:?}",
+        s3.len(),
+        &s3[s3.len() - 10..]
+    );
 
     let df_original = df!(
         "longstr" => &[s1.as_str(), s2.as_str(), s3.as_str()]
-    ).unwrap();
+    )
+    .unwrap();
 
     let dta_path = temp_path("test_exact_lengths", "dta");
 
@@ -230,24 +282,31 @@ fn test_strl_write_read_exact_lengths() {
         let original = original_col.get(i).unwrap();
         let read_back = read_col.get(i).unwrap();
 
-        println!("Row {}: {} -> {} chars, last 10: {:?} -> {:?}",
+        println!(
+            "Row {}: {} -> {} chars, last 10: {:?} -> {:?}",
             i,
             original.len(),
             read_back.len(),
-            &original[original.len()-10..],
-            &read_back[read_back.len()-10..]);
+            &original[original.len() - 10..],
+            &read_back[read_back.len() - 10..]
+        );
 
         if original.len() != read_back.len() {
-            println!("  ⚠️  TRUNCATION DETECTED: Lost {} character(s)",
-                original.len() - read_back.len());
+            println!(
+                "  ⚠️  TRUNCATION DETECTED: Lost {} character(s)",
+                original.len() - read_back.len()
+            );
         }
 
         // Check for truncation
-        assert_eq!(original.len(), read_back.len(),
+        assert_eq!(
+            original.len(),
+            read_back.len(),
             "TRUNCATION: Row {} length mismatch - StataWriter/Reader lost {} character(s)",
-            i, original.len() - read_back.len());
-        assert_eq!(original, read_back,
-            "Content mismatch at row {}", i);
+            i,
+            original.len() - read_back.len()
+        );
+        assert_eq!(original, read_back, "Content mismatch at row {}", i);
     }
 
     println!("\n✓ No truncation detected - StataWriter/Reader preserve exact lengths");

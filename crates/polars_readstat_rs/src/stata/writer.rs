@@ -442,7 +442,11 @@ impl PreparedWrite {
             slot[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
         }
 
-        let srtlist_entry_len = if dta_version >= DTA_VERSION_WIDE { 4 } else { 2 };
+        let srtlist_entry_len = if dta_version >= DTA_VERSION_WIDE {
+            4
+        } else {
+            2
+        };
         let srtlist_len = (nvar + 1) * srtlist_entry_len;
         let fmtlist_len = DTA_FMT_ENTRY_LEN * nvar;
         let mut fmtlist = vec![0u8; fmtlist_len];
@@ -1021,7 +1025,10 @@ fn write_dta<W: Write>(
 fn write_dta_header_and_map<W: Write>(writer: &mut W, prepared: &PreparedWrite) -> Result<()> {
     write_tag(writer, "<stata_dta>")?;
     write_tag(writer, "<header>")?;
-    write_string(writer, &format!("<release>{}</release>", prepared.dta_version))?;
+    write_string(
+        writer,
+        &format!("<release>{}</release>", prepared.dta_version),
+    )?;
     write_tag(writer, "<byteorder>")?;
     write_string(writer, "LSF")?;
     write_tag(writer, "</byteorder>")?;
@@ -1064,20 +1071,21 @@ fn write_dta_header_with_placeholders<W: Write + Seek>(
 ) -> Result<HeaderPatchOffsets> {
     write_tag(writer, "<stata_dta>")?;
     write_tag(writer, "<header>")?;
-    write_string(writer, &format!("<release>{}</release>", prepared.dta_version))?;
+    write_string(
+        writer,
+        &format!("<release>{}</release>", prepared.dta_version),
+    )?;
     write_tag(writer, "<byteorder>")?;
     write_string(writer, "LSF")?;
     write_tag(writer, "</byteorder>")?;
     write_tag(writer, "<K>")?;
     if prepared.dta_version >= DTA_VERSION_WIDE {
-        let nvars = u32::try_from(prepared.columns.len()).map_err(|_| {
-            Error::ParseError("too many columns for Stata 119 header".to_string())
-        })?;
+        let nvars = u32::try_from(prepared.columns.len())
+            .map_err(|_| Error::ParseError("too many columns for Stata 119 header".to_string()))?;
         write_u32(writer, nvars)?;
     } else {
-        let nvars = u16::try_from(prepared.columns.len()).map_err(|_| {
-            Error::ParseError("too many columns for Stata 118 header".to_string())
-        })?;
+        let nvars = u16::try_from(prepared.columns.len())
+            .map_err(|_| Error::ParseError("too many columns for Stata 118 header".to_string()))?;
         write_u16(writer, nvars)?;
     }
     write_tag(writer, "</K>")?;
@@ -1134,7 +1142,11 @@ fn patch_header_and_map<W: Write + Seek>(
 }
 
 fn current_offset_after_header(dta_version: u16) -> u64 {
-    let k_len = if dta_version >= DTA_VERSION_WIDE { 4 } else { 2 };
+    let k_len = if dta_version >= DTA_VERSION_WIDE {
+        4
+    } else {
+        2
+    };
     let header_len = "<stata_dta>".len()
         + "<header>".len()
         + format!("<release>{}</release>", dta_version).len()
@@ -1659,7 +1671,6 @@ fn min_max_i64(series: &Series) -> Result<(i64, i64, bool)> {
         Ok((min, max, overflow))
     }
 }
-
 
 fn write_dta_strls<W: Write>(writer: &mut W, prepared: &PreparedWrite) -> Result<()> {
     write_tag(writer, "<strls>")?;

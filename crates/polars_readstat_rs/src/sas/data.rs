@@ -16,6 +16,10 @@ pub struct DataReader<R: Read + Seek> {
     page_state: Option<PageState>,
     /// Reusable buffer for decompressed rows (avoids per-row allocation)
     decompress_buf: Vec<u8>,
+    /// When Some(n), stop reading after n more pages (page-limited parallel mode).
+    /// In this mode the current_row >= metadata.row_count guard is bypassed; the
+    /// page budget is the sole stopping condition.
+    remaining_pages: Option<usize>,
 }
 
 /// State for tracking position within a page
@@ -79,6 +83,7 @@ impl<R: Read + Seek> DataReader<R> {
             current_row: 0,
             page_state,
             decompress_buf,
+            remaining_pages: None,
         };
 
         // Try to read the first page if we don't have initial data subheaders
@@ -87,6 +92,12 @@ impl<R: Read + Seek> DataReader<R> {
         }
 
         Ok(reader)
+    }
+
+    /// Limit reading to the next `n` data-bearing pages (page-limited parallel mode).
+    /// Once this budget is exhausted `read_rows_bulk` returns 0 regardless of current_row.
+    pub fn set_max_pages(&mut self, n: usize) {
+        self.remaining_pages = Some(n);
     }
 
     /// Set the current row counter (for direct-seek parallel reads).
@@ -167,7 +178,9 @@ impl<R: Read + Seek> DataReader<R> {
         } else {
             // Uncompressed: borrow directly from page buffer (zero-copy)
             self.advance_row();
-            Ok(Some(&self.page_reader.page_buffer()[offset..offset + length]))
+            Ok(Some(
+                &self.page_reader.page_buffer()[offset..offset + length],
+            ))
         }
     }
 
@@ -187,7 +200,7 @@ impl<R: Read + Seek> DataReader<R> {
         let mut count = 0;
 
         while count < n {
-            if self.current_row >= self.metadata.row_count {
+            if self.remaining_pages.is_none() && self.current_row >= self.metadata.row_count {
                 break;
             }
 
@@ -442,6 +455,10 @@ impl<R: Read + Seek> DataReader<R> {
 
     /// Advance to next page
     fn advance_page(&mut self) -> Result<()> {
+        if let Some(0) = self.remaining_pages {
+            self.page_state = None;
+            return Ok(());
+        }
         loop {
             if !self.page_reader.read_page()? {
                 return Ok(());
@@ -450,11 +467,13 @@ impl<R: Read + Seek> DataReader<R> {
             let page_header = self.page_reader.get_page_header()?;
 
             if let Some(page_state) = self.build_page_state(&page_header)? {
+                if let Some(ref mut rem) = self.remaining_pages {
+                    *rem = rem.saturating_sub(1);
+                }
                 self.page_state = Some(page_state);
                 return Ok(());
             }
-
-            // Continue to next page if this one doesn't have data
+            // Non-data page: doesn't count against the budget, continue
         }
     }
 
@@ -728,8 +747,8 @@ mod tests {
     use super::DataReader;
     use crate::page::PageReader;
     use crate::reader::Sas7bdatReader;
-    use std::io::{BufReader, Seek, SeekFrom};
     use std::fs::File;
+    use std::io::{BufReader, Seek, SeekFrom};
 
     #[test]
     #[ignore]
@@ -749,15 +768,20 @@ mod tests {
         println!("Endian: {:?}", endian);
         println!("Row length: {}", meta.row_length);
         for col in &meta.columns {
-            println!("  col name={:?} type={:?} format={:?} offset={} len={}",
-                col.name, col.col_type, col.format, col.offset, col.length);
+            println!(
+                "  col name={:?} type={:?} format={:?} offset={} len={}",
+                col.name, col.col_type, col.format, col.offset, col.length
+            );
         }
 
         // Collect all distinct NaN bit patterns across ALL rows
         let mut file = BufReader::new(File::open(path).expect("open file"));
-        file.seek(SeekFrom::Start(header.header_length as u64)).unwrap();
+        file.seek(SeekFrom::Start(header.header_length as u64))
+            .unwrap();
         let page_reader = PageReader::new(file, header.clone(), endian, format);
-        let mut data_reader = DataReader::new(page_reader, meta.clone(), endian, format, initial_subs).expect("data reader");
+        let mut data_reader =
+            DataReader::new(page_reader, meta.clone(), endian, format, initial_subs)
+                .expect("data reader");
 
         use std::collections::BTreeSet;
         let mut nan_patterns: BTreeSet<u64> = BTreeSet::new();
@@ -767,10 +791,14 @@ mod tests {
             match data_reader.read_row_borrowed() {
                 Ok(Some(row)) => {
                     for col in &meta.columns {
-                        if col.col_type != crate::types::ColumnType::Numeric { continue; }
+                        if col.col_type != crate::types::ColumnType::Numeric {
+                            continue;
+                        }
                         let start = col.offset;
                         let end = col.offset + col.length;
-                        if end > row.len() { continue; }
+                        if end > row.len() {
+                            continue;
+                        }
                         let bytes = &row[start..end];
                         let bits = if bytes.len() >= 8 {
                             u64::from_le_bytes(bytes[..8].try_into().unwrap())
@@ -789,7 +817,10 @@ mod tests {
                     }
                 }
                 Ok(None) => break,
-                Err(e) => { println!("err: {}", e); break; }
+                Err(e) => {
+                    println!("err: {}", e);
+                    break;
+                }
             }
         }
 
@@ -803,11 +834,22 @@ mod tests {
             let type_byte = (bits >> 40) & 0xff;
             let as_char = if type_byte >= 0x41 && type_byte <= 0x7a {
                 (type_byte as u8) as char
-            } else { '?' };
-            println!("  bits=0x{:016x} sign={} be_bytes={} type_byte=0x{:02x}={} char={}",
-                bits, sign,
-                be_bytes.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(""),
-                type_byte, type_byte, as_char);
+            } else {
+                '?'
+            };
+            println!(
+                "  bits=0x{:016x} sign={} be_bytes={} type_byte=0x{:02x}={} char={}",
+                bits,
+                sign,
+                be_bytes
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<Vec<_>>()
+                    .join(""),
+                type_byte,
+                type_byte,
+                as_char
+            );
         }
     }
 }

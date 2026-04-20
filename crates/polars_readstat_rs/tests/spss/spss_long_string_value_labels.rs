@@ -30,7 +30,6 @@ fn write_i32(buf: &mut Vec<u8>, v: i32) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
 
-
 fn write_name(buf: &mut Vec<u8>, name: &str) {
     let mut out = [b' '; 8];
     let bytes = name.as_bytes();

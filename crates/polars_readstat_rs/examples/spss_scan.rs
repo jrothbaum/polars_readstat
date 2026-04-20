@@ -55,6 +55,11 @@ fn main() -> PolarsResult<()> {
     }
     let df = lf.collect()?;
     let elapsed = t0.elapsed();
-    println!("rows={} cols={} elapsed={:.3}s", df.height(), df.width(), elapsed.as_secs_f64());
+    println!(
+        "rows={} cols={} elapsed={:.3}s",
+        df.height(),
+        df.width(),
+        elapsed.as_secs_f64()
+    );
     Ok(())
 }

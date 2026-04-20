@@ -1,15 +1,14 @@
 use crate::constants::{
     DATETIME_FORMATS, DATE_FORMATS, SAS_EPOCH_OFFSET_DAYS, SECONDS_PER_DAY, TIME_FORMATS,
 };
-use crate::error::{Error, Result};
 use crate::data::DataReader;
+use crate::error::{Error, Result};
 use crate::page::PageReader;
-use crate::reader::{compute_page_index, data_reader_at_row, Sas7bdatReader};
+use crate::reader::{data_reader_at_page_range, Sas7bdatReader};
 use crate::types::{Column as SasColumn, ColumnType, Endian, Format, Header, Metadata};
 use crate::value::Value;
 use polars::prelude::*;
 use std::cmp::min;
-use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -154,28 +153,49 @@ impl DataFrameBuilder {
                 continue;
             }
             match plan.kind {
-                ColumnKind::Numeric | ColumnKind::Date | ColumnKind::DateTime | ColumnKind::Time => {
-                    let (value, is_missing) =
-                        crate::value::decode_numeric_bytes_mask(plan.endian, &row_bytes[start..end]);
+                ColumnKind::Numeric
+                | ColumnKind::Date
+                | ColumnKind::DateTime
+                | ColumnKind::Time => {
+                    let (value, is_missing) = crate::value::decode_numeric_bytes_mask(
+                        plan.endian,
+                        &row_bytes[start..end],
+                    );
                     match plan.kind {
                         ColumnKind::Numeric => {
                             if let ColumnBuffer::Numeric(b) = &mut self.buffers[pos] {
-                                if is_missing { b.append_null(); } else { b.append_value(value); }
+                                if is_missing {
+                                    b.append_null();
+                                } else {
+                                    b.append_value(value);
+                                }
                             }
                         }
                         ColumnKind::Date => {
                             if let ColumnBuffer::Date(b) = &mut self.buffers[pos] {
-                                if is_missing { b.append_null(); } else { b.append_value(to_date_value(value)); }
+                                if is_missing {
+                                    b.append_null();
+                                } else {
+                                    b.append_value(to_date_value(value));
+                                }
                             }
                         }
                         ColumnKind::DateTime => {
                             if let ColumnBuffer::DateTime(b) = &mut self.buffers[pos] {
-                                if is_missing { b.append_null(); } else { b.append_value(to_datetime_value(value)); }
+                                if is_missing {
+                                    b.append_null();
+                                } else {
+                                    b.append_value(to_datetime_value(value));
+                                }
                             }
                         }
                         ColumnKind::Time => {
                             if let ColumnBuffer::Time(b) = &mut self.buffers[pos] {
-                                if is_missing { b.append_null(); } else { b.append_value(to_time_value(value)); }
+                                if is_missing {
+                                    b.append_null();
+                                } else {
+                                    b.append_value(to_time_value(value));
+                                }
                             }
                         }
                         _ => unreachable!(),
@@ -413,68 +433,121 @@ impl SasScan {
     }
 }
 
-enum ChunkMessage {
-    Data { idx: usize, df: DataFrame },
-    Err { idx: usize, msg: String },
-}
-
 pub(crate) type SasBatchIter = Box<dyn Iterator<Item = PolarsResult<DataFrame>> + Send>;
 
-
-struct ParallelSasBatchIter {
-    rx: mpsc::Receiver<ChunkMessage>,
-    preserve_order: bool,
-    buffer: BTreeMap<usize, PolarsResult<DataFrame>>,
-    next_idx: usize,
-    total_chunks: usize,
-    handles: Vec<JoinHandle<()>>,
+struct SlicedBatchIter {
+    inner: SasBatchIter,
+    skip: usize,
+    remaining: usize,
 }
 
-impl Iterator for ParallelSasBatchIter {
+impl Iterator for SlicedBatchIter {
     type Item = PolarsResult<DataFrame>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if !self.preserve_order {
-            return match self.rx.recv() {
-                Ok(ChunkMessage::Data { df, .. }) => Some(Ok(df)),
-                Ok(ChunkMessage::Err { msg, .. }) => {
-                    Some(Err(PolarsError::ComputeError(msg.into())))
+        while self.remaining > 0 {
+            let df = self.inner.next()?;
+            match df {
+                Ok(df) => {
+                    let height = df.height();
+                    if self.skip >= height {
+                        self.skip -= height;
+                        continue;
+                    }
+
+                    let start = self.skip;
+                    let take = (height - start).min(self.remaining);
+                    self.skip = 0;
+                    self.remaining -= take;
+
+                    return Some(Ok(if start == 0 && take == height {
+                        df
+                    } else {
+                        df.slice(start as i64, take)
+                    }));
                 }
-                Err(_) => None,
-            };
-        }
-        if self.next_idx >= self.total_chunks {
-            return None;
-        }
-        loop {
-            if let Some(item) = self.buffer.remove(&self.next_idx) {
-                self.next_idx += 1;
-                return Some(item);
+                Err(err) => return Some(Err(err)),
             }
-            match self.rx.recv() {
-                Ok(ChunkMessage::Data { idx, df }) => {
-                    self.buffer.insert(idx, Ok(df));
-                }
-                Ok(ChunkMessage::Err { idx, msg }) => {
-                    self.buffer
-                        .insert(idx, Err(PolarsError::ComputeError(msg.into())));
+        }
+
+        None
+    }
+}
+
+// Unordered: all workers share one channel; batches arrive in completion order.
+struct UnorderedParallelIter {
+    rx: Option<mpsc::Receiver<PolarsResult<DataFrame>>>,
+    handles: Vec<JoinHandle<()>>,
+    row_index_name: Option<String>,
+    row_cursor: usize,
+}
+
+impl Iterator for UnorderedParallelIter {
+    type Item = PolarsResult<DataFrame>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let df = self.rx.as_ref()?.recv().ok()?;
+        Some(df.and_then(|df| {
+            if let Some(ref name) = self.row_index_name {
+                let n = df.height();
+                let result = crate::append_row_index(df, name.as_str(), self.row_cursor);
+                self.row_cursor += n;
+                result
+            } else {
+                Ok(df)
+            }
+        }))
+    }
+}
+
+impl Drop for UnorderedParallelIter {
+    fn drop(&mut self) {
+        self.rx.take();
+        for h in self.handles.drain(..) {
+            let _ = h.join();
+        }
+    }
+}
+
+// Ordered: each worker has its own channel; consumer drains worker 0, then 1, etc.
+struct OrderedParallelIter {
+    channels: std::collections::VecDeque<mpsc::Receiver<PolarsResult<DataFrame>>>,
+    handles: Vec<JoinHandle<()>>,
+    row_index_name: Option<String>,
+    row_cursor: usize,
+}
+
+impl Iterator for OrderedParallelIter {
+    type Item = PolarsResult<DataFrame>;
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let front = self.channels.front()?;
+            match front.recv() {
+                Ok(df_result) => {
+                    return Some(df_result.and_then(|df| {
+                        if let Some(ref name) = self.row_index_name {
+                            let n = df.height();
+                            let result =
+                                crate::append_row_index(df, name.as_str(), self.row_cursor);
+                            self.row_cursor += n;
+                            result
+                        } else {
+                            Ok(df)
+                        }
+                    }));
                 }
                 Err(_) => {
-                    if let Some(item) = self.buffer.remove(&self.next_idx) {
-                        self.next_idx += 1;
-                        return Some(item);
-                    }
-                    return None;
+                    self.channels.pop_front();
                 }
             }
         }
     }
 }
 
-impl Drop for ParallelSasBatchIter {
+impl Drop for OrderedParallelIter {
     fn drop(&mut self) {
-        for handle in self.handles.drain(..) {
-            let _ = handle.join();
+        self.channels.clear();
+        for h in self.handles.drain(..) {
+            let _ = h.join();
         }
     }
 }
@@ -564,7 +637,10 @@ impl SerialSasBatchIter {
         let (indicator_plan_indices, indicator_names, null_pairs) =
             if let Some(ref opts) = null_opts {
                 let active_cols: Vec<&str> = match col_indices.as_deref() {
-                    Some(idx) => idx.iter().map(|&i| metadata.columns[i].name.as_str()).collect(),
+                    Some(idx) => idx
+                        .iter()
+                        .map(|&i| metadata.columns[i].name.as_str())
+                        .collect(),
                     None => metadata.columns.iter().map(|c| c.name.as_str()).collect(),
                 };
                 let eligible_cols: Vec<&str> = match col_indices.as_deref() {
@@ -660,7 +736,9 @@ impl Iterator for SerialSasBatchIter {
                     builder.add_row_raw(row_bytes, &self.plans);
                     if has_inds {
                         for (plan_pos, plan) in self.plans.iter().enumerate() {
-                            let Some(ind_idx) = plan_to_ind[plan_pos] else { continue };
+                            let Some(ind_idx) = plan_to_ind[plan_pos] else {
+                                continue;
+                            };
                             let start = plan.start;
                             let end = plan.end;
                             let ind_builder = &mut ind_builders[ind_idx];
@@ -695,9 +773,7 @@ impl Iterator for SerialSasBatchIter {
                     read += 1;
                 }
                 Ok(None) => break,
-                Err(e) => {
-                    return Some(Err(PolarsError::ComputeError(e.to_string().into())))
-                }
+                Err(e) => return Some(Err(PolarsError::ComputeError(e.to_string().into()))),
             }
         }
 
@@ -796,6 +872,7 @@ pub(crate) fn sas_batch_iter_with_reader(
     let total = n_rows.unwrap_or(max_rows).min(max_rows);
     let batch_size = chunk_size.unwrap_or(DEFAULT_SAS_BATCH_SIZE).max(1);
     let total_chunks = total.div_ceil(batch_size);
+    let partial_read = offset > 0 || total < reader.metadata().row_count;
 
     if total_chunks == 0 {
         return Ok(Box::new(std::iter::empty()));
@@ -813,7 +890,12 @@ pub(crate) fn sas_batch_iter_with_reader(
     // When informative nulls are requested, always use the serial path (needs row-by-row decode).
     if let Some(null_opts) = informative_nulls {
         // Collision check
-        let var_names: Vec<&str> = reader.metadata().columns.iter().map(|c| c.name.as_str()).collect();
+        let var_names: Vec<&str> = reader
+            .metadata()
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
         let active_names: Vec<&str> = match col_indices.as_deref() {
             Some(idx) => idx.iter().map(|&i| var_names[i]).collect(),
             None => var_names.clone(),
@@ -823,11 +905,20 @@ pub(crate) fn sas_batch_iter_with_reader(
                 .iter()
                 .map(|&i| reader.metadata().columns[i].name.as_str())
                 .filter(|_| true)
-                .zip(col_indices.as_deref().unwrap().iter().map(|&i| &reader.metadata().columns[i]))
+                .zip(
+                    col_indices
+                        .as_deref()
+                        .unwrap()
+                        .iter()
+                        .map(|&i| &reader.metadata().columns[i]),
+                )
                 .filter(|(_, c)| c.col_type == crate::types::ColumnType::Numeric)
                 .map(|(name, _)| name)
                 .collect(),
-            None => reader.metadata().columns.iter()
+            None => reader
+                .metadata()
+                .columns
+                .iter()
                 .filter(|c| c.col_type == crate::types::ColumnType::Numeric)
                 .map(|c| c.name.as_str())
                 .collect(),
@@ -870,7 +961,10 @@ pub(crate) fn sas_batch_iter_with_reader(
                 }
             }
         });
-        return Ok(Box::new(SasBackgroundIter { rx, handle: Some(handle) }));
+        return Ok(Box::new(SasBackgroundIter {
+            rx,
+            handle: Some(handle),
+        }));
     }
 
     let n_cpus = std::thread::available_parallelism()
@@ -884,12 +978,17 @@ pub(crate) fn sas_batch_iter_with_reader(
     } else {
         n_cpus
     };
+    let parallel_chunks = if partial_read {
+        reader.metadata().row_count.div_ceil(batch_size)
+    } else {
+        total_chunks
+    };
     let n_workers = min(
         threads.unwrap_or(default_threads).max(1),
-        total_chunks.max(1),
+        parallel_chunks.max(1),
     );
 
-    // Use sequential streaming for compressed files or when explicitly single-threaded.
+    // Compressed SAS still uses the serial decoder.
     if reader.metadata().compression != crate::Compression::None || n_workers <= 1 {
         let header = reader.header().clone();
         let metadata = reader.metadata().clone();
@@ -919,31 +1018,22 @@ pub(crate) fn sas_batch_iter_with_reader(
                 }
             }
         });
-        return Ok(Box::new(SasBackgroundIter { rx, handle: Some(handle) }));
+        return Ok(Box::new(SasBackgroundIter {
+            rx,
+            handle: Some(handle),
+        }));
     }
-    // N independent readers each opening the file at their own row range.
-    // Concurrent I/O scales on both local NVMe and Lustre (file striped across OSTs).
-    // No shared work queue — each thread works fully independently, no mutex contention.
+    // N independent readers, each owning a non-overlapping range of pages.
+    // Page byte offsets are always exact (header_length + page_num * page_length),
+    // so seeking is reliable regardless of page type (DATA or MIX).
+    // Workers emit variable-size batches (≤ batch_size rows); the consumer reassembles.
 
     let header = reader.header().clone();
     let metadata = Arc::new(reader.metadata().clone());
     let row_length = metadata.row_length;
     let endian = reader.endian();
     let format = reader.format();
-    let initial_data_subheaders = reader.initial_data_subheaders().to_vec();
 
-    // Build page index once — shared read-only across all workers for fast seeking.
-    let page_index = Arc::new(compute_page_index(
-        &path,
-        &header,
-        &metadata,
-        endian,
-        format,
-        reader.first_data_page(),
-        reader.mix_data_rows(),
-    ));
-
-    // Plans are immutable and shared across all workers.
     let plans_arc = Arc::new(ColumnPlan::build_plans(
         &metadata,
         col_indices.as_deref(),
@@ -951,113 +1041,177 @@ pub(crate) fn sas_batch_iter_with_reader(
         missing_string_as_null,
     ));
 
-    let (tx, rx) = mpsc::sync_channel::<ChunkMessage>(n_workers * 2);
+    // Derive total page count from file size — no I/O beyond stat(2).
+    let total_pages = {
+        let file_len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let data_bytes = file_len.saturating_sub(header.header_length as u64);
+        (data_bytes / header.page_length as u64) as usize
+    };
+    let first_data_page = reader.first_data_page();
+    let mix_data_rows = reader.mix_data_rows();
+    let data_pages = total_pages.saturating_sub(first_data_page);
 
-    // Split rows evenly across workers; assign each a non-overlapping batch-index range
-    // so the BTreeMap consumer can reassemble in order without any shared state.
-    let rows_per_worker = (total + n_workers - 1) / n_workers;
-    let batches_per_worker = (rows_per_worker + batch_size - 1) / batch_size;
+    // Phase 1: serial reader for MIX-page rows (emits batches before any parallel work).
+    let mix_iter: Option<SerialSasBatchIter> = if mix_data_rows > 0 {
+        let initial_subs = reader.initial_data_subheaders().to_vec();
+        Some(SerialSasBatchIter::new(
+            path.clone(),
+            header.clone(),
+            metadata.as_ref().clone(),
+            endian,
+            format,
+            initial_subs,
+            col_indices.clone(),
+            batch_size,
+            mix_data_rows,
+            missing_string_as_null,
+            None,
+            0,
+            row_index_name.clone(),
+        )?)
+    } else {
+        None
+    };
 
+    // If there are no DATA pages, the MIX iter (or empty) is the whole result.
+    if data_pages == 0 {
+        return Ok(match mix_iter {
+            Some(iter) => Box::new(iter) as SasBatchIter,
+            None => Box::new(std::iter::empty()) as SasBatchIter,
+        });
+    }
+
+    // Phase 2: parallel workers for DATA pages only (starting at first_data_page).
+    // row_start is 0 per worker — page budget is the sole stopping condition.
+    let pages_per_worker = data_pages.div_ceil(n_workers);
     let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(n_workers);
 
-    for worker_idx in 0..n_workers {
-        let worker_row_start = offset + worker_idx * rows_per_worker;
-        if worker_row_start >= offset + total {
-            break;
-        }
-        let worker_rows = rows_per_worker.min((offset + total) - worker_row_start);
-        let batch_start_idx = worker_idx * batches_per_worker;
-
-        let path = path.clone();
-        let header = header.clone();
-        let metadata = metadata.clone();
-        let page_index = page_index.clone();
-        let initial_data_subheaders = initial_data_subheaders.clone();
-        let plans = plans_arc.clone();
-        let col_indices = col_indices.clone();
-        let row_index_name = row_index_name.clone();
-        let tx = tx.clone();
-
-        let handle = std::thread::spawn(move || {
-            let mut data_reader = match data_reader_at_row(
-                &path,
-                &header,
-                &metadata,
-                endian,
-                format,
-                worker_row_start,
-                &initial_data_subheaders,
-                &page_index,
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    let _ = tx.send(ChunkMessage::Err { idx: batch_start_idx, msg: e.to_string() });
-                    return;
-                }
-            };
-
-            let mut remaining = worker_rows;
-            let mut batch_idx = batch_start_idx;
-            let mut row_cursor = worker_row_start;
-
-            while remaining > 0 {
-                let take = batch_size.min(remaining);
-                let mut buf = Vec::with_capacity(take * row_length);
-                let n_read = match data_reader.read_rows_bulk(take, &mut buf) {
-                    Ok(n) => n,
+    // Helper: spawn one worker thread that reads pages [page_start, page_start+page_count)
+    // and sends each batch (≤ batch_size rows) down `tx`.
+    macro_rules! spawn_worker {
+        ($tx:expr, $worker_page_start:expr, $worker_page_count:expr) => {{
+            let path = path.clone();
+            let header = header.clone();
+            let metadata = metadata.clone();
+            let plans = plans_arc.clone();
+            let col_indices = col_indices.clone();
+            let tx = $tx;
+            let worker_page_start: usize = $worker_page_start;
+            let worker_page_count: usize = $worker_page_count;
+            std::thread::spawn(move || {
+                let mut data_reader = match data_reader_at_page_range(
+                    &path,
+                    &header,
+                    &metadata,
+                    endian,
+                    format,
+                    worker_page_start,
+                    worker_page_count,
+                    0,
+                ) {
+                    Ok(r) => r,
                     Err(e) => {
-                        let _ = tx.send(ChunkMessage::Err { idx: batch_idx, msg: e.to_string() });
+                        let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
                         return;
                     }
                 };
-                if n_read == 0 {
-                    break;
-                }
-
-                let mut builder = match col_indices.as_deref() {
-                    Some(ci) => DataFrameBuilder::new_with_columns(&metadata, ci, n_read),
-                    None => DataFrameBuilder::new(&metadata, n_read),
-                };
-                for i in 0..n_read {
-                    let rs = i * row_length;
-                    builder.add_row_raw(&buf[rs..rs + row_length], &plans);
-                }
-                let mut df = match builder.build() {
-                    Ok(df) => df,
-                    Err(e) => {
-                        let _ = tx.send(ChunkMessage::Err { idx: batch_idx, msg: e.to_string() });
-                        return;
-                    }
-                };
-                if let Some(ref name) = row_index_name {
-                    match crate::append_row_index(df, name.as_str(), row_cursor) {
-                        Ok(with_idx) => df = with_idx,
+                loop {
+                    let mut buf = Vec::new();
+                    let n_read = match data_reader.read_rows_bulk(batch_size, &mut buf) {
+                        Ok(n) => n,
                         Err(e) => {
-                            let _ = tx.send(ChunkMessage::Err { idx: batch_idx, msg: e.to_string() });
+                            let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
+                            return;
+                        }
+                    };
+                    if n_read == 0 {
+                        break;
+                    }
+                    let mut builder = match col_indices.as_deref() {
+                        Some(ci) => DataFrameBuilder::new_with_columns(&metadata, ci, n_read),
+                        None => DataFrameBuilder::new(&metadata, n_read),
+                    };
+                    for i in 0..n_read {
+                        let rs = i * row_length;
+                        builder.add_row_raw(&buf[rs..rs + row_length], &plans);
+                    }
+                    match builder.build() {
+                        Ok(df) => {
+                            if tx.send(Ok(df)).is_err() {
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
                             return;
                         }
                     }
                 }
-                if tx.send(ChunkMessage::Data { idx: batch_idx, df }).is_err() {
-                    return; // consumer dropped
-                }
-                batch_idx += 1;
-                row_cursor += n_read;
-                remaining -= n_read;
-            }
-        });
-        handles.push(handle);
+            })
+        }};
     }
-    drop(tx);
 
-    Ok(Box::new(ParallelSasBatchIter {
-        rx,
-        preserve_order,
-        buffer: BTreeMap::new(),
-        next_idx: 0,
-        total_chunks,
-        handles,
-    }))
+    // Row index assignment happens in the iterator, not in workers, so the counter
+    // is always exact based on realized row counts rather than geometry estimates.
+    let row_index_start = mix_data_rows;
+
+    // Row index and partial reads both require file-order output.
+    let use_ordered = preserve_order || row_index_name.is_some() || partial_read;
+    let base_iter: SasBatchIter = if use_ordered {
+        let mut channels: std::collections::VecDeque<mpsc::Receiver<PolarsResult<DataFrame>>> =
+            std::collections::VecDeque::with_capacity(n_workers);
+        for worker_idx in 0..n_workers {
+            let wp_start = first_data_page + worker_idx * pages_per_worker;
+            if wp_start >= total_pages {
+                break;
+            }
+            let wp_count = pages_per_worker.min(total_pages - wp_start);
+            let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(4);
+            channels.push_back(rx);
+            handles.push(spawn_worker!(tx, wp_start, wp_count));
+        }
+        let parallel = OrderedParallelIter {
+            channels,
+            handles,
+            row_index_name: row_index_name.clone(),
+            row_cursor: row_index_start,
+        };
+        match mix_iter {
+            Some(mix) => Box::new(mix.chain(parallel)) as SasBatchIter,
+            None => Box::new(parallel) as SasBatchIter,
+        }
+    } else {
+        let (shared_tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(n_workers * 4);
+        for worker_idx in 0..n_workers {
+            let wp_start = first_data_page + worker_idx * pages_per_worker;
+            if wp_start >= total_pages {
+                break;
+            }
+            let wp_count = pages_per_worker.min(total_pages - wp_start);
+            handles.push(spawn_worker!(shared_tx.clone(), wp_start, wp_count));
+        }
+        drop(shared_tx);
+        let parallel = UnorderedParallelIter {
+            rx: Some(rx),
+            handles,
+            row_index_name: row_index_name.clone(),
+            row_cursor: row_index_start,
+        };
+        match mix_iter {
+            Some(mix) => Box::new(mix.chain(parallel)) as SasBatchIter,
+            None => Box::new(parallel) as SasBatchIter,
+        }
+    };
+
+    if partial_read {
+        Ok(Box::new(SlicedBatchIter {
+            inner: base_iter,
+            skip: offset,
+            remaining: total,
+        }))
+    } else {
+        Ok(base_iter)
+    }
 }
 
 impl AnonymousScan for SasScan {
@@ -1169,8 +1323,10 @@ impl AnonymousScan for SasScan {
                     // Interleave indicator String columns after each main col
                     let indicator_set: std::collections::HashSet<&str> =
                         pairs.iter().map(|(_, ind)| ind.as_str()).collect();
-                    let main_to_ind: std::collections::HashMap<&str, &str> =
-                        pairs.iter().map(|(m, i)| (m.as_str(), i.as_str())).collect();
+                    let main_to_ind: std::collections::HashMap<&str, &str> = pairs
+                        .iter()
+                        .map(|(m, i)| (m.as_str(), i.as_str()))
+                        .collect();
                     let existing_names: Vec<String> =
                         schema.iter_names().map(|n| n.to_string()).collect();
                     let mut new_schema = Schema::with_capacity(existing_names.len() + pairs.len());
@@ -1188,7 +1344,10 @@ impl AnonymousScan for SasScan {
                 }
                 InformativeNullMode::Struct => {
                     for (main, _ind) in &pairs {
-                        let main_dt = schema.get(main.as_str()).cloned().unwrap_or(DataType::Float64);
+                        let main_dt = schema
+                            .get(main.as_str())
+                            .cloned()
+                            .unwrap_or(DataType::Float64);
                         schema.with_column(
                             main.as_str().into(),
                             DataType::Struct(vec![

@@ -153,7 +153,11 @@ fn int_missing_offset_i8(v: i8, rules: MissingRules) -> Option<u8> {
     }
     let offset = (v as i32 - rules.system_missing_int8 as i32) as u8;
     // 0 = system missing (.), 1-26 = .a-.z
-    if offset == 0 { None } else { Some(offset) }
+    if offset == 0 {
+        None
+    } else {
+        Some(offset)
+    }
 }
 
 #[inline]
@@ -165,7 +169,11 @@ fn int_missing_offset_i16(v: i16, rules: MissingRules) -> Option<u8> {
         return None;
     }
     let offset = (v as i32 - rules.system_missing_int16 as i32) as u8;
-    if offset == 0 { None } else { Some(offset) }
+    if offset == 0 {
+        None
+    } else {
+        Some(offset)
+    }
 }
 
 #[inline]
@@ -177,7 +185,11 @@ fn int_missing_offset_i32(v: i32, rules: MissingRules) -> Option<u8> {
         return None;
     }
     let offset = (v - rules.system_missing_int32) as u8;
-    if offset == 0 { None } else { Some(offset) }
+    if offset == 0 {
+        None
+    } else {
+        Some(offset)
+    }
 }
 
 pub fn read_i8_tagged(buf: &[u8], rules: MissingRules) -> (Option<i8>, Option<u8>) {
@@ -193,11 +205,21 @@ pub fn read_i8_tagged(buf: &[u8], rules: MissingRules) -> (Option<i8>, Option<u8
     }
 }
 
-pub fn read_i16_tagged(buf: &[u8], endian: Endian, rules: MissingRules) -> (Option<i16>, Option<u8>) {
+pub fn read_i16_tagged(
+    buf: &[u8],
+    endian: Endian,
+    rules: MissingRules,
+) -> (Option<i16>, Option<u8>) {
     let mut cursor = std::io::Cursor::new(buf);
     let v = match endian {
-        Endian::Little => match cursor.read_i16::<LittleEndian>() { Ok(v) => v, Err(_) => return (None, None) },
-        Endian::Big => match cursor.read_i16::<BigEndian>() { Ok(v) => v, Err(_) => return (None, None) },
+        Endian::Little => match cursor.read_i16::<LittleEndian>() {
+            Ok(v) => v,
+            Err(_) => return (None, None),
+        },
+        Endian::Big => match cursor.read_i16::<BigEndian>() {
+            Ok(v) => v,
+            Err(_) => return (None, None),
+        },
     };
     if rules.system_missing_enabled && v >= rules.system_missing_int16 {
         let offset = int_missing_offset_i16(v, rules);
@@ -210,11 +232,21 @@ pub fn read_i16_tagged(buf: &[u8], endian: Endian, rules: MissingRules) -> (Opti
     }
 }
 
-pub fn read_i32_tagged(buf: &[u8], endian: Endian, rules: MissingRules) -> (Option<i32>, Option<u8>) {
+pub fn read_i32_tagged(
+    buf: &[u8],
+    endian: Endian,
+    rules: MissingRules,
+) -> (Option<i32>, Option<u8>) {
     let mut cursor = std::io::Cursor::new(buf);
     let v = match endian {
-        Endian::Little => match cursor.read_i32::<LittleEndian>() { Ok(v) => v, Err(_) => return (None, None) },
-        Endian::Big => match cursor.read_i32::<BigEndian>() { Ok(v) => v, Err(_) => return (None, None) },
+        Endian::Little => match cursor.read_i32::<LittleEndian>() {
+            Ok(v) => v,
+            Err(_) => return (None, None),
+        },
+        Endian::Big => match cursor.read_i32::<BigEndian>() {
+            Ok(v) => v,
+            Err(_) => return (None, None),
+        },
     };
     if rules.system_missing_enabled && v >= rules.system_missing_int32 {
         let offset = int_missing_offset_i32(v, rules);
@@ -227,11 +259,21 @@ pub fn read_i32_tagged(buf: &[u8], endian: Endian, rules: MissingRules) -> (Opti
     }
 }
 
-pub fn read_f32_tagged(buf: &[u8], endian: Endian, rules: MissingRules) -> (Option<f32>, Option<u8>) {
+pub fn read_f32_tagged(
+    buf: &[u8],
+    endian: Endian,
+    rules: MissingRules,
+) -> (Option<f32>, Option<u8>) {
     let mut cursor = std::io::Cursor::new(buf);
     let bits = match endian {
-        Endian::Little => match cursor.read_u32::<LittleEndian>() { Ok(v) => v, Err(_) => return (None, None) },
-        Endian::Big => match cursor.read_u32::<BigEndian>() { Ok(v) => v, Err(_) => return (None, None) },
+        Endian::Little => match cursor.read_u32::<LittleEndian>() {
+            Ok(v) => v,
+            Err(_) => return (None, None),
+        },
+        Endian::Big => match cursor.read_u32::<BigEndian>() {
+            Ok(v) => v,
+            Err(_) => return (None, None),
+        },
     };
     let v = f32::from_bits(bits);
     let sign = (bits & 0x8000_0000) != 0;
@@ -246,7 +288,11 @@ pub fn read_f32_tagged(buf: &[u8], endian: Endian, rules: MissingRules) -> (Opti
             // Each user-missing increments by 0x00080000.
             let diff = bits.wrapping_sub(rules.missing_float);
             let k = (diff / 0x0008_0000) as u8;
-            if k >= 1 && k <= 26 { Some(k) } else { None }
+            if k >= 1 && k <= 26 {
+                Some(k)
+            } else {
+                None
+            }
         };
         (None, offset)
     } else {
@@ -254,11 +300,21 @@ pub fn read_f32_tagged(buf: &[u8], endian: Endian, rules: MissingRules) -> (Opti
     }
 }
 
-pub fn read_f64_tagged(buf: &[u8], endian: Endian, rules: MissingRules) -> (Option<f64>, Option<u8>) {
+pub fn read_f64_tagged(
+    buf: &[u8],
+    endian: Endian,
+    rules: MissingRules,
+) -> (Option<f64>, Option<u8>) {
     let mut cursor = std::io::Cursor::new(buf);
     let bits = match endian {
-        Endian::Little => match cursor.read_u64::<LittleEndian>() { Ok(v) => v, Err(_) => return (None, None) },
-        Endian::Big => match cursor.read_u64::<BigEndian>() { Ok(v) => v, Err(_) => return (None, None) },
+        Endian::Little => match cursor.read_u64::<LittleEndian>() {
+            Ok(v) => v,
+            Err(_) => return (None, None),
+        },
+        Endian::Big => match cursor.read_u64::<BigEndian>() {
+            Ok(v) => v,
+            Err(_) => return (None, None),
+        },
     };
     let v = f64::from_bits(bits);
     let sign = (bits & 0x8000_0000_0000_0000) != 0;
@@ -269,7 +325,11 @@ pub fn read_f64_tagged(buf: &[u8], endian: Endian, rules: MissingRules) -> (Opti
             None // system missing
         } else {
             let diff = bits.wrapping_sub(rules.missing_double) as u8;
-            if diff >= 1 && diff <= 26 { Some(diff) } else { None }
+            if diff >= 1 && diff <= 26 {
+                Some(diff)
+            } else {
+                None
+            }
         };
         (None, offset)
     } else {

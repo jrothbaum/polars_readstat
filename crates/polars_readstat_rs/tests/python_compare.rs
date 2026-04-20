@@ -9,17 +9,12 @@ fn should_run(name: &str) -> bool {
     if setting == "1" || setting == "true" || setting == "all" {
         return true;
     }
-    setting
-        .split(',')
-        .map(|v| v.trim())
-        .any(|v| v == name)
+    setting.split(',').map(|v| v.trim()).any(|v| v == name)
 }
 
 fn run_compare(name: &str, script: &str) {
     if !should_run(name) {
-        eprintln!(
-            "Skipping {name} (set READSTAT_RUN_PY_COMPARE=all or include '{name}')"
-        );
+        eprintln!("Skipping {name} (set READSTAT_RUN_PY_COMPARE=all or include '{name}')");
         return;
     }
 
