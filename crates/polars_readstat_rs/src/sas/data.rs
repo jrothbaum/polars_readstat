@@ -203,10 +203,10 @@ impl<R: Read + Seek> DataReader<R> {
                     let end = col.offset + col.length;
                     if end <= self.decompress_buf.len() {
                         let bytes = &self.decompress_buf[col.offset..end];
-                        println!("  col='{}' offset={} len={} str={:?}",
+                        println!("  col={} offset={} len={} str={:?}",
                             col.name, col.offset, col.length, String::from_utf8_lossy(bytes));
                     } else {
-                        println!("  col='{}' offset={} len={} OUT OF BOUNDS (buf={})",
+                        println!("  col={} offset={} len={} OUT OF BOUNDS (buf={})",
                             col.name, col.offset, col.length, self.decompress_buf.len());
                     }
                 }
