@@ -107,7 +107,7 @@ fn test_arrow_export() {
 fn test_arrow_stream_export() {
     let path = test_data_path("sample.sav");
     let stream =
-        read_to_arrow_stream_ffi(&path, None, true, Some(true), None, 2).expect("arrow stream");
+        read_to_arrow_stream_ffi(&path, None, true, Some(true), None).expect("arrow stream");
     let mut reader =
         unsafe { ArrowArrayStreamReader::try_new(Box::from_raw(stream)) }.expect("stream reader");
     let mut count = 0usize;

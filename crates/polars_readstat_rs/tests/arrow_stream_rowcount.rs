@@ -3,7 +3,7 @@ use polars_readstat_rs::sas::arrow_output::read_to_arrow_stream_ffi;
 use std::path::Path;
 
 fn count_rows_via_ffi(path: &Path, batch_size: usize) -> usize {
-    let ptr = read_to_arrow_stream_ffi(path, None, true, None, batch_size).expect("stream");
+    let ptr = read_to_arrow_stream_ffi(path, None, true, None).expect("stream");
     let boxed = unsafe { Box::from_raw(ptr) };
     let mut reader = unsafe { ArrowArrayStreamReader::try_new(boxed).expect("reader") };
     let mut total = 0;

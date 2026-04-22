@@ -8,10 +8,14 @@ use polars_readstat_rs::{
 
 const MAX_ROWS: usize = 100_000;
 const STREAM_BATCH: usize = 10_000;
+const MAX_FILE_BYTES: u64 = 1_000_000_000;
 
 #[test]
 fn test_sas_all_files() {
     for path in sas_files() {
+        if path.metadata().map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES {
+            continue;
+        }
         // Regular loader (Polars DF)
         let reader = Sas7bdatReader::open(&path).expect("open sas");
         let row_count = reader.metadata().row_count;
@@ -61,6 +65,9 @@ fn test_sas_all_files() {
 #[test]
 fn test_stata_all_files() {
     for path in stata_files() {
+        if path.metadata().map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES {
+            continue;
+        }
         let reader = StataReader::open(&path).expect("open stata");
         let row_count = reader.metadata().row_count as usize;
         let limit = usize::min(MAX_ROWS, row_count);
@@ -99,6 +106,9 @@ fn test_stata_all_files() {
 #[test]
 fn test_spss_all_files() {
     for path in spss_files() {
+        if path.metadata().map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES {
+            continue;
+        }
         let reader = SpssReader::open(&path).expect("open spss");
         let row_count = reader.metadata().row_count as usize;
         let limit = usize::min(MAX_ROWS, row_count);

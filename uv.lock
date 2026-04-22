@@ -757,7 +757,7 @@ wheels = [
 
 [[package]]
 name = "polars-readstat"
-version = "0.14.8"
+version = "0.15.0"
 source = { editable = "." }
 dependencies = [
     { name = "polars" },
