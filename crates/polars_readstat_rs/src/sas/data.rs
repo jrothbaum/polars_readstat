@@ -190,7 +190,7 @@ impl<R: Read + Seek> DataReader<R> {
         }
 
         let is_compressed = self.metadata.compression != Compression::None;
-        println!("=== compressed: {},is_compressed);
+        println!("=== compressed: {}",is_compressed);
         if is_compressed {
             let raw_bytes = &page_buffer[offset..offset + length];
             self.decompressor.decompress_into(raw_bytes, &mut self.decompress_buf)?;
@@ -257,7 +257,7 @@ impl<R: Read + Seek> DataReader<R> {
             }
             
             let is_compressed = self.metadata.compression != Compression::None;
-            println!("=== compressed: {},is_compressed);
+            println!("=== compressed: {}",is_compressed);
             if is_compressed {
                 // Compressed: borrow raw bytes, decompress, then copy out.
                 let raw_bytes = &self.page_reader.page_buffer()[offset..offset + length];
