@@ -166,7 +166,7 @@ impl<R: Read + Seek> DataReader<R> {
         let page_buffer = self.page_reader.page_buffer();
         // ---- TEMP LOGGING ----
         if self.current_row < 3 {
-            eprintln!(
+            println!(
                 "ROW {} | page_state={:?} | raw_offset={} raw_len={} row_length={} compression={:?}",
                 self.current_row,
                 match &self.page_state {
@@ -182,7 +182,7 @@ impl<R: Read + Seek> DataReader<R> {
             );
             // Print raw compressed bytes (first 32)
             let end = (offset + length).min(page_buffer.len());
-            eprintln!("  raw_bytes[..32]: {:?}", &page_buffer[offset..end.min(offset+32)]);
+            println!("  raw_bytes[..32]: {:?}", &page_buffer[offset..end.min(offset+32)]);
         }
         // ---- END TEMP LOGGING ----
         if offset + length > page_buffer.len() {
@@ -190,6 +190,7 @@ impl<R: Read + Seek> DataReader<R> {
         }
 
         let is_compressed = self.metadata.compression != Compression::None;
+        println!("=== compressed: {},is_compressed);
         if is_compressed {
             let raw_bytes = &page_buffer[offset..offset + length];
             self.decompressor.decompress_into(raw_bytes, &mut self.decompress_buf)?;
@@ -256,6 +257,7 @@ impl<R: Read + Seek> DataReader<R> {
             }
             
             let is_compressed = self.metadata.compression != Compression::None;
+            println!("=== compressed: {},is_compressed);
             if is_compressed {
                 // Compressed: borrow raw bytes, decompress, then copy out.
                 let raw_bytes = &self.page_reader.page_buffer()[offset..offset + length];
