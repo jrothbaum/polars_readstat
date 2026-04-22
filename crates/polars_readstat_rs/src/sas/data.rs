@@ -164,54 +164,17 @@ impl<R: Read + Seek> DataReader<R> {
         };
 
         let page_buffer = self.page_reader.page_buffer();
-        // ---- TEMP LOGGING ----
-        if self.current_row < 3 {
-            debug_log(&format!(
-                "ROW {} | page_state={:?} | raw_offset={} raw_len={} row_length={} compression={:?}",
-                self.current_row,
-                match &self.page_state {
-                    Some(PageState::Meta { .. }) => "META",
-                    Some(PageState::Data { .. }) => "DATA",
-                    Some(PageState::Mix { .. }) => "MIX",
-                    None => "NONE",
-                },
-                offset,
-                length,
-                self.metadata.row_length,
-                self.metadata.compression,
-            ));
-            // Print raw compressed bytes (first 32)
-            let end = (offset + length).min(page_buffer.len());
-            debug_log(&format!("  raw_bytes[..32]: {:?}", &page_buffer[offset..end.min(offset+32)]));
-        }
-        // ---- END TEMP LOGGING ----
+        
         if offset + length > page_buffer.len() {
             return Err(Error::BufferOutOfBounds { offset, length });
         }
 
         let is_compressed = self.metadata.compression != Compression::None;
-        debug_log(&format!("=== compressed: {}",is_compressed));
+        
         if is_compressed {
             let raw_bytes = &page_buffer[offset..offset + length];
             self.decompressor.decompress_into(raw_bytes, &mut self.decompress_buf)?;
-
-            // ---- TEMP LOGGING ----
-            if self.current_row < 3 {
-                debug_log(&format!("=== ROW {} | raw_len={} row_length={} buf_len={} ===",
-                    self.current_row, length, self.metadata.row_length, self.decompress_buf.len()));
-                for col in &self.metadata.columns {
-                    let end = col.offset + col.length;
-                    if end <= self.decompress_buf.len() {
-                        let bytes = &self.decompress_buf[col.offset..end];
-                        debug_log(&format!("  col={} offset={} len={} str={:?}",
-                            col.name, col.offset, col.length, String::from_utf8_lossy(bytes)));
-                    } else {
-                        debug_log(&format!("  col={} offset={} len={} OUT OF BOUNDS (buf={})",
-                            col.name, col.offset, col.length, self.decompress_buf.len()));
-                    }
-                }
-            }
-            // ---- END TEMP LOGGING ----
+            
             self.advance_row();
             Ok(Some(&self.decompress_buf))
         } else {
@@ -257,7 +220,7 @@ impl<R: Read + Seek> DataReader<R> {
             }
             
             let is_compressed = self.metadata.compression != Compression::None;
-            debug_log(&format!("=== compressed: {}",is_compressed));
+            
             if is_compressed {
                 // Compressed: borrow raw bytes, decompress, then copy out.
                 let raw_bytes = &self.page_reader.page_buffer()[offset..offset + length];
@@ -894,12 +857,3 @@ mod tests {
 }
 
 
-fn debug_log(msg: &str) {
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("sas_debug.txt")
-        .unwrap();
-    writeln!(f, "{}", msg).unwrap();
-}
