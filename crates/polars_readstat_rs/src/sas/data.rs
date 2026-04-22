@@ -1,4 +1,4 @@
-fuse crate::decompressor::Decompressor;
+use crate::decompressor::Decompressor;
 use crate::error::{Error, Result};
 use crate::page::{PageHeader, PageReader, PageSubheader};
 use crate::types::{Compression, Endian, Format, Metadata, PageType};
