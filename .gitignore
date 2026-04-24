@@ -38,3 +38,6 @@ tmp
 
 # Ignore too_big test datasets in this repo layout
 /crates/**/tests/**/data/too_big/
+
+# Generated rustdoc output
+/doc/
