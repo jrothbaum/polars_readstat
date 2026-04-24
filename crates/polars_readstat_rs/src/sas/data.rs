@@ -16,10 +16,14 @@ pub struct DataReader<R: Read + Seek> {
     page_state: Option<PageState>,
     /// Reusable buffer for decompressed rows (avoids per-row allocation)
     decompress_buf: Vec<u8>,
-    /// When Some(n), stop reading after n more pages (page-limited parallel mode).
+    /// When Some(n), stop reading after n more data-bearing pages (page-limited parallel mode).
     /// In this mode the current_row >= metadata.row_count guard is bypassed; the
     /// page budget is the sole stopping condition.
     remaining_pages: Option<usize>,
+    /// When Some(n), stop reading after n more physical pages regardless of data content.
+    /// Used for compressed parallel reads where non-data META pages must still count
+    /// against the worker's page-range budget to prevent overlap with adjacent workers.
+    max_physical_pages: Option<usize>,
 }
 
 /// State for tracking position within a page
@@ -84,6 +88,7 @@ impl<R: Read + Seek> DataReader<R> {
             page_state,
             decompress_buf,
             remaining_pages: None,
+            max_physical_pages: None,
         };
 
         // Try to read the first page if we don't have initial data subheaders
@@ -98,6 +103,13 @@ impl<R: Read + Seek> DataReader<R> {
     /// Once this budget is exhausted `read_rows_bulk` returns 0 regardless of current_row.
     pub fn set_max_pages(&mut self, n: usize) {
         self.remaining_pages = Some(n);
+    }
+
+    /// Limit reading to the next `n` physical pages regardless of data content.
+    /// Use this for compressed parallel reads so that non-data META pages still
+    /// consume the worker's page-range budget, preventing overlap with adjacent workers.
+    pub fn set_max_physical_pages(&mut self, n: usize) {
+        self.max_physical_pages = Some(n);
     }
 
     /// Set the current row counter (for direct-seek parallel reads).
@@ -462,8 +474,19 @@ impl<R: Read + Seek> DataReader<R> {
             return Ok(());
         }
         loop {
+            // Physical page budget: counts every page read, not just data-bearing ones.
+            // This prevents compressed workers from straying into adjacent workers' ranges.
+            if let Some(0) = self.max_physical_pages {
+                self.page_state = None;
+                return Ok(());
+            }
+
             if !self.page_reader.read_page()? {
                 return Ok(());
+            }
+
+            if let Some(ref mut rem) = self.max_physical_pages {
+                *rem = rem.saturating_sub(1);
             }
 
             let page_header = self.page_reader.get_page_header()?;
@@ -475,7 +498,7 @@ impl<R: Read + Seek> DataReader<R> {
                 self.page_state = Some(page_state);
                 return Ok(());
             }
-            // Non-data page: doesn't count against the budget, continue
+            // Non-data page: doesn't count against the data-bearing budget, continue
         }
     }
 

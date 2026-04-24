@@ -98,6 +98,55 @@ fn test_parallel_reader_data_integrity() {
     }
 }
 
+/// Parallel compressed reads must match the serial baseline for both RLE and RDC files.
+#[test]
+fn test_parallel_compressed_integrity() {
+    let files = [
+        // RDC
+        base().join("test.sas7bdat"),
+        base().join("data_pandas/test3.sas7bdat"),
+        base().join("data_pandas/test6.sas7bdat"),
+        // RLE
+        base().join("data_pandas/test2.sas7bdat"),
+        base().join("data_AHS2013/rmov.sas7bdat"),
+    ];
+    for path in &files {
+        if !path.exists() {
+            continue;
+        }
+        let expected_rows = {
+            let r = Sas7bdatReader::open(path).expect("open");
+            r.metadata().row_count
+        };
+        let baseline = collect_sas(path, 1, 65536);
+        assert_eq!(
+            baseline.height(),
+            expected_rows,
+            "{}: serial row count wrong",
+            path.display()
+        );
+        let baseline_checksum = float_checksum(&baseline);
+
+        for threads in [2usize, 4] {
+            for batch_size in [512usize, 4096, 65536] {
+                let df = collect_sas(path, threads, batch_size);
+                assert_eq!(
+                    df.height(),
+                    expected_rows,
+                    "{}: threads={threads} batch={batch_size}: row count mismatch",
+                    path.display()
+                );
+                let checksum = float_checksum(&df);
+                assert!(
+                    (checksum - baseline_checksum).abs() < 1e-6,
+                    "{}: threads={threads} batch={batch_size}: checksum {checksum} != baseline {baseline_checksum}",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
 /// Test just the large 400MB file with multi-threading (row count + checksum only).
 #[test]
 fn test_large_file_parallel_integrity() {

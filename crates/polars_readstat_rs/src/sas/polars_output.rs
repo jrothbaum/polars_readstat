@@ -1215,8 +1215,7 @@ pub(crate) fn sas_batch_iter_with_reader(
         parallel_chunks.max(1),
     );
 
-    // Compressed SAS still uses the serial decoder.
-    if reader.metadata().compression != crate::Compression::None || n_workers <= 1 {
+    if n_workers <= 1 {
         let header = reader.header().clone();
         let metadata = reader.metadata().clone();
         let endian = reader.endian();
@@ -1252,7 +1251,9 @@ pub(crate) fn sas_batch_iter_with_reader(
     }
     // N independent readers, each owning a non-overlapping range of pages.
     // Page byte offsets are always exact (header_length + page_num * page_length),
-    // so seeking is reliable regardless of page type (DATA or MIX).
+    // so seeking is reliable regardless of page type (DATA, MIX, or compressed META).
+    // For compressed files, first_data_page is the first META page with data subheaders;
+    // each row decompresses independently so workers need no cross-page state.
     // Workers emit variable-size batches (≤ batch_size rows); the consumer reassembles.
 
     let header = reader.header().clone();
@@ -1436,8 +1437,11 @@ pub(crate) fn sas_batch_iter_with_reader(
     // is always exact based on realized row counts rather than geometry estimates.
     let row_index_start = mix_data_rows;
 
-    // Row index and partial reads both require file-order output.
-    let use_ordered = preserve_order || row_index_name.is_some() || partial_read;
+    // Row index, partial reads, and compressed files all require file-order output.
+    // Compressed files need ordering so that the row-count cap (applied below) always
+    // trims the same trailing phantom rows rather than random worker tails.
+    let is_compressed = reader.metadata().compression != crate::Compression::None;
+    let use_ordered = preserve_order || row_index_name.is_some() || partial_read || is_compressed;
     let base_iter: SasBatchIter = if use_ordered {
         let mut channels: std::collections::VecDeque<mpsc::Receiver<PolarsResult<DataFrame>>> =
             std::collections::VecDeque::with_capacity(n_workers);
@@ -1514,6 +1518,16 @@ pub(crate) fn sas_batch_iter_with_reader(
         Ok(Box::new(SlicedBatchIter {
             inner: base_iter,
             skip: offset,
+            remaining: total,
+        }))
+    } else if reader.metadata().compression != crate::Compression::None {
+        // Compressed files: each parallel worker starts its own current_row counter at 0,
+        // so the per-worker row_count guard in ensure_row_ready doesn't cap the global
+        // total. Pages can contain more data subheaders than the metadata row_count,
+        // so cap the combined output explicitly.
+        Ok(Box::new(SlicedBatchIter {
+            inner: base_iter,
+            skip: 0,
             remaining: total,
         }))
     } else {

@@ -3,7 +3,7 @@ use crate::error::Result;
 use crate::header::{check_header, read_header};
 use crate::metadata::read_metadata_from_path;
 use crate::page::PageReader;
-use crate::types::{Endian, Format, Header, Metadata};
+use crate::types::{Compression, Endian, Format, Header, Metadata};
 use polars::prelude::*;
 use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
@@ -285,7 +285,13 @@ pub(crate) fn data_reader_at_page_range(
     let mut data_reader =
         DataReader::new(page_reader, metadata.clone(), endian, format, Vec::new())?;
     // DataReader::new() already consumed one page; set the budget for remaining pages.
-    data_reader.set_max_pages(page_count.saturating_sub(1));
+    // Compressed files use a physical-page budget so non-data META pages count against
+    // the worker's range limit, preventing overlap with adjacent workers.
+    if metadata.compression != Compression::None {
+        data_reader.set_max_physical_pages(page_count.saturating_sub(1));
+    } else {
+        data_reader.set_max_pages(page_count.saturating_sub(1));
+    }
     data_reader.set_current_row(row_start);
     Ok(data_reader)
 }

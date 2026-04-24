@@ -156,6 +156,22 @@ fn read_metadata_inner<R: Read + Seek>(
                 }
             }
         }
+
+        // For compressed files, first_data_page is the first META page that carries
+        // data subheaders. Do this after subheader processing so row_length is known.
+        if first_data_page.is_none()
+            && metadata_builder.compression != Compression::None
+            && !matches!(page_header.page_type, PageType::Mix1 | PageType::Mix2)
+        {
+            if let Some(row_length) = metadata_builder.row_length.filter(|&v| v > 0) {
+                if page_has_data_subheaders(&subheaders, page_buffer, row_length) {
+                    first_data_page = Some(page_idx);
+                    if stop_at_first_data_page {
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     // If no DATA pages were encountered, fall back to the total pages read.
@@ -304,6 +320,16 @@ fn is_known_metadata_signature(sig: &[u8]) -> bool {
     }
 
     false
+}
+
+fn page_has_data_subheaders(
+    subheaders: &[PageSubheader],
+    page_buffer: &[u8],
+    row_length: usize,
+) -> bool {
+    subheaders
+        .iter()
+        .any(|sub| is_mix_data_subheader(sub, page_buffer, row_length))
 }
 
 fn is_metadata_page_type(page_header: &PageHeader) -> bool {
