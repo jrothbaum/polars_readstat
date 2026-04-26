@@ -36,6 +36,9 @@ pub use sas::{Error, Result, Sas7bdatReader};
 pub use sas::{SasValueLabelKey, SasValueLabelMap, SasValueLabels, SasVariableLabels, SasWriter};
 
 pub use readstat_stream::{readstat_batch_iter, ReadstatBatchIter, ReadstatBatchStream};
+
+#[cfg(feature = "row_reader")]
+pub use sas::row_reader::{sas_row_readers, SasColumnInfo, SasColumnKind, SasRowReader};
 pub use sas::scan_sas7bdat;
 
 pub use spss::{scan_sav, Error as SpssError, Result as SpssResult, SpssReader};

@@ -149,6 +149,7 @@ impl Sas7bdatReader {
             true,
             None,
             opts.informative_nulls.clone(),
+            false,
         )
         .map_err(|e| crate::error::Error::ParseError(e.to_string()))?;
 

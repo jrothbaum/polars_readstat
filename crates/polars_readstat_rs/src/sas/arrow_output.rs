@@ -79,6 +79,8 @@ pub fn read_to_arrow_stream_ffi(
     threads: Option<usize>,
     missing_string_as_null: bool,
     chunk_size: Option<usize>,
+    offset: usize,
+    n_rows: Option<usize>,
 ) -> PolarsResult<*mut ArrowArrayStream> {
     let opts = crate::ScanOptions {
         threads,
@@ -101,8 +103,8 @@ pub fn read_to_arrow_stream_ffi(
         missing_string_as_null,
         chunk_size,
         None,
-        0,
-        None,
+        offset,
+        n_rows,
         opts.preserve_order.unwrap_or(false),
         None,
         None,

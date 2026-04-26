@@ -267,6 +267,11 @@ pub(crate) fn stata_batch_iter_with_reader(
     let max_rows = reader.metadata().row_count.saturating_sub(offset as u64) as usize;
     let total = n_rows.unwrap_or(max_rows).min(max_rows);
     let batch_size = chunk_size.unwrap_or(100_000).max(1);
+
+    if total == 0 {
+        return Ok(Box::new(std::iter::empty()));
+    }
+
     let selected = cols
         .as_ref()
         .map(|c| c.iter().cloned().collect::<HashSet<_>>());

@@ -223,6 +223,10 @@ pub(crate) fn spss_batch_iter_with_reader(
     let total = n_rows.unwrap_or(max_rows).min(max_rows);
     let batch_size = chunk_size.unwrap_or(100_000).max(1);
 
+    if total == 0 {
+        return Ok(Box::new(std::iter::empty()));
+    }
+
     if let Some(ref name) = row_index_name {
         let collision = reader.metadata().variables.iter().any(|v| v.name == *name);
         if collision {

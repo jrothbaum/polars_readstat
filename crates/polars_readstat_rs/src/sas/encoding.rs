@@ -160,3 +160,29 @@ pub fn decode_string(bytes: &[u8], encoding_byte: u8, encoding: &'static Encodin
     let (decoded, _, _had_errors) = encoding.decode(bytes);
     decoded.into_owned()
 }
+
+/// Decode bytes into `out` without allocating a String per call.
+///
+/// For UTF-8 input (encoding_byte 20/29-adjacent, or when encoding_rs returns
+/// Cow::Borrowed) this is a plain memcpy.  For Latin-1 (encoding_byte 29) each
+/// byte is converted in place.  For other encodings encoding_rs transcodes into
+/// a temporary buffer that is immediately written into `out`.
+pub(crate) fn decode_string_into(bytes: &[u8], encoding_byte: u8, encoding: &'static Encoding, out: &mut Vec<u8>) {
+    if encoding_byte == 29 {
+        // Latin-1: U+0000..U+007F are single bytes; U+0080..U+00FF are 2-byte UTF-8.
+        for &b in bytes {
+            if b < 0x80 {
+                out.push(b);
+            } else {
+                out.push(0xC0 | (b >> 6));
+                out.push(0x80 | (b & 0x3F));
+            }
+        }
+        return;
+    }
+
+    let (decoded, _, _) = encoding.decode(bytes);
+    // Cow::Borrowed means the input was already valid UTF-8 — extend_from_slice
+    // is a plain memcpy with no allocation.
+    out.extend_from_slice(decoded.as_bytes());
+}

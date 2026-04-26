@@ -194,7 +194,7 @@ impl DataFrameBuilder {
                                 if is_missing {
                                     b.append_null();
                                 } else {
-                                    b.append_value(to_time_value(value));
+                                    b.append_value((value * 1_000_000_000.0) as i64);
                                 }
                             }
                         }
@@ -340,7 +340,7 @@ fn to_date(value: Option<f64>) -> Option<i32> {
     })
 }
 
-fn to_date_value(sas_value: f64) -> i32 {
+pub(crate) fn to_date_value(sas_value: f64) -> i32 {
     let days_since_1970 = (sas_value as i32) - SAS_EPOCH_OFFSET_DAYS;
     if days_since_1970 >= -135080 && days_since_1970 <= 156935 {
         days_since_1970
@@ -356,7 +356,7 @@ fn to_datetime(value: Option<f64>) -> Option<i64> {
     })
 }
 
-fn to_datetime_value(sas_seconds: f64) -> i64 {
+pub(crate) fn to_datetime_value(sas_seconds: f64) -> i64 {
     let unix_seconds = sas_seconds - (SAS_EPOCH_OFFSET_DAYS as f64 * SECONDS_PER_DAY as f64);
     (unix_seconds * 1_000_000.0) as i64
 }
@@ -365,8 +365,9 @@ fn to_time(value: Option<f64>) -> Option<i64> {
     value.map(|sas_seconds| (sas_seconds * 1_000_000_000.0) as i64)
 }
 
-fn to_time_value(sas_seconds: f64) -> i64 {
-    (sas_seconds * 1_000_000_000.0) as i64
+/// Returns microseconds since midnight — matches DuckDB TIME (`duckdb_time.micros`).
+pub(crate) fn to_time_value(sas_seconds: f64) -> i64 {
+    (sas_seconds * 1_000_000.0) as i64
 }
 
 /// Check if format string indicates a date column
@@ -434,6 +435,75 @@ impl SasScan {
 }
 
 pub(crate) type SasBatchIter = Box<dyn Iterator<Item = PolarsResult<DataFrame>> + Send>;
+
+// Converts `_polars_rs_thread_` / `_polars_rs_row_` tag columns into a proper row index.
+// Workers tag each row with their thread ID (file-order) and a per-thread sequential counter.
+// Cumulative offset per thread is computed here so the caller gets a correct global index
+// without requiring ordered output.
+fn assign_row_index_from_tags(mut df: DataFrame, name: &str) -> PolarsResult<DataFrame> {
+    let thread_ca = df.column("_polars_rs_thread_")?.u32()?.clone();
+    let row_ca = df.column("_polars_rs_row_")?.u32()?.clone();
+
+    // Count rows per thread using a BTreeMap so iteration order matches file order.
+    let mut thread_counts: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+    for t in thread_ca.into_iter().flatten() {
+        *thread_counts.entry(t).or_insert(0) += 1;
+    }
+
+    // Compute cumulative starting offset for each thread.
+    let mut offsets: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    let mut cumulative: u32 = 0;
+    for (&t, &count) in &thread_counts {
+        offsets.insert(t, cumulative);
+        cumulative += count;
+    }
+
+    // Build the global row index: offset[thread] + row_within_thread.
+    let row_indices: Vec<u32> = thread_ca
+        .into_iter()
+        .zip(row_ca.into_iter())
+        .map(|(t, r)| offsets.get(&t.unwrap_or(0)).copied().unwrap_or(0) + r.unwrap_or(0))
+        .collect();
+
+    df.drop_in_place("_polars_rs_thread_")?;
+    df.drop_in_place("_polars_rs_row_")?;
+
+    let idx_series = Series::new(name.into(), row_indices);
+    df.insert_column(0, idx_series.into())?;
+    Ok(df)
+}
+
+// Collects all batches from an unordered tagged iterator and resolves thread/row tags into
+// a correct file-order row index.  Yields the combined DataFrame as a single batch.
+struct SortIndexCollectorIter {
+    inner: Option<SasBatchIter>,
+    row_index_name: String,
+}
+
+impl Iterator for SortIndexCollectorIter {
+    type Item = PolarsResult<DataFrame>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let inner = self.inner.take()?;
+        let mut out: Option<DataFrame> = None;
+        for batch in inner {
+            match batch {
+                Ok(df) => {
+                    if let Some(acc) = out.as_mut() {
+                        if let Err(e) = acc.vstack_mut(&df) {
+                            return Some(Err(e));
+                        }
+                    } else {
+                        out = Some(df);
+                    }
+                }
+                Err(e) => return Some(Err(e)),
+            }
+        }
+        let df = out.unwrap_or_else(DataFrame::empty);
+        Some(assign_row_index_from_tags(df, &self.row_index_name))
+    }
+}
 
 struct SlicedBatchIter {
     inner: SasBatchIter,
@@ -674,6 +744,7 @@ fn spawn_page_worker(
     batch_size: usize,
     worker_page_start: usize,
     worker_page_count: usize,
+    sort_tag: Option<u32>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let mut data_reader = match data_reader_at_page_range(
@@ -692,6 +763,8 @@ fn spawn_page_worker(
                 return;
             }
         };
+
+        let mut row_cursor: u32 = 0;
 
         loop {
             let mut buf = Vec::new();
@@ -715,6 +788,30 @@ fn spawn_page_worker(
             }
             match builder.build() {
                 Ok(df) => {
+                    let df = if let Some(thread_id) = sort_tag {
+                        let n = df.height();
+                        let thread_col: Column = Series::new(
+                            "_polars_rs_thread_".into(),
+                            vec![thread_id; n],
+                        ).into();
+                        let row_col: Column = Series::new(
+                            "_polars_rs_row_".into(),
+                            (row_cursor..row_cursor + n as u32).collect::<Vec<u32>>(),
+                        ).into();
+                        row_cursor += n as u32;
+                        let mut df = df;
+                        if let Err(e) = df.with_column(thread_col) {
+                            let _ = tx.send(Err(e));
+                            return;
+                        }
+                        if let Err(e) = df.with_column(row_col) {
+                            let _ = tx.send(Err(e));
+                            return;
+                        }
+                        df
+                    } else {
+                        df
+                    };
                     if tx.send(Ok(df)).is_err() {
                         return;
                     }
@@ -768,6 +865,7 @@ fn ordered_parallel_page_iter(
             batch_size,
             worker_page_start,
             worker_page_count,
+            None,
         ));
     }
 
@@ -782,7 +880,7 @@ fn ordered_parallel_page_iter(
 // For serial SAS paths (compressed files or single-thread): wraps SerialSasBatchIter
 // in a background thread so IO can overlap with the consumer's processing.
 struct SasBackgroundIter {
-    rx: mpsc::Receiver<PolarsResult<DataFrame>>,
+    rx: Option<mpsc::Receiver<PolarsResult<DataFrame>>>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -790,12 +888,15 @@ impl Iterator for SasBackgroundIter {
     type Item = PolarsResult<DataFrame>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.rx.recv().ok()
+        self.rx.as_ref()?.recv().ok()
     }
 }
 
 impl Drop for SasBackgroundIter {
     fn drop(&mut self) {
+        // Drop rx first: this disconnects the channel so the background thread's
+        // tx.send() fails immediately rather than blocking on a full channel.
+        drop(self.rx.take());
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -1079,6 +1180,7 @@ pub(crate) fn sas_batch_iter(
         preserve_order,
         row_index_name,
         informative_nulls,
+        false,
     )
 }
 
@@ -1094,6 +1196,7 @@ pub(crate) fn sas_batch_iter_with_reader(
     preserve_order: bool,
     row_index_name: Option<String>,
     informative_nulls: Option<crate::InformativeNullOpts>,
+    add_sort_tags: bool,
 ) -> PolarsResult<SasBatchIter> {
     let max_rows = reader.metadata().row_count.saturating_sub(offset);
     let total = n_rows.unwrap_or(max_rows).min(max_rows);
@@ -1189,7 +1292,7 @@ pub(crate) fn sas_batch_iter_with_reader(
             }
         });
         return Ok(Box::new(SasBackgroundIter {
-            rx,
+            rx: Some(rx),
             handle: Some(handle),
         }));
     }
@@ -1245,7 +1348,7 @@ pub(crate) fn sas_batch_iter_with_reader(
             }
         });
         return Ok(Box::new(SasBackgroundIter {
-            rx,
+            rx: Some(rx),
             handle: Some(handle),
         }));
     }
@@ -1336,7 +1439,7 @@ pub(crate) fn sas_batch_iter_with_reader(
                 }
             });
             return Ok(Box::new(SasBackgroundIter {
-                rx,
+                rx: Some(rx),
                 handle: Some(handle),
             }));
         }
@@ -1440,8 +1543,13 @@ pub(crate) fn sas_batch_iter_with_reader(
     // Row index, partial reads, and compressed files all require file-order output.
     // Compressed files need ordering so that the row-count cap (applied below) always
     // trims the same trailing phantom rows rather than random worker tails.
+    // When add_sort_tags is true, row index assignment happens post-collection via thread/row
+    // tags, so row_index_name alone no longer forces ordered mode.
     let is_compressed = reader.metadata().compression != crate::Compression::None;
-    let use_ordered = preserve_order || row_index_name.is_some() || partial_read || is_compressed;
+    let use_ordered = preserve_order
+        || (row_index_name.is_some() && !add_sort_tags)
+        || partial_read
+        || is_compressed;
     let base_iter: SasBatchIter = if use_ordered {
         let mut channels: std::collections::VecDeque<mpsc::Receiver<PolarsResult<DataFrame>>> =
             std::collections::VecDeque::with_capacity(n_workers);
@@ -1466,6 +1574,7 @@ pub(crate) fn sas_batch_iter_with_reader(
                 batch_size,
                 wp_start,
                 wp_count,
+                None,
             ));
         }
         let parallel = OrderedParallelIter {
@@ -1499,18 +1608,29 @@ pub(crate) fn sas_batch_iter_with_reader(
                 batch_size,
                 wp_start,
                 wp_count,
+                if add_sort_tags { Some(worker_idx as u32) } else { None },
             ));
         }
         drop(shared_tx);
         let parallel = UnorderedParallelIter {
             rx: Some(rx),
             handles,
-            row_index_name: row_index_name.clone(),
+            row_index_name: if add_sort_tags { None } else { row_index_name.clone() },
             row_cursor: row_index_start,
         };
-        match mix_iter {
+        let base: SasBatchIter = match mix_iter {
             Some(mix) => Box::new(mix.chain(parallel)) as SasBatchIter,
             None => Box::new(parallel) as SasBatchIter,
+        };
+        if add_sort_tags {
+            if let Some(name) = row_index_name.clone() {
+                Box::new(SortIndexCollectorIter { inner: Some(base), row_index_name: name })
+                    as SasBatchIter
+            } else {
+                base
+            }
+        } else {
+            base
         }
     };
 
@@ -1565,6 +1685,19 @@ impl AnonymousScan for SasScan {
             None
         };
 
+        // Use thread/row tags + post-collection index assignment when:
+        // - caller wants a row index but not strict ordering
+        // - no mix-page rows (which are already handled serially in file order)
+        // - uncompressed (compressed always forces ordered mode anyway)
+        // - full file read (partial reads use their own ordered path)
+        let is_compressed = reader.metadata().compression != crate::Compression::None;
+        let mix_data_rows = reader.mix_data_rows();
+        let add_sort_tags = self.row_index_name.is_some()
+            && !self.preserve_order
+            && mix_data_rows == 0
+            && !is_compressed
+            && opts.n_rows.is_none();
+
         let iter = sas_batch_iter_with_reader(
             &reader,
             self.path.clone(),
@@ -1577,6 +1710,7 @@ impl AnonymousScan for SasScan {
             self.preserve_order,
             self.row_index_name.clone(),
             self.informative_nulls.clone(),
+            add_sort_tags,
         )?;
 
         let prefetch = crate::scan_prefetch::spawn_prefetcher(iter.map(|batch| batch));
@@ -1590,6 +1724,7 @@ impl AnonymousScan for SasScan {
             }
         }
         let df = out.unwrap_or_else(DataFrame::empty);
+
         if self.compress_opts.enabled {
             let compressed = crate::compress_df_if_enabled(&df, &self.compress_opts)
                 .map_err(|e| PolarsError::ComputeError(e.into()))?;

@@ -1,3 +1,5 @@
+#[cfg(feature = "row_reader")]
+pub mod row_reader;
 pub(crate) mod buffer;
 pub(crate) mod constants;
 pub(crate) mod data;

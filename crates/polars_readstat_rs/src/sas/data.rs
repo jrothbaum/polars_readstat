@@ -176,17 +176,24 @@ impl<R: Read + Seek> DataReader<R> {
         };
 
         let page_buffer = self.page_reader.page_buffer();
-        
+
         if offset + length > page_buffer.len() {
             return Err(Error::BufferOutOfBounds { offset, length });
         }
 
+        let row_length = self.metadata.row_length;
         let is_compressed = self.metadata.compression != Compression::None;
-        
+
         if is_compressed {
             let raw_bytes = &page_buffer[offset..offset + length];
-            self.decompressor.decompress_into(raw_bytes, &mut self.decompress_buf)?;
-            
+            if length < row_length {
+                // Truly compressed subheader: decompress into the reusable buffer.
+                self.decompressor.decompress_into(raw_bytes, &mut self.decompress_buf)?;
+            } else {
+                // Uncompressed subheader on a compressed file: copy bytes directly.
+                // (length == row_length; the compression flag on the subheader was 0)
+                self.decompress_buf[..length].copy_from_slice(raw_bytes);
+            }
             self.advance_row();
             Ok(Some(&self.decompress_buf))
         } else {
@@ -232,12 +239,15 @@ impl<R: Read + Seek> DataReader<R> {
             }
             
             let is_compressed = self.metadata.compression != Compression::None;
-            
+
             if is_compressed {
-                // Compressed: borrow raw bytes, decompress, then copy out.
                 let raw_bytes = &self.page_reader.page_buffer()[offset..offset + length];
-                self.decompressor
-                    .decompress_into(raw_bytes, &mut self.decompress_buf)?;
+                if length < row_length {
+                    self.decompressor
+                        .decompress_into(raw_bytes, &mut self.decompress_buf)?;
+                } else {
+                    self.decompress_buf[..length].copy_from_slice(raw_bytes);
+                }
                 buf.extend_from_slice(&self.decompress_buf[..row_length]);
             } else {
                 buf.extend_from_slice(&self.page_reader.page_buffer()[offset..offset + length]);

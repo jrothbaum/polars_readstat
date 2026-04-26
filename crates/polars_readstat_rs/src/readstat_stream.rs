@@ -97,6 +97,7 @@ pub fn readstat_batch_iter(
                 preserve_order,
                 row_index_name.clone(),
                 opts.informative_nulls.clone(),
+                false,
             )?;
             Box::new(iter)
         }

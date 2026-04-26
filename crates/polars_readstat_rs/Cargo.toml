@@ -8,6 +8,9 @@ license = "MIT"
 repository = "https://github.com/jrothbaum/polars_readstat"
 readme = "README.md"
 
+[features]
+row_reader = []
+
 [dependencies]
 polars = { version = "0.53", features = ["lazy", "dtype-datetime", "dtype-date", "dtype-u8", "dtype-u16", "dtype-struct"] }
 polars-core = { version = "0.53", default-features = false }
