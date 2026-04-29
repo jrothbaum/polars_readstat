@@ -366,6 +366,7 @@ fn to_time(value: Option<f64>) -> Option<i64> {
 }
 
 /// Returns microseconds since midnight — matches DuckDB TIME (`duckdb_time.micros`).
+#[cfg(feature = "row_reader")]
 pub(crate) fn to_time_value(sas_seconds: f64) -> i64 {
     (sas_seconds * 1_000_000.0) as i64
 }

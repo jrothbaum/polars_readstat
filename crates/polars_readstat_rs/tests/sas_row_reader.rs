@@ -31,7 +31,7 @@ mod tests {
 
         for reader in &mut readers {
             loop {
-                let n = reader.next_chunk(chunk);
+                let n = reader.next_chunk(chunk).unwrap();
                 if n == 0 { break; }
 
                 for col in 0..n_cols {
@@ -155,7 +155,7 @@ mod tests {
             let mut readers = sas_row_readers(path, &opts).unwrap();
             for reader in &mut readers {
                 loop {
-                    let n = reader.next_chunk(chunk);
+                    let n = reader.next_chunk(chunk).unwrap();
                     if n == 0 { break; }
                     for col in 0..n_cols {
                         match schema[col].kind {
@@ -235,7 +235,7 @@ mod tests {
             let mut readers = sas_row_readers(path, opts).unwrap();
             for reader in &mut readers {
                 loop {
-                    let n = reader.next_chunk(chunk);
+                    let n = reader.next_chunk(chunk).unwrap();
                     if n == 0 { break; }
                     for col in 0..n_cols {
                         match schema[col].kind {
@@ -273,7 +273,7 @@ mod tests {
             let mut readers = sas_row_readers(path, opts).unwrap();
             for reader in &mut readers {
                 loop {
-                    let n = reader.next_chunk(chunk);
+                    let n = reader.next_chunk(chunk).unwrap();
                     if n == 0 { break; }
                     for col in 0..n_cols {
                         match schema[col].kind {
@@ -307,7 +307,7 @@ mod tests {
             let mut readers = sas_row_readers(path, opts).unwrap();
             for reader in &mut readers {
                 loop {
-                    let n = reader.next_chunk(chunk);
+                    let n = reader.next_chunk(chunk).unwrap();
                     if n == 0 { break; }
                     for col in 0..n_cols {
                         match schema[col].kind {

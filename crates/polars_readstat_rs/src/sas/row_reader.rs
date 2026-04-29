@@ -81,28 +81,28 @@ impl SasRowReader {
     /// Load up to `max_rows` rows into the internal buffer.
     /// Returns the number of rows available (0 = all segments exhausted).
     /// Call [`commit`] once you have consumed them.
-    pub fn next_chunk(&mut self, max_rows: usize) -> usize {
+    pub fn next_chunk(&mut self, max_rows: usize) -> Result<usize> {
         if self.done {
-            return 0;
+            return Ok(0);
         }
         let cap = self.remaining.unwrap_or(usize::MAX);
         if cap == 0 {
             self.done = true;
-            return 0;
+            return Ok(0);
         }
         let want = max_rows.min(cap);
 
         // Still have unconsumed rows in the current batch.
         let buffered = self.buf_rows.saturating_sub(self.buf_offset);
         if buffered > 0 {
-            return buffered.min(want);
+            return Ok(buffered.min(want));
         }
 
         // Fetch from workers in order, advancing to the next when one is done.
         loop {
             let rx = match self.rxs.front() {
                 Some(r) => r,
-                None => { self.done = true; return 0; }
+                None => { self.done = true; return Ok(0); }
             };
             match rx.recv() {
                 Ok(Ok(buf)) => {
@@ -114,10 +114,14 @@ impl SasRowReader {
                     self.current_buf = buf;
                     self.buf_offset = 0;
                     self.buf_rows = n;
-                    return n.min(want);
+                    return Ok(n.min(want));
                 }
-                _ => {
-                    // Channel closed (worker done) or error — advance to next worker.
+                Ok(Err(e)) => {
+                    self.done = true;
+                    return Err(e);
+                }
+                Err(_) => {
+                    // Channel closed after worker completion: advance to next worker.
                     self.rxs.pop_front();
                 }
             }
