@@ -76,19 +76,6 @@ let (df, profile) = StataReader::open("file.dta")?.read().finish_profiled()?;
 println!("total ms: {}", profile.total_ms);
 ```
 
-SAS has two additional pipeline modes that can improve throughput for compressed files:
-
-```rust
-use polars_readstat_rs::Sas7bdatReader;
-
-// pipeline: better for RLE/RDC-compressed SAS files
-let df = Sas7bdatReader::open("file.sas7bdat")?
-    .read()
-    .pipeline()
-    .pipeline_chunk_size(50_000)
-    .finish()?;
-```
-
 ### 3) Format-agnostic lazy scan
 
 `ScanOptions` controls parallelism and output behavior for `readstat_scan` and `readstat_batch_iter`.
@@ -335,9 +322,25 @@ Works with all three format readers and with `ScanOptions` / `readstat_batch_ite
 ## Arrow export
 ```rust
 use polars_readstat_rs::sas_arrow_output;
+use std::path::Path;
 
-let mut schema = sas_arrow_output::read_to_arrow_schema_ffi("file.sas7bdat")?;
-let mut stream = sas_arrow_output::read_to_arrow_stream_ffi("file.sas7bdat", Some(100_000))?;
+let path = Path::new("file.sas7bdat");
+
+let schema = sas_arrow_output::read_to_arrow_schema_ffi(
+    path,
+    None, // threads
+    true, // missing_string_as_null
+    None, // chunk_size
+)?;
+
+let stream = sas_arrow_output::read_to_arrow_stream_ffi(
+    path,
+    None, // threads
+    true, // missing_string_as_null
+    Some(100_000), // chunk_size
+    0,    // row offset
+    None, // row limit
+)?;
 ```
 
 See `ARROW_EXPORT.md` for FFI details.

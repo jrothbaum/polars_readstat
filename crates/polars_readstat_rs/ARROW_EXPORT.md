@@ -1,162 +1,85 @@
-# Arrow RecordBatch Export
+# Arrow FFI Export
 
-The SAS7BDAT reader can export data as Apache Arrow RecordBatches, enabling interoperability with any Arrow-compatible tools.
+The Rust crate exposes Arrow C Data Interface helpers for SAS, Stata, and SPSS.
+These are intended for embedders such as DuckDB extensions that want an
+`ArrowArrayStream` or one-shot `ArrowArray` without going through the Python API.
 
-## Quick Start
-
-```rust
-use polars_readstat_rs::arrow_output::read_to_arrow;
-
-// Read entire file as Arrow RecordBatch
-let batch = read_to_arrow("data.sas7bdat")?;
-println!("Shape: {} rows × {} columns", batch.num_rows(), batch.num_columns());
-```
-
-## API Reference
-
-### Simple Functions
+## Modules
 
 ```rust
-// Read entire file
-let batch = read_to_arrow("data.sas7bdat")?;
-
-// Read a slice of rows
-let batch = read_batch_to_arrow("data.sas7bdat", offset, count)?;
-
-// Convert Polars DataFrame to Arrow RecordBatch
-let df = reader.read_all()?;
-let batch = dataframe_to_arrow(df)?;
+use polars_readstat_rs::{
+    sas_arrow_output,
+    spss_arrow_output,
+    stata_arrow_output,
+};
 ```
 
-### Streaming Large Files
+Each module exports:
+
+- `read_to_arrow_schema_ffi(...) -> PolarsResult<*mut ArrowSchema>`
+- `read_to_arrow_array_ffi(...) -> PolarsResult<(*mut ArrowSchema, *mut ArrowArray)>`
+- `read_to_arrow_stream_ffi(...) -> PolarsResult<*mut ArrowArrayStream>`
+
+The returned raw pointers are owned by the caller and must be released through
+the normal Arrow C Data Interface release callbacks.
+
+## SAS
 
 ```rust
-use polars_readstat_rs::arrow_output::ArrowBatchStream;
+use polars_readstat_rs::sas_arrow_output;
+use std::path::Path;
 
-// Stream in 10,000-row batches
-let mut stream = ArrowBatchStream::new("large_file.sas7bdat", 10_000)?;
+let path = Path::new("file.sas7bdat");
 
-while let Some(batch) = stream.next_batch()? {
-    println!("Processing {} rows", batch.num_rows());
-    // Process batch...
-}
+let schema = sas_arrow_output::read_to_arrow_schema_ffi(
+    path,
+    None, // threads
+    true, // missing_string_as_null
+    None, // chunk_size
+)?;
+
+let stream = sas_arrow_output::read_to_arrow_stream_ffi(
+    path,
+    None, // threads
+    true, // missing_string_as_null
+    Some(100_000), // chunk_size
+    0,    // row offset
+    None, // row limit
+)?;
 ```
 
-## Use Cases
+## Stata and SPSS
 
-### 1. Convert SAS → Parquet
+Stata and SPSS also accept `value_labels_as_strings`.
 
 ```rust
-use std::fs::File;
-use parquet::arrow::ArrowWriter;
-use parquet::file::properties::WriterProperties;
+use polars_readstat_rs::{spss_arrow_output, stata_arrow_output};
+use std::path::Path;
 
-let batch = read_to_arrow("data.sas7bdat")?;
-let file = File::create("output.parquet")?;
+let dta_stream = stata_arrow_output::read_to_arrow_stream_ffi(
+    Path::new("file.dta"),
+    None,        // threads
+    true,        // missing_string_as_null
+    Some(false), // value_labels_as_strings
+    Some(100_000), // chunk_size
+    0,           // row offset
+    None,        // row limit
+)?;
 
-let props = WriterProperties::builder()
-    .set_compression(parquet::basic::Compression::SNAPPY)
-    .build();
-
-let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))?;
-writer.write(&batch)?;
-writer.close()?;
+let sav_stream = spss_arrow_output::read_to_arrow_stream_ffi(
+    Path::new("file.sav"),
+    None,        // threads
+    true,        // missing_string_as_null
+    Some(false), // value_labels_as_strings
+    Some(100_000), // chunk_size
+    0,           // row offset
+    None,        // row limit
+)?;
 ```
 
-### 2. Convert SAS → Arrow IPC/Feather
+## Notes
 
-```rust
-use std::fs::File;
-use arrow::ipc::writer::FileWriter;
-
-let batch = read_to_arrow("data.sas7bdat")?;
-let file = File::create("output.arrow")?;
-
-let mut writer = FileWriter::try_new(file, &batch.schema())?;
-writer.write(&batch)?;
-writer.finish()?;
-```
-
-### 3. Stream Large File to Parquet
-
-```rust
-use parquet::arrow::ArrowWriter;
-
-let mut stream = ArrowBatchStream::new("large.sas7bdat", 10_000)?;
-let schema = stream.schema()?;
-
-let file = File::create("output.parquet")?;
-let mut writer = ArrowWriter::try_new(file, schema, None)?;
-
-while let Some(batch) = stream.next_batch()? {
-    writer.write(&batch)?;
-}
-writer.close()?;
-```
-
-### 4. Use with DuckDB (via Arrow)
-
-```python
-import duckdb
-import pyarrow as pa
-import pyarrow.ipc as ipc
-
-# After converting to Arrow IPC in Rust
-with open('output.arrow', 'rb') as f:
-    reader = ipc.open_file(f)
-    table = reader.read_all()
-
-# Query with DuckDB
-con = duckdb.connect()
-result = con.execute("SELECT * FROM table WHERE age > 30").fetchdf()
-```
-
-### 5. Use with PyArrow
-
-```python
-import pyarrow as pa
-import pyarrow.ipc as ipc
-
-# Read Arrow IPC file created from SAS
-with open('output.arrow', 'rb') as f:
-    reader = ipc.open_file(f)
-    table = reader.read_all()
-
-# Convert to Pandas
-df = table.to_pandas()
-
-# Or work directly with Arrow
-print(f"Shape: {table.num_rows} rows × {table.num_columns} columns")
-print(table.schema)
-```
-
-## Data Type Mapping
-
-| SAS Type | Polars Type | Arrow Type |
-|----------|-------------|------------|
-| Numeric  | Float64     | Float64    |
-| Character| String      | Utf8       |
-
-## Performance
-
-**Test file:** topical.sas7bdat (84,355 rows × 111 columns)
-
-- **Full file read**: 679ms
-- **Stream to Parquet** (9 batches): ~750ms total
-- **Arrow overhead**: Minimal (just type conversion)
-
-## Dependencies
-
-```toml
-[dependencies]
-polars_readstat_rs = "0.1"
-arrow = "54.0"
-
-# Optional: for Parquet export
-parquet = "54.0"
-```
-
-## Example
-
-See [examples/export_to_arrow.rs](examples/export_to_arrow.rs) for a complete working example.
-
+- `offset` and `n_rows` are applied to stream output.
+- Schema and one-shot array helpers read the full schema/data for the selected
+  format and do not take `offset` or `n_rows`.
+- Arrow output uses the same decoding behavior as the Polars scan paths.
