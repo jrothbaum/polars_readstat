@@ -3,7 +3,8 @@ use polars::prelude::*;
 use polars_readstat_rs::{
     readstat_batch_iter, readstat_metadata_json, readstat_scan, readstat_schema,
     InformativeNullColumns, InformativeNullMode, InformativeNullOpts, Sas7bdatReader, SasWriter,
-    ScanOptions, SpssReader, SpssWriter, StataReader, StataWriter,
+    ScanOptions, SpssAlignment, SpssMeasure, SpssReader, SpssVariableFormat, SpssWriter,
+    StataReader, StataWriter,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -712,6 +713,7 @@ fn write_stata(
     threads: Option<usize>,
     value_labels: Option<&Bound<PyDict>>,
     variable_labels: Option<&Bound<PyDict>>,
+    variable_format: Option<&Bound<PyDict>>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["dta"])?;
     let mut writer = StataWriter::new(path);
@@ -726,6 +728,9 @@ fn write_stata(
     }
     if let Some(labels) = variable_labels {
         writer = writer.with_variable_labels(parse_stata_variable_labels(labels)?);
+    }
+    if let Some(formats) = variable_format {
+        writer = writer.with_variable_formats(parse_stata_variable_formats(formats)?);
     }
     writer
         .write_df(&df.0)
@@ -866,6 +871,7 @@ fn sink_stata(
         row_count: None,
         value_labels: None,
         variable_labels: None,
+        variable_formats: None,
     };
 
     let (tx, rx) = mpsc::sync_channel::<DataFrame>(2);
@@ -897,6 +903,10 @@ fn write_spss(
     path: String,
     value_labels: Option<&Bound<PyDict>>,
     variable_labels: Option<&Bound<PyDict>>,
+    variable_measure: Option<&Bound<PyDict>>,
+    variable_display_width: Option<&Bound<PyDict>>,
+    variable_alignment: Option<&Bound<PyDict>>,
+    variable_format: Option<&Bound<PyDict>>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["sav", "zsav"])?;
     let mut writer = SpssWriter::new(path);
@@ -905,6 +915,18 @@ fn write_spss(
     }
     if let Some(labels) = variable_labels {
         writer = writer.with_variable_labels(parse_spss_variable_labels(labels)?);
+    }
+    if let Some(measure) = variable_measure {
+        writer = writer.with_variable_measures(parse_spss_variable_measure(measure)?);
+    }
+    if let Some(width) = variable_display_width {
+        writer = writer.with_variable_display_widths(parse_spss_variable_display_width(width)?);
+    }
+    if let Some(alignment) = variable_alignment {
+        writer = writer.with_variable_alignments(parse_spss_variable_alignment(alignment)?);
+    }
+    if let Some(format) = variable_format {
+        writer = writer.with_variable_formats(parse_spss_variable_format(format)?);
     }
     writer
         .write_df(&df.0)
@@ -972,6 +994,28 @@ fn parse_stata_variable_labels(
     parse_variable_labels_dict(labels)
 }
 
+fn parse_stata_variable_formats(
+    formats: &Bound<PyDict>,
+) -> PyResult<polars_readstat_rs::VariableFormats> {
+    let mut out = HashMap::with_capacity(formats.len());
+    for (col_obj, format_obj) in formats.iter() {
+        let col = col_obj.extract::<String>()?;
+        let format = format_obj.extract::<String>()?;
+        if format.is_empty() {
+            return Err(PyValueError::new_err(format!(
+                "Stata variable_format for {col} must not be empty"
+            )));
+        }
+        if !format.starts_with('%') {
+            return Err(PyValueError::new_err(format!(
+                "Stata variable_format for {col} must start with '%': {format}"
+            )));
+        }
+        out.insert(col, format);
+    }
+    Ok(out)
+}
+
 fn parse_spss_value_labels(
     labels: &Bound<PyDict>,
 ) -> PyResult<polars_readstat_rs::SpssValueLabels> {
@@ -1002,6 +1046,139 @@ fn parse_spss_variable_labels(
     labels: &Bound<PyDict>,
 ) -> PyResult<polars_readstat_rs::SpssVariableLabels> {
     parse_variable_labels_dict(labels)
+}
+
+fn parse_spss_variable_measure(
+    values: &Bound<PyDict>,
+) -> PyResult<polars_readstat_rs::SpssVariableMeasures> {
+    let mut out = HashMap::with_capacity(values.len());
+    for (col_obj, measure_obj) in values.iter() {
+        let col = col_obj.extract::<String>()?;
+        let measure = match measure_obj.extract::<String>()?.to_ascii_lowercase().as_str() {
+            "unknown" => SpssMeasure::Unknown,
+            "nominal" => SpssMeasure::Nominal,
+            "ordinal" => SpssMeasure::Ordinal,
+            "scale" => SpssMeasure::Scale,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "SPSS variable_measure for {col} must be one of unknown, nominal, ordinal, scale; got {other}"
+                )))
+            }
+        };
+        out.insert(col, measure);
+    }
+    Ok(out)
+}
+
+fn parse_spss_variable_alignment(
+    values: &Bound<PyDict>,
+) -> PyResult<polars_readstat_rs::SpssVariableAlignments> {
+    let mut out = HashMap::with_capacity(values.len());
+    for (col_obj, alignment_obj) in values.iter() {
+        let col = col_obj.extract::<String>()?;
+        let alignment = match alignment_obj
+            .extract::<String>()?
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "left" => SpssAlignment::Left,
+            "right" => SpssAlignment::Right,
+            "center" | "centre" => SpssAlignment::Center,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                "SPSS variable_alignment for {col} must be one of left, right, center; got {other}"
+            )))
+            }
+        };
+        out.insert(col, alignment);
+    }
+    Ok(out)
+}
+
+fn parse_spss_variable_display_width(
+    values: &Bound<PyDict>,
+) -> PyResult<polars_readstat_rs::SpssVariableDisplayWidths> {
+    let mut out = HashMap::with_capacity(values.len());
+    for (col_obj, width_obj) in values.iter() {
+        let col = col_obj.extract::<String>()?;
+        let width = width_obj.extract::<i32>()?;
+        if width <= 0 {
+            return Err(PyValueError::new_err(format!(
+                "SPSS variable_display_width for {col} must be > 0"
+            )));
+        }
+        out.insert(col, width);
+    }
+    Ok(out)
+}
+
+fn parse_spss_variable_format(
+    values: &Bound<PyDict>,
+) -> PyResult<polars_readstat_rs::SpssVariableFormats> {
+    let mut out = HashMap::with_capacity(values.len());
+    for (col_obj, format_obj) in values.iter() {
+        let col = col_obj.extract::<String>()?;
+        let spec = if let Ok(s) = format_obj.extract::<String>() {
+            parse_spss_format_string(&col, &s)?
+        } else {
+            let dict = format_obj.cast::<PyDict>()?;
+            let format_type = dict
+                .get_item("format_type")?
+                .map(|v| v.extract::<u8>())
+                .transpose()?;
+            let width = dict
+                .get_item("width")?
+                .map(|v| v.extract::<u8>())
+                .transpose()?;
+            let decimals = dict
+                .get_item("decimals")?
+                .or(dict.get_item("decimal_places")?)
+                .map(|v| v.extract::<u8>())
+                .transpose()?;
+            SpssVariableFormat {
+                format_type,
+                width,
+                decimals,
+            }
+        };
+        out.insert(col, spec);
+    }
+    Ok(out)
+}
+
+fn parse_spss_format_string(col: &str, spec: &str) -> PyResult<SpssVariableFormat> {
+    let spec = spec.trim();
+    if spec.len() < 2 {
+        return Err(PyValueError::new_err(format!(
+            "SPSS variable_format for {col} is invalid: {spec}"
+        )));
+    }
+    let (kind, rest) = spec.split_at(1);
+    let format_type = match kind.to_ascii_uppercase().as_str() {
+        "A" => 1,
+        "F" => 5,
+        other => {
+            return Err(PyValueError::new_err(format!(
+            "SPSS variable_format for {col} only supports A and F formats currently; got {other}"
+        )))
+        }
+    };
+    let (width_str, decimals_str) = rest.split_once('.').unwrap_or((rest, "0"));
+    let width = width_str.parse::<u8>().map_err(|_| {
+        PyValueError::new_err(format!(
+            "SPSS variable_format for {col} has invalid width: {spec}"
+        ))
+    })?;
+    let decimals = decimals_str.parse::<u8>().map_err(|_| {
+        PyValueError::new_err(format!(
+            "SPSS variable_format for {col} has invalid decimals: {spec}"
+        ))
+    })?;
+    Ok(SpssVariableFormat {
+        format_type: Some(format_type),
+        width: Some(width),
+        decimals: Some(decimals),
+    })
 }
 
 fn parse_sas_value_labels(labels: &Bound<PyDict>) -> PyResult<polars_readstat_rs::SasValueLabels> {

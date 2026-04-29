@@ -188,7 +188,8 @@ impl<R: Read + Seek> DataReader<R> {
             let raw_bytes = &page_buffer[offset..offset + length];
             if length < row_length {
                 // Truly compressed subheader: decompress into the reusable buffer.
-                self.decompressor.decompress_into(raw_bytes, &mut self.decompress_buf)?;
+                self.decompressor
+                    .decompress_into(raw_bytes, &mut self.decompress_buf)?;
             } else {
                 // Uncompressed subheader on a compressed file: copy bytes directly.
                 // (length == row_length; the compression flag on the subheader was 0)
@@ -198,7 +199,9 @@ impl<R: Read + Seek> DataReader<R> {
             Ok(Some(&self.decompress_buf))
         } else {
             self.advance_row();
-            Ok(Some(&self.page_reader.page_buffer()[offset..offset + length]))
+            Ok(Some(
+                &self.page_reader.page_buffer()[offset..offset + length],
+            ))
         }
     }
 
@@ -237,7 +240,7 @@ impl<R: Read + Seek> DataReader<R> {
             if offset + length > self.page_reader.page_buffer().len() {
                 return Err(Error::BufferOutOfBounds { offset, length });
             }
-            
+
             let is_compressed = self.metadata.compression != Compression::None;
 
             if is_compressed {
@@ -888,5 +891,3 @@ mod tests {
         }
     }
 }
-
-

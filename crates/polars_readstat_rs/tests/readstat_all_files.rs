@@ -34,11 +34,17 @@ fn test_sas_all_files() {
             continue;
         }
 
-        eprintln!("sas read: {} rows={limit}", path.file_name().unwrap().to_string_lossy());
+        eprintln!(
+            "sas read: {} rows={limit}",
+            path.file_name().unwrap().to_string_lossy()
+        );
         let df = reader.read().with_limit(limit).finish().expect("read sas");
         assert_eq!(df.height(), limit);
 
-        eprintln!("sas schema: {}", path.file_name().unwrap().to_string_lossy());
+        eprintln!(
+            "sas schema: {}",
+            path.file_name().unwrap().to_string_lossy()
+        );
         let schema = readstat_schema(&path, None, Some(ReadStatFormat::Sas)).expect("schema sas");
         assert_eq!(schema.len(), reader.metadata().column_count);
 
@@ -46,7 +52,10 @@ fn test_sas_all_files() {
         let meta = readstat_metadata_json(&path, Some(ReadStatFormat::Sas)).expect("metadata sas");
         assert!(!meta.trim().is_empty());
 
-        eprintln!("sas stream: {}", path.file_name().unwrap().to_string_lossy());
+        eprintln!(
+            "sas stream: {}",
+            path.file_name().unwrap().to_string_lossy()
+        );
         let mut rows = 0usize;
         let mut offset = 0usize;
         while offset < limit {

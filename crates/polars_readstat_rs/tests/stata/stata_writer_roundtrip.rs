@@ -68,6 +68,7 @@ fn schema_from_df(df: &DataFrame) -> StataWriteSchema {
         row_count: None,
         value_labels: None,
         variable_labels: None,
+        variable_formats: None,
     }
 }
 

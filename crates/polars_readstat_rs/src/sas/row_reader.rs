@@ -6,16 +6,15 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+use super::polars_output::{
+    kind_for_column, to_date_value, to_datetime_value, to_time_value, ColumnKind, ColumnPlan,
+};
 use crate::data::{DataReader, DataSubheader};
 use crate::error::Result;
 use crate::page::PageReader;
 use crate::reader::{data_reader_at_page_range, Sas7bdatReader};
 use crate::types::{Endian, Format, Header, Metadata};
 use crate::value::decode_numeric_bytes_mask;
-use super::polars_output::{
-    ColumnKind, ColumnPlan, kind_for_column,
-    to_date_value, to_datetime_value, to_time_value,
-};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
 
@@ -33,10 +32,10 @@ pub enum SasColumnKind {
 impl From<ColumnKind> for SasColumnKind {
     fn from(k: ColumnKind) -> Self {
         match k {
-            ColumnKind::Numeric   => SasColumnKind::F64,
-            ColumnKind::Date      => SasColumnKind::DateI32,
-            ColumnKind::DateTime  => SasColumnKind::DateTimeI64,
-            ColumnKind::Time      => SasColumnKind::TimeI64,
+            ColumnKind::Numeric => SasColumnKind::F64,
+            ColumnKind::Date => SasColumnKind::DateI32,
+            ColumnKind::DateTime => SasColumnKind::DateTimeI64,
+            ColumnKind::Time => SasColumnKind::TimeI64,
             ColumnKind::Character => SasColumnKind::Str,
         }
     }
@@ -102,7 +101,10 @@ impl SasRowReader {
         loop {
             let rx = match self.rxs.front() {
                 Some(r) => r,
-                None => { self.done = true; return Ok(0); }
+                None => {
+                    self.done = true;
+                    return Ok(0);
+                }
             };
             match rx.recv() {
                 Ok(Ok(buf)) => {
@@ -142,8 +144,10 @@ impl SasRowReader {
         let rl = self.row_length;
         for i in 0..n {
             let base = (self.buf_offset + i) * rl;
-            let (v, missing) =
-                decode_numeric_bytes_mask(plan.endian, &self.current_buf[base + plan.start..base + plan.end]);
+            let (v, missing) = decode_numeric_bytes_mask(
+                plan.endian,
+                &self.current_buf[base + plan.start..base + plan.end],
+            );
             vals[i] = v;
             valid[i] = !missing;
         }
@@ -156,8 +160,10 @@ impl SasRowReader {
         let rl = self.row_length;
         for i in 0..n {
             let base = (self.buf_offset + i) * rl;
-            let (v, missing) =
-                decode_numeric_bytes_mask(plan.endian, &self.current_buf[base + plan.start..base + plan.end]);
+            let (v, missing) = decode_numeric_bytes_mask(
+                plan.endian,
+                &self.current_buf[base + plan.start..base + plan.end],
+            );
             valid[i] = !missing;
             vals[i] = if missing { 0 } else { to_date_value(v) };
         }
@@ -170,8 +176,10 @@ impl SasRowReader {
         let rl = self.row_length;
         for i in 0..n {
             let base = (self.buf_offset + i) * rl;
-            let (v, missing) =
-                decode_numeric_bytes_mask(plan.endian, &self.current_buf[base + plan.start..base + plan.end]);
+            let (v, missing) = decode_numeric_bytes_mask(
+                plan.endian,
+                &self.current_buf[base + plan.start..base + plan.end],
+            );
             valid[i] = !missing;
             vals[i] = if missing { 0 } else { to_datetime_value(v) };
         }
@@ -184,8 +192,10 @@ impl SasRowReader {
         let rl = self.row_length;
         for i in 0..n {
             let base = (self.buf_offset + i) * rl;
-            let (v, missing) =
-                decode_numeric_bytes_mask(plan.endian, &self.current_buf[base + plan.start..base + plan.end]);
+            let (v, missing) = decode_numeric_bytes_mask(
+                plan.endian,
+                &self.current_buf[base + plan.start..base + plan.end],
+            );
             valid[i] = !missing;
             vals[i] = if missing { 0 } else { to_time_value(v) };
         }
@@ -230,7 +240,12 @@ impl SasRowReader {
             let is_null = trimmed.is_empty() && plan.missing_string_as_null;
             nulls.push(is_null);
             if !trimmed.is_empty() {
-                crate::encoding::decode_string_into(trimmed, plan.encoding_byte, plan.encoding, bytes);
+                crate::encoding::decode_string_into(
+                    trimmed,
+                    plan.encoding_byte,
+                    plan.encoding,
+                    bytes,
+                );
             }
             offsets.push(bytes.len() as u32);
         }
@@ -315,9 +330,17 @@ impl SasRowReader {
                 end = nul;
             }
             vals.push(if end == 0 {
-                if plan.missing_string_as_null { None } else { Some(String::new()) }
+                if plan.missing_string_as_null {
+                    None
+                } else {
+                    Some(String::new())
+                }
             } else {
-                Some(crate::encoding::decode_string(&bytes[..end], plan.encoding_byte, plan.encoding))
+                Some(crate::encoding::decode_string(
+                    &bytes[..end],
+                    plan.encoding_byte,
+                    plan.encoding,
+                ))
             });
         }
     }
@@ -339,28 +362,46 @@ fn spawn_serial_raw_worker(
     std::thread::spawn(move || {
         let file = match File::open(&path) {
             Ok(f) => BufReader::new(f),
-            Err(e) => { let _ = tx.send(Err(e.into())); return; }
+            Err(e) => {
+                let _ = tx.send(Err(e.into()));
+                return;
+            }
         };
         let mut file = file;
         if let Err(e) = file.seek(SeekFrom::Start(header.header_length as u64)) {
-            let _ = tx.send(Err(e.into())); return;
+            let _ = tx.send(Err(e.into()));
+            return;
         }
         let page_reader = PageReader::new(file, header, endian, format);
         let mut data_reader = match DataReader::new(
-            page_reader, metadata.as_ref().clone(), endian, format, initial_data_subheaders,
+            page_reader,
+            metadata.as_ref().clone(),
+            endian,
+            format,
+            initial_data_subheaders,
         ) {
             Ok(r) => r,
-            Err(e) => { let _ = tx.send(Err(e)); return; }
+            Err(e) => {
+                let _ = tx.send(Err(e));
+                return;
+            }
         };
         loop {
             let mut buf = Vec::new();
             let n_read = match data_reader.read_rows_bulk(batch_size, &mut buf) {
                 Ok(n) => n,
-                Err(e) => { let _ = tx.send(Err(e)); return; }
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    return;
+                }
             };
-            if n_read == 0 { break; }
+            if n_read == 0 {
+                break;
+            }
             buf.truncate(n_read * row_length);
-            if tx.send(Ok(buf)).is_err() { return; }
+            if tx.send(Ok(buf)).is_err() {
+                return;
+            }
         }
     })
 }
@@ -379,21 +420,37 @@ fn spawn_parallel_raw_worker(
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let mut data_reader = match data_reader_at_page_range(
-            &path, &header, &metadata, endian, format,
-            worker_page_start, worker_page_count, 0,
+            &path,
+            &header,
+            &metadata,
+            endian,
+            format,
+            worker_page_start,
+            worker_page_count,
+            0,
         ) {
             Ok(r) => r,
-            Err(e) => { let _ = tx.send(Err(e)); return; }
+            Err(e) => {
+                let _ = tx.send(Err(e));
+                return;
+            }
         };
         loop {
             let mut buf = Vec::new();
             let n_read = match data_reader.read_rows_bulk(batch_size, &mut buf) {
                 Ok(n) => n,
-                Err(e) => { let _ = tx.send(Err(e)); return; }
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    return;
+                }
             };
-            if n_read == 0 { break; }
+            if n_read == 0 {
+                break;
+            }
             buf.truncate(n_read * row_length);
-            if tx.send(Ok(buf)).is_err() { return; }
+            if tx.send(Ok(buf)).is_err() {
+                return;
+            }
         }
     })
 }
@@ -420,11 +477,19 @@ pub fn sas_row_readers(path: &Path, opts: &crate::ScanOptions) -> Result<Vec<Sas
     let endian = reader.endian();
     let format = reader.format();
     let batch_size = opts.chunk_size.unwrap_or(DEFAULT_BATCH_SIZE);
-    let n_threads = opts.threads.unwrap_or_else(crate::default_thread_count).max(1);
+    let n_threads = opts
+        .threads
+        .unwrap_or_else(crate::default_thread_count)
+        .max(1);
     let missing_string_as_null = opts.missing_string_as_null.unwrap_or(true);
 
-    let schema: Vec<SasColumnInfo> = metadata.columns.iter()
-        .map(|col| SasColumnInfo { name: col.name.clone(), kind: kind_for_column(col).into() })
+    let schema: Vec<SasColumnInfo> = metadata
+        .columns
+        .iter()
+        .map(|col| SasColumnInfo {
+            name: col.name.clone(),
+            kind: kind_for_column(col).into(),
+        })
         .collect();
 
     let plans = build_column_plans(&metadata, endian, missing_string_as_null);
@@ -438,12 +503,23 @@ pub fn sas_row_readers(path: &Path, opts: &crate::ScanOptions) -> Result<Vec<Sas
         let initial_subs = reader.initial_data_subheaders().to_vec();
         let (tx, rx) = mpsc::sync_channel(4);
         let handle = spawn_serial_raw_worker(
-            tx, path.to_path_buf(), header, metadata, row_length,
-            endian, format, initial_subs, batch_size,
+            tx,
+            path.to_path_buf(),
+            header,
+            metadata,
+            row_length,
+            endian,
+            format,
+            initial_subs,
+            batch_size,
         );
         return Ok(vec![make_reader(
-            VecDeque::from([rx]), vec![handle],
-            plans, schema, row_length, None,
+            VecDeque::from([rx]),
+            vec![handle],
+            plans,
+            schema,
+            row_length,
+            None,
         )]);
     }
 
@@ -466,32 +542,63 @@ pub fn sas_row_readers(path: &Path, opts: &crate::ScanOptions) -> Result<Vec<Sas
         let mut handles = Vec::with_capacity(n_workers);
         for worker_idx in 0..n_workers {
             let wp_start = first_data_page + worker_idx * pages_per_worker;
-            if wp_start >= total_pages { break; }
+            if wp_start >= total_pages {
+                break;
+            }
             let wp_count = pages_per_worker.min(total_pages - wp_start);
             let (tx, rx) = mpsc::sync_channel(4);
             handles.push(spawn_parallel_raw_worker(
-                tx, path.to_path_buf(), header.clone(), metadata.clone(),
-                row_length, endian, format, batch_size, wp_start, wp_count,
+                tx,
+                path.to_path_buf(),
+                header.clone(),
+                metadata.clone(),
+                row_length,
+                endian,
+                format,
+                batch_size,
+                wp_start,
+                wp_count,
             ));
             rxs.push_back(rx);
         }
-        return Ok(vec![make_reader(rxs, handles, plans, schema, row_length, Some(row_count))]);
+        return Ok(vec![make_reader(
+            rxs,
+            handles,
+            plans,
+            schema,
+            row_length,
+            Some(row_count),
+        )]);
     }
 
     // Uncompressed parallel: one independent reader per worker.
     let mut readers = Vec::with_capacity(n_workers);
     for worker_idx in 0..n_workers {
         let wp_start = first_data_page + worker_idx * pages_per_worker;
-        if wp_start >= total_pages { break; }
+        if wp_start >= total_pages {
+            break;
+        }
         let wp_count = pages_per_worker.min(total_pages - wp_start);
         let (tx, rx) = mpsc::sync_channel(4);
         let handle = spawn_parallel_raw_worker(
-            tx, path.to_path_buf(), header.clone(), metadata.clone(),
-            row_length, endian, format, batch_size, wp_start, wp_count,
+            tx,
+            path.to_path_buf(),
+            header.clone(),
+            metadata.clone(),
+            row_length,
+            endian,
+            format,
+            batch_size,
+            wp_start,
+            wp_count,
         );
         readers.push(make_reader(
-            VecDeque::from([rx]), vec![handle],
-            plans.clone(), schema.clone(), row_length, None,
+            VecDeque::from([rx]),
+            vec![handle],
+            plans.clone(),
+            schema.clone(),
+            row_length,
+            None,
         ));
     }
     Ok(readers)
@@ -508,8 +615,16 @@ fn make_reader(
     remaining: Option<usize>,
 ) -> SasRowReader {
     SasRowReader {
-        rxs, _handles: handles, plans, schema, row_length,
-        current_buf: Vec::new(), buf_rows: 0, buf_offset: 0, done: false, remaining,
+        rxs,
+        _handles: handles,
+        plans,
+        schema,
+        row_length,
+        current_buf: Vec::new(),
+        buf_rows: 0,
+        buf_offset: 0,
+        done: false,
+        remaining,
     }
 }
 
@@ -519,14 +634,19 @@ fn build_column_plans(
     missing_string_as_null: bool,
 ) -> Vec<ColumnPlan> {
     let encoding = crate::encoding::get_encoding(metadata.encoding_byte);
-    metadata.columns.iter().enumerate().map(|(i, col)| ColumnPlan {
-        start: col.offset,
-        end: col.offset + col.length,
-        kind: kind_for_column(col),
-        endian,
-        encoding_byte: metadata.encoding_byte,
-        encoding,
-        missing_string_as_null,
-        output_index: i,
-    }).collect()
+    metadata
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(i, col)| ColumnPlan {
+            start: col.offset,
+            end: col.offset + col.length,
+            kind: kind_for_column(col),
+            endian,
+            encoding_byte: metadata.encoding_byte,
+            encoding,
+            missing_string_as_null,
+            output_index: i,
+        })
+        .collect()
 }

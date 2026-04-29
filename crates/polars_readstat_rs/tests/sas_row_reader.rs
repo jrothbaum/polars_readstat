@@ -4,7 +4,7 @@
 #[cfg(feature = "row_reader")]
 mod tests {
     use polars::prelude::*;
-    use polars_readstat_rs::{sas_row_readers, SasColumnKind, ScanOptions, readstat_scan};
+    use polars_readstat_rs::{readstat_scan, sas_row_readers, SasColumnKind, ScanOptions};
     use std::path::PathBuf;
 
     fn test_dir() -> PathBuf {
@@ -32,14 +32,18 @@ mod tests {
         for reader in &mut readers {
             loop {
                 let n = reader.next_chunk(chunk).unwrap();
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
 
                 for col in 0..n_cols {
                     match schema[col].kind {
                         SasColumnKind::F64 => {
                             reader.fill_f64(col, n, &mut f64_vals, &mut valid);
                             for i in 0..n {
-                                if valid[i] { f64_sum += f64_vals[i]; }
+                                if valid[i] {
+                                    f64_sum += f64_vals[i];
+                                }
                             }
                         }
                         SasColumnKind::DateI32 => {
@@ -156,14 +160,26 @@ mod tests {
             for reader in &mut readers {
                 loop {
                     let n = reader.next_chunk(chunk).unwrap();
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     for col in 0..n_cols {
                         match schema[col].kind {
-                            SasColumnKind::F64         => { reader.fill_f64(col, n, &mut f64_vals, &mut valid); }
-                            SasColumnKind::DateI32     => { reader.fill_date_i32(col, n, &mut i32_vals, &mut valid); }
-                            SasColumnKind::DateTimeI64 => { reader.fill_datetime_i64(col, n, &mut i64_vals, &mut valid); }
-                            SasColumnKind::TimeI64     => { reader.fill_time_i64(col, n, &mut i64_vals, &mut valid); }
-                            SasColumnKind::Str         => { reader.fill_str(col, n, &mut str_vals); }
+                            SasColumnKind::F64 => {
+                                reader.fill_f64(col, n, &mut f64_vals, &mut valid);
+                            }
+                            SasColumnKind::DateI32 => {
+                                reader.fill_date_i32(col, n, &mut i32_vals, &mut valid);
+                            }
+                            SasColumnKind::DateTimeI64 => {
+                                reader.fill_datetime_i64(col, n, &mut i64_vals, &mut valid);
+                            }
+                            SasColumnKind::TimeI64 => {
+                                reader.fill_time_i64(col, n, &mut i64_vals, &mut valid);
+                            }
+                            SasColumnKind::Str => {
+                                reader.fill_str(col, n, &mut str_vals);
+                            }
                         }
                     }
                     reader.commit(n);
@@ -189,9 +205,12 @@ mod tests {
     #[test]
     #[ignore]
     fn bench_nls() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/sas/data/too_big/nls.sas7bdat");
-        if !path.exists() { eprintln!("nls.sas7bdat not found"); return; }
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/sas/data/too_big/nls.sas7bdat");
+        if !path.exists() {
+            eprintln!("nls.sas7bdat not found");
+            return;
+        }
         let runs = 5;
         let rr = time_row_reader(&path, runs);
         let arrow = time_arrow_scan(&path, runs);
@@ -208,7 +227,10 @@ mod tests {
     fn bench_topical() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/sas/data/too_big/topical.sas7bdat");
-        if !path.exists() { eprintln!("topical.sas7bdat not found"); return; }
+        if !path.exists() {
+            eprintln!("topical.sas7bdat not found");
+            return;
+        }
         let runs = 5;
         let rr = time_row_reader(&path, runs);
         let arrow = time_arrow_scan(&path, runs);
@@ -220,7 +242,11 @@ mod tests {
         );
     }
 
-    fn time_row_reader_opts(path: &std::path::Path, opts: &ScanOptions, runs: usize) -> std::time::Duration {
+    fn time_row_reader_opts(
+        path: &std::path::Path,
+        opts: &ScanOptions,
+        runs: usize,
+    ) -> std::time::Duration {
         let schema = sas_row_readers(path, opts).unwrap()[0].schema.clone();
         let n_cols = schema.len();
         let chunk = 2048;
@@ -236,14 +262,26 @@ mod tests {
             for reader in &mut readers {
                 loop {
                     let n = reader.next_chunk(chunk).unwrap();
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     for col in 0..n_cols {
                         match schema[col].kind {
-                            SasColumnKind::F64         => { reader.fill_f64(col, n, &mut f64_vals, &mut valid); }
-                            SasColumnKind::DateI32     => { reader.fill_date_i32(col, n, &mut i32_vals, &mut valid); }
-                            SasColumnKind::DateTimeI64 => { reader.fill_datetime_i64(col, n, &mut i64_vals, &mut valid); }
-                            SasColumnKind::TimeI64     => { reader.fill_time_i64(col, n, &mut i64_vals, &mut valid); }
-                            SasColumnKind::Str         => { reader.fill_str(col, n, &mut str_vals); }
+                            SasColumnKind::F64 => {
+                                reader.fill_f64(col, n, &mut f64_vals, &mut valid);
+                            }
+                            SasColumnKind::DateI32 => {
+                                reader.fill_date_i32(col, n, &mut i32_vals, &mut valid);
+                            }
+                            SasColumnKind::DateTimeI64 => {
+                                reader.fill_datetime_i64(col, n, &mut i64_vals, &mut valid);
+                            }
+                            SasColumnKind::TimeI64 => {
+                                reader.fill_time_i64(col, n, &mut i64_vals, &mut valid);
+                            }
+                            SasColumnKind::Str => {
+                                reader.fill_str(col, n, &mut str_vals);
+                            }
                         }
                     }
                     reader.commit(n);
@@ -255,7 +293,11 @@ mod tests {
         times[runs / 2]
     }
 
-    fn time_row_reader_str_buf(path: &std::path::Path, opts: &ScanOptions, runs: usize) -> std::time::Duration {
+    fn time_row_reader_str_buf(
+        path: &std::path::Path,
+        opts: &ScanOptions,
+        runs: usize,
+    ) -> std::time::Duration {
         use polars_readstat_rs::sas_row_readers;
         let schema = sas_row_readers(path, opts).unwrap()[0].schema.clone();
         let n_cols = schema.len();
@@ -274,14 +316,32 @@ mod tests {
             for reader in &mut readers {
                 loop {
                     let n = reader.next_chunk(chunk).unwrap();
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     for col in 0..n_cols {
                         match schema[col].kind {
-                            SasColumnKind::F64         => { reader.fill_f64(col, n, &mut f64_vals, &mut valid); }
-                            SasColumnKind::DateI32     => { reader.fill_date_i32(col, n, &mut i32_vals, &mut valid); }
-                            SasColumnKind::DateTimeI64 => { reader.fill_datetime_i64(col, n, &mut i64_vals, &mut valid); }
-                            SasColumnKind::TimeI64     => { reader.fill_time_i64(col, n, &mut i64_vals, &mut valid); }
-                            SasColumnKind::Str         => { reader.fill_str_buf(col, n, &mut str_bytes, &mut str_offsets, &mut str_nulls); }
+                            SasColumnKind::F64 => {
+                                reader.fill_f64(col, n, &mut f64_vals, &mut valid);
+                            }
+                            SasColumnKind::DateI32 => {
+                                reader.fill_date_i32(col, n, &mut i32_vals, &mut valid);
+                            }
+                            SasColumnKind::DateTimeI64 => {
+                                reader.fill_datetime_i64(col, n, &mut i64_vals, &mut valid);
+                            }
+                            SasColumnKind::TimeI64 => {
+                                reader.fill_time_i64(col, n, &mut i64_vals, &mut valid);
+                            }
+                            SasColumnKind::Str => {
+                                reader.fill_str_buf(
+                                    col,
+                                    n,
+                                    &mut str_bytes,
+                                    &mut str_offsets,
+                                    &mut str_nulls,
+                                );
+                            }
                         }
                     }
                     reader.commit(n);
@@ -293,7 +353,11 @@ mod tests {
         times[runs / 2]
     }
 
-    fn time_row_reader_no_str(path: &std::path::Path, opts: &ScanOptions, runs: usize) -> std::time::Duration {
+    fn time_row_reader_no_str(
+        path: &std::path::Path,
+        opts: &ScanOptions,
+        runs: usize,
+    ) -> std::time::Duration {
         let schema = sas_row_readers(path, opts).unwrap()[0].schema.clone();
         let n_cols = schema.len();
         let chunk = 2048;
@@ -308,14 +372,24 @@ mod tests {
             for reader in &mut readers {
                 loop {
                     let n = reader.next_chunk(chunk).unwrap();
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     for col in 0..n_cols {
                         match schema[col].kind {
-                            SasColumnKind::F64         => { reader.fill_f64(col, n, &mut f64_vals, &mut valid); }
-                            SasColumnKind::DateI32     => { reader.fill_date_i32(col, n, &mut i32_vals, &mut valid); }
-                            SasColumnKind::DateTimeI64 => { reader.fill_datetime_i64(col, n, &mut i64_vals, &mut valid); }
-                            SasColumnKind::TimeI64     => { reader.fill_time_i64(col, n, &mut i64_vals, &mut valid); }
-                            SasColumnKind::Str         => { /* skip string decode */ }
+                            SasColumnKind::F64 => {
+                                reader.fill_f64(col, n, &mut f64_vals, &mut valid);
+                            }
+                            SasColumnKind::DateI32 => {
+                                reader.fill_date_i32(col, n, &mut i32_vals, &mut valid);
+                            }
+                            SasColumnKind::DateTimeI64 => {
+                                reader.fill_datetime_i64(col, n, &mut i64_vals, &mut valid);
+                            }
+                            SasColumnKind::TimeI64 => {
+                                reader.fill_time_i64(col, n, &mut i64_vals, &mut valid);
+                            }
+                            SasColumnKind::Str => { /* skip string decode */ }
                         }
                     }
                     reader.commit(n);
@@ -332,14 +406,18 @@ mod tests {
     fn bench_topical_threads() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/sas/data/too_big/topical.sas7bdat");
-        if !path.exists() { eprintln!("topical.sas7bdat not found"); return; }
+        if !path.exists() {
+            eprintln!("topical.sas7bdat not found");
+            return;
+        }
         let runs = 5;
         let opts_default = ScanOptions::default();
         let full = time_row_reader_opts(&path, &opts_default, runs);
         let buf = time_row_reader_str_buf(&path, &opts_default, runs);
         let no_str = time_row_reader_no_str(&path, &opts_default, runs);
         let arrow = time_arrow_scan(&path, runs);
-        println!("topical  fill_str={:.1}ms  fill_str_buf={:.1}ms  no_str={:.1}ms  arrow={:.1}ms",
+        println!(
+            "topical  fill_str={:.1}ms  fill_str_buf={:.1}ms  no_str={:.1}ms  arrow={:.1}ms",
             full.as_secs_f64() * 1000.0,
             buf.as_secs_f64() * 1000.0,
             no_str.as_secs_f64() * 1000.0,

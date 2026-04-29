@@ -17,6 +17,21 @@ pub enum FormatClass {
     Time,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Measure {
+    Unknown,
+    Nominal,
+    Ordinal,
+    Scale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alignment {
+    Left,
+    Right,
+    Center,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValueLabelKey {
     Double(f64),
@@ -42,7 +57,15 @@ pub struct Variable {
     pub width: usize,      // number of 8-byte segments
     pub string_len: usize, // declared string length in bytes (0 for numeric)
     pub format_type: u8,
+    pub format_width: u8,
+    pub format_decimals: u8,
+    pub write_format_type: u8,
+    pub write_format_width: u8,
+    pub write_format_decimals: u8,
     pub format_class: Option<FormatClass>,
+    pub measure: Option<Measure>,
+    pub display_width: Option<i32>,
+    pub alignment: Option<Alignment>,
     pub label: Option<String>,
     pub value_label: Option<String>,
     pub offset: usize, // segment offset within row

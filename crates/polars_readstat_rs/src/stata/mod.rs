@@ -20,7 +20,8 @@ pub use reader::StataReader;
 pub use types::{Endian, Header, Metadata, NumericType, VarType};
 pub use writer::{
     pandas_make_stata_column_names, pandas_prepare_df_for_stata, pandas_rename_df,
-    StataWriteColumn, StataWriteSchema, StataWriter, ValueLabelMap, ValueLabels, VariableLabels,
+    StataWriteColumn, StataWriteSchema, StataWriter, ValueLabelMap, ValueLabels, VariableFormats,
+    VariableLabels,
 };
 
 use serde_json::{json, Map, Value};

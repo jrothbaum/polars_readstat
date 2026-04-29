@@ -168,7 +168,12 @@ pub fn decode_string(bytes: &[u8], encoding_byte: u8, encoding: &'static Encodin
 /// byte is converted in place.  For other encodings encoding_rs transcodes into
 /// a temporary buffer that is immediately written into `out`.
 #[cfg(feature = "row_reader")]
-pub(crate) fn decode_string_into(bytes: &[u8], encoding_byte: u8, encoding: &'static Encoding, out: &mut Vec<u8>) {
+pub(crate) fn decode_string_into(
+    bytes: &[u8],
+    encoding_byte: u8,
+    encoding: &'static Encoding,
+    out: &mut Vec<u8>,
+) {
     if encoding_byte == 29 {
         // Latin-1: U+0000..U+007F are single bytes; U+0080..U+00FF are 2-byte UTF-8.
         for &b in bytes {

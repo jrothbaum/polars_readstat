@@ -50,6 +50,7 @@ const DTA_PARALLEL_CHUNK_ROWS: usize = 4096;
 pub type ValueLabelMap = BTreeMap<i32, String>;
 pub type ValueLabels = HashMap<String, ValueLabelMap>;
 pub type VariableLabels = HashMap<String, String>;
+pub type VariableFormats = HashMap<String, String>;
 
 #[derive(Debug, Clone)]
 pub struct StataWriteSchema {
@@ -57,6 +58,7 @@ pub struct StataWriteSchema {
     pub row_count: Option<usize>,
     pub value_labels: Option<ValueLabels>,
     pub variable_labels: Option<VariableLabels>,
+    pub variable_formats: Option<VariableFormats>,
 }
 
 #[derive(Debug, Clone)]
@@ -136,11 +138,16 @@ fn pandas_rename_schema(schema: &StataWriteSchema) -> StataWriteSchema {
         let name_map = build_name_map(&names, &new_names);
         rename_variable_labels(labels, &name_map)
     });
+    let variable_formats = schema.variable_formats.as_ref().map(|formats| {
+        let name_map = build_name_map(&names, &new_names);
+        rename_variable_formats(formats, &name_map)
+    });
     StataWriteSchema {
         columns,
         row_count: schema.row_count,
         value_labels,
         variable_labels,
+        variable_formats,
     }
 }
 
@@ -150,6 +157,7 @@ pub struct StataWriter {
     compress: Option<CompressOptions>,
     value_labels: Option<ValueLabels>,
     variable_labels: Option<VariableLabels>,
+    variable_formats: Option<VariableFormats>,
     n_threads: Option<usize>,
 }
 
@@ -164,6 +172,7 @@ impl StataWriter {
             compress: None,
             value_labels: None,
             variable_labels: None,
+            variable_formats: None,
             n_threads: Some(n_threads),
         }
     }
@@ -194,6 +203,11 @@ impl StataWriter {
 
     pub fn with_variable_labels(mut self, labels: VariableLabels) -> Self {
         self.variable_labels = Some(labels);
+        self
+    }
+
+    pub fn with_variable_formats(mut self, formats: VariableFormats) -> Self {
+        self.variable_formats = Some(formats);
         self
     }
 
@@ -229,11 +243,18 @@ impl StataWriter {
         );
         let variable_labels =
             variable_labels.map(|labels| rename_variable_labels(&labels, &name_map));
+        let variable_formats = merge_variable_formats(
+            schema.as_ref().and_then(|s| s.variable_formats.clone()),
+            self.variable_formats.clone(),
+        );
+        let variable_formats =
+            variable_formats.map(|formats| rename_variable_formats(&formats, &name_map));
         let prepared = PreparedWrite::from_df(
             &df,
             schema.as_ref(),
             value_labels.as_ref(),
             variable_labels.as_ref(),
+            variable_formats.as_ref(),
         )?;
         let file = File::create(&self.path)?;
         let writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
@@ -260,8 +281,18 @@ impl StataWriter {
             merge_variable_labels(schema.variable_labels.clone(), self.variable_labels.clone());
         let variable_labels =
             variable_labels.map(|labels| rename_variable_labels(&labels, &name_map));
-        let prepared =
-            PreparedWrite::from_schema(&schema, value_labels.as_ref(), variable_labels.as_ref())?;
+        let variable_formats = merge_variable_formats(
+            schema.variable_formats.clone(),
+            self.variable_formats.clone(),
+        );
+        let variable_formats =
+            variable_formats.map(|formats| rename_variable_formats(&formats, &name_map));
+        let prepared = PreparedWrite::from_schema(
+            &schema,
+            value_labels.as_ref(),
+            variable_labels.as_ref(),
+            variable_formats.as_ref(),
+        )?;
         if prepared.row_count.is_none() {
             return Err(Error::ParseError(
                 "row_count must be provided for batch writing".to_string(),
@@ -304,8 +335,18 @@ impl StataWriter {
             merge_variable_labels(schema.variable_labels.clone(), self.variable_labels.clone());
         let variable_labels =
             variable_labels.map(|labels| rename_variable_labels(&labels, &name_map));
-        let prepared =
-            PreparedWrite::from_schema(&schema, value_labels.as_ref(), variable_labels.as_ref())?;
+        let variable_formats = merge_variable_formats(
+            schema.variable_formats.clone(),
+            self.variable_formats.clone(),
+        );
+        let variable_formats =
+            variable_formats.map(|formats| rename_variable_formats(&formats, &name_map));
+        let prepared = PreparedWrite::from_schema(
+            &schema,
+            value_labels.as_ref(),
+            variable_labels.as_ref(),
+            variable_formats.as_ref(),
+        )?;
         if prepared.has_strl {
             return Err(Error::ParseError(
                 "streaming batch writing with strL is not supported without a pre-pass".to_string(),
@@ -383,8 +424,9 @@ impl PreparedWrite {
         schema: &StataWriteSchema,
         value_labels: Option<&ValueLabels>,
         variable_labels: Option<&VariableLabels>,
+        variable_formats: Option<&VariableFormats>,
     ) -> Result<Self> {
-        let columns = infer_columns(None, Some(schema))?;
+        let columns = infer_columns(None, Some(schema), variable_formats)?;
         Self::build(
             columns,
             schema.row_count,
@@ -399,8 +441,9 @@ impl PreparedWrite {
         schema: Option<&StataWriteSchema>,
         value_labels: Option<&ValueLabels>,
         variable_labels: Option<&VariableLabels>,
+        variable_formats: Option<&VariableFormats>,
     ) -> Result<Self> {
-        let columns = infer_columns(Some(df), schema)?;
+        let columns = infer_columns(Some(df), schema, variable_formats)?;
         let row_count = Some(df.height());
         let strls = build_strls(df, &columns)?;
         Self::build(columns, row_count, strls, value_labels, variable_labels)
@@ -493,6 +536,7 @@ fn choose_dta_version(nvar: usize) -> u16 {
 fn infer_columns(
     df: Option<&DataFrame>,
     schema: Option<&StataWriteSchema>,
+    variable_formats: Option<&VariableFormats>,
 ) -> Result<Vec<ColumnSpec>> {
     let mut columns = Vec::new();
     if let Some(schema) = schema {
@@ -509,12 +553,16 @@ fn infer_columns(
                 col.string_width_bytes
             };
             let kind = kind_from_dtype(col.dtype.clone(), width)?;
-            let format = match col.dtype {
-                DataType::Date => Some("%td".to_string()),
-                DataType::Datetime(_, _) => Some("%tc".to_string()),
-                DataType::Time => Some("%tcHH:MM:SS".to_string()),
-                _ => None,
-            };
+            let format = variable_formats
+                .and_then(|formats| formats.get(&col.name).cloned())
+                .map(validate_variable_format)
+                .transpose()?
+                .or_else(|| match col.dtype {
+                    DataType::Date => Some("%td".to_string()),
+                    DataType::Datetime(_, _) => Some("%tc".to_string()),
+                    DataType::Time => Some("%tcHH:MM:SS".to_string()),
+                    _ => None,
+                });
             columns.push(ColumnSpec {
                 index: columns.len(),
                 name: col.name.clone(),
@@ -543,21 +591,45 @@ fn infer_columns(
         } else {
             kind_from_dtype(dtype.clone(), width)?
         };
-        let format = match dtype {
-            DataType::Date => Some("%td".to_string()),
-            DataType::Datetime(_, _) => Some("%tc".to_string()),
-            DataType::Time => Some("%tcHH:MM:SS".to_string()),
-            _ => None,
-        };
+        let name = series.name().to_string();
+        let format = variable_formats
+            .and_then(|formats| formats.get(&name).cloned())
+            .map(validate_variable_format)
+            .transpose()?
+            .or_else(|| match dtype {
+                DataType::Date => Some("%td".to_string()),
+                DataType::Datetime(_, _) => Some("%tc".to_string()),
+                DataType::Time => Some("%tcHH:MM:SS".to_string()),
+                _ => None,
+            });
         columns.push(ColumnSpec {
             index: columns.len(),
-            name: series.name().to_string(),
+            name,
             dtype,
             kind,
             format,
         });
     }
     Ok(columns)
+}
+
+fn validate_variable_format(format: String) -> Result<String> {
+    if format.is_empty() {
+        return Err(Error::ParseError(
+            "Stata variable format must not be empty".to_string(),
+        ));
+    }
+    if !format.starts_with('%') {
+        return Err(Error::ParseError(format!(
+            "Stata variable format must start with '%': {format}"
+        )));
+    }
+    if format.len() >= DTA_FMT_ENTRY_LEN {
+        return Err(Error::ParseError(format!(
+            "Stata variable format is too long: {format}"
+        )));
+    }
+    Ok(format)
 }
 
 fn build_name_map(old: &[String], new: &[String]) -> HashMap<String, String> {
@@ -589,6 +661,18 @@ fn rename_variable_labels(
     out
 }
 
+fn rename_variable_formats(
+    formats: &VariableFormats,
+    name_map: &HashMap<String, String>,
+) -> VariableFormats {
+    let mut out = HashMap::new();
+    for (name, format) in formats {
+        let key = name_map.get(name).cloned().unwrap_or_else(|| name.clone());
+        out.insert(key, format.clone());
+    }
+    out
+}
+
 fn merge_value_labels(
     base: Option<ValueLabels>,
     extra: Option<ValueLabels>,
@@ -610,6 +694,23 @@ fn merge_variable_labels(
     base: Option<VariableLabels>,
     extra: Option<VariableLabels>,
 ) -> Option<VariableLabels> {
+    match (base, extra) {
+        (None, None) => None,
+        (Some(mut base), Some(extra)) => {
+            for (k, v) in extra {
+                base.entry(k).or_insert(v);
+            }
+            Some(base)
+        }
+        (Some(base), None) => Some(base),
+        (None, Some(extra)) => Some(extra),
+    }
+}
+
+fn merge_variable_formats(
+    base: Option<VariableFormats>,
+    extra: Option<VariableFormats>,
+) -> Option<VariableFormats> {
     match (base, extra) {
         (None, None) => None,
         (Some(mut base), Some(extra)) => {

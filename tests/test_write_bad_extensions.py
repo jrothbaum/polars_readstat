@@ -25,7 +25,7 @@ def test_write_stata_rejects_unknown_extension(
     out_path = tmp_path / "bad.random_ext"
 
     with pytest.raises(ValueError, match="unknown file extension"):
-        package_module.write_stata(df, str(out_path), None, None, None, None)
+        package_module.write_stata(df, str(out_path), None, None, None, None,None)
 
 
 def test_write_spss_rejects_unknown_extension(

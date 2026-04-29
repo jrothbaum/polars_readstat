@@ -11,10 +11,11 @@ pub mod writer;
 pub use error::{Error, Result};
 pub use polars_output::scan_sav;
 pub use reader::SpssReader;
-pub use types::{Endian, Header, Metadata, VarType};
+pub use types::{Alignment, Endian, Header, Measure, Metadata, VarType};
 pub use writer::{
-    SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels, SpssVariableLabels, SpssWriteColumn,
-    SpssWriteSchema, SpssWriter,
+    SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels, SpssVariableAlignments,
+    SpssVariableDisplayWidths, SpssVariableFormat, SpssVariableFormats, SpssVariableLabels,
+    SpssVariableMeasures, SpssWriteColumn, SpssWriteSchema, SpssWriter,
 };
 
 use serde_json::{json, Map, Value};
@@ -52,7 +53,34 @@ pub fn metadata_json(path: impl AsRef<Path>) -> Result<String> {
             obj.insert("name".to_string(), json!(v.name));
             obj.insert("type".to_string(), json!(format!("{:?}", v.var_type)));
             obj.insert("string_len".to_string(), json!(v.string_len));
+            obj.insert("storage_width_segments".to_string(), json!(v.width));
+            obj.insert("storage_width_bytes".to_string(), json!(v.width * 8));
+            obj.insert(
+                "width".to_string(),
+                json!(v.display_width.unwrap_or(v.format_width as i32)),
+            );
+            obj.insert("display_width".to_string(), json!(v.display_width));
+            obj.insert(
+                "alignment".to_string(),
+                json!(v.alignment.map(|a| format!("{:?}", a))),
+            );
+            obj.insert(
+                "measure".to_string(),
+                json!(v.measure.map(|m| format!("{:?}", m))),
+            );
             obj.insert("format_type".to_string(), json!(v.format_type));
+            obj.insert("format_width".to_string(), json!(v.format_width));
+            obj.insert("decimal_places".to_string(), json!(v.format_decimals));
+            obj.insert("format_decimals".to_string(), json!(v.format_decimals));
+            obj.insert("write_format_type".to_string(), json!(v.write_format_type));
+            obj.insert(
+                "write_format_width".to_string(),
+                json!(v.write_format_width),
+            );
+            obj.insert(
+                "write_format_decimals".to_string(),
+                json!(v.write_format_decimals),
+            );
             obj.insert(
                 "format_class".to_string(),
                 json!(v.format_class.map(|c| format!("{:?}", c))),

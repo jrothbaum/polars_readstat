@@ -1,5 +1,5 @@
 use crate::spss::error::{Error, Result};
-use crate::spss::types::VarType;
+use crate::spss::types::{Alignment, Measure, VarType};
 use polars::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -32,10 +32,13 @@ const SAV_ENDIANNESS_BIG: i32 = 1;
 const SAV_ENDIANNESS_LITTLE: i32 = 2;
 const SAV_CONTINUATION_FORMAT: i32 = 0x011d01;
 
+const SAV_MEASURE_UNKNOWN: i32 = 0;
 const SAV_MEASURE_NOMINAL: i32 = 1;
+const SAV_MEASURE_ORDINAL: i32 = 2;
 const SAV_MEASURE_SCALE: i32 = 3;
 const SAV_ALIGNMENT_LEFT: i32 = 0;
 const SAV_ALIGNMENT_RIGHT: i32 = 1;
+const SAV_ALIGNMENT_CENTER: i32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SpssValueLabelKey(u64);
@@ -59,6 +62,18 @@ impl From<f64> for SpssValueLabelKey {
 pub type SpssValueLabelMap = HashMap<SpssValueLabelKey, String>;
 pub type SpssValueLabels = HashMap<String, SpssValueLabelMap>;
 pub type SpssVariableLabels = HashMap<String, String>;
+pub type SpssVariableMeasures = HashMap<String, Measure>;
+pub type SpssVariableAlignments = HashMap<String, Alignment>;
+pub type SpssVariableDisplayWidths = HashMap<String, i32>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpssVariableFormat {
+    pub format_type: Option<u8>,
+    pub width: Option<u8>,
+    pub decimals: Option<u8>,
+}
+
+pub type SpssVariableFormats = HashMap<String, SpssVariableFormat>;
 
 #[derive(Debug, Clone)]
 pub struct SpssWriteSchema {
@@ -80,6 +95,10 @@ pub struct SpssWriter {
     schema: Option<SpssWriteSchema>,
     value_labels: Option<SpssValueLabels>,
     variable_labels: Option<SpssVariableLabels>,
+    variable_measures: Option<SpssVariableMeasures>,
+    variable_alignments: Option<SpssVariableAlignments>,
+    variable_display_widths: Option<SpssVariableDisplayWidths>,
+    variable_formats: Option<SpssVariableFormats>,
 }
 
 impl SpssWriter {
@@ -89,6 +108,10 @@ impl SpssWriter {
             schema: None,
             value_labels: None,
             variable_labels: None,
+            variable_measures: None,
+            variable_alignments: None,
+            variable_display_widths: None,
+            variable_formats: None,
         }
     }
 
@@ -107,6 +130,26 @@ impl SpssWriter {
         self
     }
 
+    pub fn with_variable_measures(mut self, measures: SpssVariableMeasures) -> Self {
+        self.variable_measures = Some(measures);
+        self
+    }
+
+    pub fn with_variable_alignments(mut self, alignments: SpssVariableAlignments) -> Self {
+        self.variable_alignments = Some(alignments);
+        self
+    }
+
+    pub fn with_variable_display_widths(mut self, widths: SpssVariableDisplayWidths) -> Self {
+        self.variable_display_widths = Some(widths);
+        self
+    }
+
+    pub fn with_variable_formats(mut self, formats: SpssVariableFormats) -> Self {
+        self.variable_formats = Some(formats);
+        self
+    }
+
     pub fn write_df(&self, df: &DataFrame) -> Result<()> {
         let schema = self.schema.as_ref();
         let value_labels = merge_value_labels(
@@ -117,7 +160,15 @@ impl SpssWriter {
             schema.and_then(|s| s.variable_labels.clone()),
             self.variable_labels.clone(),
         );
-        let columns = infer_columns(df, schema, variable_labels.as_ref())?;
+        let columns = infer_columns(
+            df,
+            schema,
+            variable_labels.as_ref(),
+            self.variable_measures.as_ref(),
+            self.variable_alignments.as_ref(),
+            self.variable_display_widths.as_ref(),
+            self.variable_formats.as_ref(),
+        )?;
         let encoding = choose_encoding(
             df,
             &columns,
@@ -159,6 +210,9 @@ struct ColumnSpec {
     format_type: u8,
     format_width: u8,
     format_decimals: u8,
+    measure: Measure,
+    alignment: Alignment,
+    display_width: i32,
     label: Option<String>,
 }
 
@@ -166,6 +220,10 @@ fn infer_columns(
     df: &DataFrame,
     schema: Option<&SpssWriteSchema>,
     variable_labels: Option<&SpssVariableLabels>,
+    variable_measures: Option<&SpssVariableMeasures>,
+    variable_alignments: Option<&SpssVariableAlignments>,
+    variable_display_widths: Option<&SpssVariableDisplayWidths>,
+    variable_formats: Option<&SpssVariableFormats>,
 ) -> Result<Vec<ColumnSpec>> {
     if let Some(schema) = schema {
         let mut cols = Vec::with_capacity(schema.columns.len());
@@ -177,6 +235,13 @@ fn infer_columns(
             let (var_type, string_len, width, format_type, format_width, format_decimals) =
                 dtype_to_spss(col, df)?;
             let label = variable_labels.and_then(|labels| labels.get(&col.name).cloned());
+            let (format_type, format_width, format_decimals) = apply_format_override(
+                &col.name,
+                format_type,
+                format_width,
+                format_decimals,
+                variable_formats,
+            )?;
             cols.push(ColumnSpec {
                 name: col.name.clone(),
                 short_name: short_names[idx].clone(),
@@ -187,6 +252,15 @@ fn infer_columns(
                 format_type,
                 format_width,
                 format_decimals,
+                measure: variable_measure(&col.name, var_type, variable_measures),
+                alignment: variable_alignment(&col.name, var_type, variable_alignments),
+                display_width: variable_display_width(
+                    &col.name,
+                    var_type,
+                    string_len,
+                    format_width,
+                    variable_display_widths,
+                )?,
                 label,
             });
             offset += width;
@@ -209,6 +283,13 @@ fn infer_columns(
         let (var_type, string_len, width, format_type, format_width, format_decimals) =
             infer_series(series)?;
         let label = variable_labels.and_then(|labels| labels.get(&name).cloned());
+        let (format_type, format_width, format_decimals) = apply_format_override(
+            &name,
+            format_type,
+            format_width,
+            format_decimals,
+            variable_formats,
+        )?;
         cols.push(ColumnSpec {
             name,
             short_name: short_names[idx].clone(),
@@ -219,11 +300,97 @@ fn infer_columns(
             format_type,
             format_width,
             format_decimals,
+            measure: variable_measure(series.name(), var_type, variable_measures),
+            alignment: variable_alignment(series.name(), var_type, variable_alignments),
+            display_width: variable_display_width(
+                series.name(),
+                var_type,
+                string_len,
+                format_width,
+                variable_display_widths,
+            )?,
             label,
         });
         offset += width;
     }
     Ok(cols)
+}
+
+fn apply_format_override(
+    name: &str,
+    default_type: u8,
+    default_width: u8,
+    default_decimals: u8,
+    variable_formats: Option<&SpssVariableFormats>,
+) -> Result<(u8, u8, u8)> {
+    let Some(format) = variable_formats.and_then(|formats| formats.get(name)) else {
+        return Ok((default_type, default_width, default_decimals));
+    };
+    let format_type = format.format_type.unwrap_or(default_type);
+    let width = format.width.unwrap_or(default_width);
+    let decimals = format.decimals.unwrap_or(default_decimals);
+    if width == 0 {
+        return Err(Error::ParseError(format!(
+            "SPSS variable format width must be > 0 for {name}"
+        )));
+    }
+    Ok((format_type, width, decimals))
+}
+
+fn variable_measure(
+    name: &str,
+    var_type: VarType,
+    variable_measures: Option<&SpssVariableMeasures>,
+) -> Measure {
+    variable_measures
+        .and_then(|m| m.get(name).copied())
+        .unwrap_or_else(|| {
+            if var_type == VarType::Str {
+                Measure::Nominal
+            } else {
+                Measure::Scale
+            }
+        })
+}
+
+fn variable_alignment(
+    name: &str,
+    var_type: VarType,
+    variable_alignments: Option<&SpssVariableAlignments>,
+) -> Alignment {
+    variable_alignments
+        .and_then(|a| a.get(name).copied())
+        .unwrap_or_else(|| {
+            if var_type == VarType::Str {
+                Alignment::Left
+            } else {
+                Alignment::Right
+            }
+        })
+}
+
+fn variable_display_width(
+    name: &str,
+    var_type: VarType,
+    string_len: usize,
+    format_width: u8,
+    variable_display_widths: Option<&SpssVariableDisplayWidths>,
+) -> Result<i32> {
+    let width = variable_display_widths
+        .and_then(|widths| widths.get(name).copied())
+        .unwrap_or_else(|| {
+            if var_type == VarType::Str {
+                string_len.min(255).max(1) as i32
+            } else {
+                format_width.max(1) as i32
+            }
+        });
+    if width <= 0 {
+        return Err(Error::ParseError(format!(
+            "SPSS variable display width must be > 0 for {name}"
+        )));
+    }
+    Ok(width)
 }
 
 fn dtype_to_spss(
@@ -822,33 +989,32 @@ fn write_variable_display_record<W: Write>(writer: &mut W, columns: &[ColumnSpec
     write_u32(writer, SAV_RECORD_HAS_DATA)?;
     write_u32(writer, SUBTYPE_VAR_DISPLAY)?;
     write_u32(writer, 4)?;
-    write_u32(
-        writer,
-        (columns.iter().map(|c| c.width).sum::<usize>() * 3) as u32,
-    )?;
+    write_u32(writer, (columns.len() * 3) as u32)?;
     for col in columns {
-        let measure = if col.var_type == VarType::Str {
-            SAV_MEASURE_NOMINAL
-        } else {
-            SAV_MEASURE_SCALE
-        };
-        let display_width = if col.var_type == VarType::Str {
-            col.string_len.min(255).max(1) as i32
-        } else {
-            8
-        };
-        let alignment = if col.var_type == VarType::Str {
-            SAV_ALIGNMENT_LEFT
-        } else {
-            SAV_ALIGNMENT_RIGHT
-        };
-        for _ in 0..col.width {
-            write_i32(writer, measure)?;
-            write_i32(writer, display_width)?;
-            write_i32(writer, alignment)?;
-        }
+        let measure = encode_measure(col.measure);
+        let alignment = encode_alignment(col.alignment);
+        write_i32(writer, measure)?;
+        write_i32(writer, col.display_width)?;
+        write_i32(writer, alignment)?;
     }
     Ok(())
+}
+
+fn encode_measure(measure: Measure) -> i32 {
+    match measure {
+        Measure::Unknown => SAV_MEASURE_UNKNOWN,
+        Measure::Nominal => SAV_MEASURE_NOMINAL,
+        Measure::Ordinal => SAV_MEASURE_ORDINAL,
+        Measure::Scale => SAV_MEASURE_SCALE,
+    }
+}
+
+fn encode_alignment(alignment: Alignment) -> i32 {
+    match alignment {
+        Alignment::Left => SAV_ALIGNMENT_LEFT,
+        Alignment::Right => SAV_ALIGNMENT_RIGHT,
+        Alignment::Center => SAV_ALIGNMENT_CENTER,
+    }
 }
 
 fn write_number_of_cases_record<W: Write>(writer: &mut W, row_count: u64) -> Result<()> {

@@ -41,15 +41,20 @@ pub use readstat_stream::{readstat_batch_iter, ReadstatBatchIter, ReadstatBatchS
 pub use sas::row_reader::{sas_row_readers, SasColumnInfo, SasColumnKind, SasRowReader};
 pub use sas::scan_sas7bdat;
 
-pub use spss::{scan_sav, Error as SpssError, Result as SpssResult, SpssReader};
 pub use spss::{
-    SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels, SpssVariableLabels, SpssWriteColumn,
-    SpssWriteSchema, SpssWriter,
+    scan_sav, Alignment as SpssAlignment, Error as SpssError, Measure as SpssMeasure,
+    Result as SpssResult, SpssReader,
+};
+pub use spss::{
+    SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels, SpssVariableAlignments,
+    SpssVariableDisplayWidths, SpssVariableFormat, SpssVariableFormats, SpssVariableLabels,
+    SpssVariableMeasures, SpssWriteColumn, SpssWriteSchema, SpssWriter,
 };
 pub use stata::{
     compress_df, pandas_make_stata_column_names, pandas_prepare_df_for_stata, pandas_rename_df,
     scan_dta, CompressOptions, Error as StataError, Result as StataResult, StataReader,
-    StataWriteColumn, StataWriteSchema, StataWriter, ValueLabelMap, ValueLabels, VariableLabels,
+    StataWriteColumn, StataWriteSchema, StataWriter, ValueLabelMap, ValueLabels, VariableFormats,
+    VariableLabels,
 };
 
 use polars::prelude::DataFrame;

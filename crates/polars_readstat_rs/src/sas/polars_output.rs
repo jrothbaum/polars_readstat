@@ -791,14 +791,13 @@ fn spawn_page_worker(
                 Ok(df) => {
                     let df = if let Some(thread_id) = sort_tag {
                         let n = df.height();
-                        let thread_col: Column = Series::new(
-                            "_polars_rs_thread_".into(),
-                            vec![thread_id; n],
-                        ).into();
+                        let thread_col: Column =
+                            Series::new("_polars_rs_thread_".into(), vec![thread_id; n]).into();
                         let row_col: Column = Series::new(
                             "_polars_rs_row_".into(),
                             (row_cursor..row_cursor + n as u32).collect::<Vec<u32>>(),
-                        ).into();
+                        )
+                        .into();
                         row_cursor += n as u32;
                         let mut df = df;
                         if let Err(e) = df.with_column(thread_col) {
@@ -1609,14 +1608,22 @@ pub(crate) fn sas_batch_iter_with_reader(
                 batch_size,
                 wp_start,
                 wp_count,
-                if add_sort_tags { Some(worker_idx as u32) } else { None },
+                if add_sort_tags {
+                    Some(worker_idx as u32)
+                } else {
+                    None
+                },
             ));
         }
         drop(shared_tx);
         let parallel = UnorderedParallelIter {
             rx: Some(rx),
             handles,
-            row_index_name: if add_sort_tags { None } else { row_index_name.clone() },
+            row_index_name: if add_sort_tags {
+                None
+            } else {
+                row_index_name.clone()
+            },
             row_cursor: row_index_start,
         };
         let base: SasBatchIter = match mix_iter {
@@ -1625,8 +1632,10 @@ pub(crate) fn sas_batch_iter_with_reader(
         };
         if add_sort_tags {
             if let Some(name) = row_index_name.clone() {
-                Box::new(SortIndexCollectorIter { inner: Some(base), row_index_name: name })
-                    as SasBatchIter
+                Box::new(SortIndexCollectorIter {
+                    inner: Some(base),
+                    row_index_name: name,
+                }) as SasBatchIter
             } else {
                 base
             }

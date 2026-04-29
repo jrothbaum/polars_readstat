@@ -1,5 +1,3 @@
-#[cfg(feature = "row_reader")]
-pub mod row_reader;
 pub(crate) mod buffer;
 pub(crate) mod constants;
 pub(crate) mod data;
@@ -8,6 +6,8 @@ pub(crate) mod encoding;
 pub(crate) mod error;
 pub(crate) mod page;
 pub mod polars_output;
+#[cfg(feature = "row_reader")]
+pub mod row_reader;
 pub(crate) mod types;
 pub(crate) mod value;
 pub mod writer;

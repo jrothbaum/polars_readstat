@@ -1,5 +1,7 @@
 use crate::spss::error::{Error, Result};
-use crate::spss::types::{Endian, FormatClass, Header, Metadata, VarType, Variable};
+use crate::spss::types::{
+    Alignment, Endian, FormatClass, Header, Measure, Metadata, VarType, Variable,
+};
 use std::io::{Read, Seek, SeekFrom};
 
 /// Discard `n` bytes by reading them into a stack buffer.
@@ -27,6 +29,7 @@ const REC_TYPE_DICT_TERMINATION: u32 = 999;
 
 const SUBTYPE_CHAR_ENCODING: u32 = 20;
 const SUBTYPE_INTEGER_INFO: u32 = 3;
+const SUBTYPE_VAR_DISPLAY: u32 = 11;
 const SUBTYPE_LONG_VAR_NAME: u32 = 13;
 const SUBTYPE_VERY_LONG_STR: u32 = 14;
 const SUBTYPE_LONG_STRING_VALUE_LABELS: u32 = 21;
@@ -183,6 +186,10 @@ pub fn read_metadata<R: Read + Seek>(reader: &mut R, header: &Header) -> Result<
                     let mut buf = vec![0u8; data_len];
                     reader.read_exact(&mut buf)?;
                     parse_integer_info(&buf, header, &mut metadata)?;
+                } else if subtype == SUBTYPE_VAR_DISPLAY && data_len > 0 {
+                    let mut buf = vec![0u8; data_len];
+                    reader.read_exact(&mut buf)?;
+                    parse_variable_display_parameters(&buf, header, count, &mut metadata)?;
                 } else if subtype == SUBTYPE_CHAR_ENCODING && data_len > 0 {
                     let mut buf = vec![0u8; data_len];
                     reader.read_exact(&mut buf)?;
@@ -299,7 +306,8 @@ fn read_variable_record<R: Read + Seek>(
     let offset = *current_offset;
     *current_offset += width;
 
-    let format_type = ((print_format as u32) >> 16) as u8;
+    let (format_type, format_width, format_decimals) = decode_format(print_format);
+    let (write_format_type, write_format_width, write_format_decimals) = decode_format(_write);
     let format_class = format_class_from_type(format_type);
 
     let mut label: Option<String> = None;
@@ -352,7 +360,15 @@ fn read_variable_record<R: Read + Seek>(
         width,
         string_len,
         format_type,
+        format_width,
+        format_decimals,
+        write_format_type,
+        write_format_width,
+        write_format_decimals,
         format_class,
+        measure: None,
+        display_width: None,
+        alignment: None,
         label,
         value_label: None,
         offset,
@@ -361,6 +377,86 @@ fn read_variable_record<R: Read + Seek>(
         missing_double_bits,
         missing_strings,
     }))
+}
+
+fn decode_format(format: i32) -> (u8, u8, u8) {
+    let format = format as u32;
+    (
+        ((format >> 16) & 0xff) as u8,
+        ((format >> 8) & 0xff) as u8,
+        (format & 0xff) as u8,
+    )
+}
+
+fn parse_variable_display_parameters(
+    data: &[u8],
+    header: &Header,
+    count: usize,
+    metadata: &mut Metadata,
+) -> Result<()> {
+    if count == 0 || data.len() < count * 4 {
+        return Ok(());
+    }
+
+    let var_count = metadata.variables.len();
+    if var_count == 0 {
+        return Ok(());
+    }
+
+    let total_segments: usize = metadata.variables.iter().map(|v| v.width.max(1)).sum();
+    let (params_per_var, segment_based) = if count == var_count * 3 {
+        (3, false)
+    } else if count == var_count * 2 {
+        (2, false)
+    } else if count == total_segments * 3 {
+        (3, true)
+    } else if count == total_segments * 2 {
+        (2, true)
+    } else {
+        // Unknown variant. The record is display-only metadata, so keep data reading tolerant.
+        return Ok(());
+    };
+
+    let mut values = Vec::with_capacity(count);
+    for i in 0..count {
+        values.push(read_i32_from(data, i * 4, header.endian)?);
+    }
+
+    let mut pos = 0usize;
+    for var in &mut metadata.variables {
+        if pos + params_per_var > values.len() {
+            break;
+        }
+        var.measure = measure_from_i32(values[pos]);
+        if params_per_var == 3 {
+            var.display_width = Some(values[pos + 1]);
+            var.alignment = alignment_from_i32(values[pos + 2]);
+        } else {
+            var.alignment = alignment_from_i32(values[pos + 1]);
+        }
+        pos += params_per_var * if segment_based { var.width.max(1) } else { 1 };
+    }
+
+    Ok(())
+}
+
+fn measure_from_i32(value: i32) -> Option<Measure> {
+    match value {
+        0 => Some(Measure::Unknown),
+        1 => Some(Measure::Nominal),
+        2 => Some(Measure::Ordinal),
+        3 => Some(Measure::Scale),
+        _ => None,
+    }
+}
+
+fn alignment_from_i32(value: i32) -> Option<Alignment> {
+    match value {
+        0 => Some(Alignment::Left),
+        1 => Some(Alignment::Right),
+        2 => Some(Alignment::Center),
+        _ => None,
+    }
 }
 
 fn format_class_from_type(code: u8) -> Option<FormatClass> {

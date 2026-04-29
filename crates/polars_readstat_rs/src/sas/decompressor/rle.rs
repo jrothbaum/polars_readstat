@@ -103,7 +103,7 @@ impl RleDecompressor {
                     src_pos += 1;
                     let byte_to_insert = input[src_pos];
                     src_pos += 1;
-                    let count = ((end_of_first_byte as usize) << 8) + next_byte + 18;  // was << 4
+                    let count = ((end_of_first_byte as usize) << 8) + next_byte + 18; // was << 4
                     let new_len = output.len() + count;
                     Self::safe_resize(&mut output, new_len, byte_to_insert, expected_output_size);
                 }

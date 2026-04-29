@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Dict, Iterator, Literal
+from typing import Any, Dict, Iterator, Literal, Mapping
 from pathlib import Path
 import polars as pl
 from dataclasses import dataclass
@@ -10,7 +10,7 @@ from polars_readstat.polars_readstat_bindings import (
     sink_stata,
     write_sas_csv_import as _write_sas_csv_import_rs,
     write_stata,
-    write_spss,
+    write_spss as _write_spss_rs,
 )
 import warnings
 
@@ -635,9 +635,11 @@ def write_readstat(
         from the file extension.
     **kwargs : Any
         Stata supports `compress` (bool), `threads` (int),
-        `value_labels` (dict[str, dict[int, str]]) and `variable_labels` (dict[str, str]).
-        SPSS supports `value_labels` (dict[str, dict[float|int, str]]) and
-        `variable_labels` (dict[str, str]).
+        `value_labels` (dict[str, dict[int, str]]), `variable_labels` (dict[str, str]),
+        and `variable_format` (dict[str, str]).
+        SPSS supports `value_labels` (dict[str, dict[float|int, str]]),
+        `variable_labels` (dict[str, str]), `variable_measure`,
+        `variable_display_width`, `variable_alignment`, and `variable_format`.
         SAS binary writing is not supported; use `write_sas_csv_import`.
     """
     path = str(path)
@@ -649,6 +651,7 @@ def write_readstat(
         threads = kwargs.pop("threads", None)
         value_labels = kwargs.pop("value_labels", None)
         variable_labels = kwargs.pop("variable_labels", None)
+        variable_format = kwargs.pop("variable_format", None)
         if kwargs:
             raise TypeError(f"Unsupported kwargs for Stata writer: {sorted(kwargs.keys())}")
         write_stata(
@@ -658,6 +661,7 @@ def write_readstat(
             threads=threads,
             value_labels=value_labels,
             variable_labels=variable_labels,
+            variable_format=variable_format,
         )
         return
     if fmt in ("sav", "zsav", "spss"):
@@ -670,9 +674,22 @@ def write_readstat(
             )
         value_labels = kwargs.pop("value_labels", None)
         variable_labels = kwargs.pop("variable_labels", None)
+        variable_measure = kwargs.pop("variable_measure", None)
+        variable_display_width = kwargs.pop("variable_display_width", None)
+        variable_alignment = kwargs.pop("variable_alignment", None)
+        variable_format = kwargs.pop("variable_format", None)
         if kwargs:
             raise TypeError(f"Unsupported kwargs for SPSS writer: {sorted(kwargs.keys())}")
-        write_spss(df, path, value_labels=value_labels, variable_labels=variable_labels)
+        write_spss(
+            df,
+            path,
+            value_labels=value_labels,
+            variable_labels=variable_labels,
+            variable_measure=variable_measure,
+            variable_display_width=variable_display_width,
+            variable_alignment=variable_alignment,
+            variable_format=variable_format,
+        )
         return
     if fmt in ("sas7bdat", "sas"):
         raise NotImplementedError(
@@ -681,6 +698,204 @@ def write_readstat(
         )
 
     raise ValueError(f"Unsupported output format: {fmt}")
+
+
+def write_spss(
+    df: pl.DataFrame | pl.LazyFrame,
+    path: Any,
+    value_labels: dict[str, dict[float | int | str, str]] | None = None,
+    variable_labels: dict[str, str] | None = None,
+    *,
+    variable_measure: dict[str, str] | None = None,
+    variable_display_width: dict[str, int] | None = None,
+    variable_alignment: dict[str, str] | None = None,
+    variable_format: dict[str, str | dict[str, int]] | None = None,
+) -> None:
+    """
+    Write an SPSS `.sav`/`.zsav` file.
+
+    `variable_format` string values currently support simple SPSS `F` and `A`
+    formats such as `"F8.2"` and `"A20"`. Dict values may contain
+    `format_type`, `width`, and `decimals`/`decimal_places`.
+    """
+    df = _prepare_write_df(df)
+    _write_spss_rs(
+        df,
+        str(path),
+        value_labels=value_labels,
+        variable_labels=variable_labels,
+        variable_measure=variable_measure,
+        variable_display_width=variable_display_width,
+        variable_alignment=variable_alignment,
+        variable_format=variable_format,
+    )
+
+
+def spss_variable_metadata_to_write_kwargs(
+    variables: Mapping[str, Mapping[str, Any]] | list[Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """
+    Convert SPSS per-variable metadata into kwargs accepted by `write_spss`.
+
+    Accepts either `{name: variable_metadata}` or the `metadata["variables"]`
+    list returned by `ScanReadstat(...).metadata`.
+    """
+    variable_items = _normalize_variable_metadata_items(variables)
+    value_labels: dict[str, dict[Any, str]] = {}
+    variable_labels: dict[str, str] = {}
+    variable_measure: dict[str, str] = {}
+    variable_display_width: dict[str, int] = {}
+    variable_alignment: dict[str, str] = {}
+    variable_format: dict[str, str] = {}
+
+    for name, meta in variable_items:
+        label = meta.get("label")
+        if label is not None:
+            variable_labels[name] = str(label)
+
+        labels = meta.get("value_labels")
+        if labels:
+            value_labels[name] = {
+                _coerce_spss_value_label_key(key): str(value)
+                for key, value in labels.items()
+            }
+
+        measure = meta.get("measure")
+        if measure is not None:
+            variable_measure[name] = str(measure).lower()
+
+        display_width = meta.get("display_width")
+        if display_width is not None:
+            variable_display_width[name] = int(display_width)
+
+        alignment = meta.get("alignment")
+        if alignment is not None:
+            variable_alignment[name] = str(alignment).lower()
+
+        fmt = _spss_variable_format_from_metadata(meta)
+        if fmt is not None:
+            variable_format[name] = fmt
+
+    out: dict[str, dict[str, Any]] = {}
+    if value_labels:
+        out["value_labels"] = value_labels
+    if variable_labels:
+        out["variable_labels"] = variable_labels
+    if variable_measure:
+        out["variable_measure"] = variable_measure
+    if variable_display_width:
+        out["variable_display_width"] = variable_display_width
+    if variable_alignment:
+        out["variable_alignment"] = variable_alignment
+    if variable_format:
+        out["variable_format"] = variable_format
+    return out
+
+
+def _normalize_variable_metadata_items(
+    variables: Mapping[str, Mapping[str, Any]] | list[Mapping[str, Any]],
+) -> list[tuple[str, Mapping[str, Any]]]:
+    if isinstance(variables, Mapping):
+        return [(str(name), meta) for name, meta in variables.items()]
+
+    out = []
+    for meta in variables:
+        name = meta.get("name")
+        if name is None:
+            raise ValueError("SPSS variable metadata entries must include a 'name'")
+        out.append((str(name), meta))
+    return out
+
+
+def _spss_variable_format_from_metadata(meta: Mapping[str, Any]) -> str | None:
+    format_width = meta.get("format_width")
+    if format_width is None:
+        format_width = meta.get("width")
+    if format_width is None:
+        return None
+
+    decimals = meta.get("format_decimals")
+    if decimals is None:
+        decimals = meta.get("decimal_places")
+    if decimals is None:
+        decimals = 0
+
+    format_type = meta.get("format_type")
+    if format_type == 1 or str(format_type).upper() == "A":
+        return f"A{int(format_width)}"
+    if format_type is None or format_type == 5 or str(format_type).upper() == "F":
+        return f"F{int(format_width)}.{int(decimals)}"
+    return None
+
+
+def _coerce_spss_value_label_key(key: Any) -> Any:
+    if isinstance(key, (int, float)):
+        return key
+    if not isinstance(key, str):
+        return key
+    try:
+        value = float(key)
+    except ValueError:
+        return key
+    if value.is_integer():
+        return int(value)
+    return value
+
+
+def stata_variable_metadata_to_write_kwargs(
+    variables: Mapping[str, Mapping[str, Any]] | list[Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """
+    Convert Stata per-variable metadata into kwargs accepted by `write_readstat`.
+
+    Accepts either `{name: variable_metadata}` or the `metadata["variables"]`
+    list returned by `ScanReadstat(...).metadata`.
+    """
+    variable_items = _normalize_variable_metadata_items(variables)
+    value_labels: dict[str, dict[Any, str]] = {}
+    variable_labels: dict[str, str] = {}
+    variable_format: dict[str, str] = {}
+
+    for name, meta in variable_items:
+        label = meta.get("label")
+        if label is not None:
+            variable_labels[name] = str(label)
+
+        labels = meta.get("value_labels")
+        if labels:
+            value_labels[name] = {
+                _coerce_stata_value_label_key(key): str(value)
+                for key, value in labels.items()
+            }
+
+        fmt = meta.get("format")
+        if fmt:
+            variable_format[name] = str(fmt)
+
+    out: dict[str, dict[str, Any]] = {}
+    if value_labels:
+        out["value_labels"] = value_labels
+    if variable_labels:
+        out["variable_labels"] = variable_labels
+    if variable_format:
+        out["variable_format"] = variable_format
+    return out
+
+
+def _coerce_stata_value_label_key(key: Any) -> Any:
+    if isinstance(key, int):
+        return key
+    if isinstance(key, float) and key.is_integer():
+        return int(key)
+    if not isinstance(key, str):
+        return key
+    try:
+        value = float(key)
+    except ValueError:
+        return key
+    if value.is_integer():
+        return int(value)
+    return key
 
 
 def write_sas_csv_import(
@@ -752,4 +967,3 @@ def _prepare_write_df(df: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
     if has_u16:
         exprs.append(pl.col(pl.UInt16).cast(pl.Int32))
     return df.with_columns(exprs)
-
