@@ -4,6 +4,13 @@
 
 Returns a Polars `LazyFrame` for SAS, Stata, and SPSS files.
 
+```python
+from polars_readstat import scan_readstat
+
+lf = scan_readstat("file.sas7bdat")
+df = lf.collect()
+```
+
 Key parameters:
 
 | Parameter | Default | Notes |
@@ -12,9 +19,9 @@ Key parameters:
 | `missing_string_as_null` | `False` | Convert empty strings to `null`. |
 | `value_labels_as_strings` | `False` | For labeled numeric columns, return label strings. |
 | `schema_overrides` | `None` | Dict of `{column: polars_dtype}`. |
-| `batch_size` | `100_000` | Rows per internal chunk during collect. |
+| `batch_size` | `None` | Rows per internal chunk during collect. Auto-inferred if `None`. |
 | `informative_nulls` | `None` | Capture user-defined missing indicators. |
-| `threads` | `None` | Defaults to the Polars thread pool size. |
+| `threads` | `None` | Number of threads. Defaults to the Polars thread pool size. |
 | `compress` | `None` | Optional type compression after scan. |
 
 ## Compression options
@@ -118,21 +125,126 @@ lf = scan_readstat(
 )
 ```
 
-## `read_readstat(path, **kwargs)`
-
-Eager version of `scan_readstat` returning a `DataFrame`. Accepts the same parameters.
-
 ## `ScanReadstat(path, **kwargs)`
 
-Reader object that exposes:
+Reader object that exposes `schema`, `metadata`, and `df`. Useful when you need file metadata before collecting data. Accepts the same parameters as `scan_readstat`.
 
-- `schema`: a `polars.Schema`
-- `metadata`: a dict with file info and per-column details
-- `df`: a `LazyFrame`, same as `scan_readstat(path)`
+```python
+from polars_readstat import ScanReadstat
 
-Metadata includes:
+reader = ScanReadstat("file.dta")
 
-- `columns[].name`
-- `columns[].label`
-- `columns[].value_labels`
+print(reader.schema)
+print(reader.metadata["row_count"])
+
+df = reader.df.collect()
+```
+
+Metadata structure varies by format.
+
+### SAS (`.sas7bdat`)
+
+Per-variable info is under the `columns` key.
+
+```python
+{
+  "row_count": 10,
+  "column_count": 100,
+  "table_name": "TEST1",
+  "file_encoding": "WINDOWS-1252",
+  "sas_release": "9.0401M1",
+  "compression": "None",
+  "creator_proc": "DATASTEP",
+  "columns": [
+    {
+      "name": "Column1",
+      "label": null,
+      "format": "BEST",
+      "type": "Numeric",
+      "length": 8,
+      "offset": 0
+    },
+    {
+      "name": "Column4",
+      "label": null,
+      "format": "MMDDYY",
+      "type": "Numeric",
+      "length": 8,
+      "offset": 16
+    },
+    ...
+  ]
+}
+```
+
+SAS `.sas7bdat` files do not contain value labels.
+
+### Stata (`.dta`)
+
+Per-variable info is under the `variables` key.
+
+```python
+{
+  "row_count": 30,
+  "version": 118,
+  "byte_order": "Little",
+  "encoding": "UTF-8",
+  "data_label": null,
+  "timestamp": " 8 Aug 2016 15:21",
+  "variables": [
+    {
+      "name": "ethnicsn",
+      "label": "ethnicity, senegal",
+      "format": "%8.0g",
+      "type": "Numeric(Int)",
+      "value_label_name": "ETHNICSN",
+      "value_labels": {
+        "101": "bainouk",
+        "102": "badiaranke",
+        ...
+      }
+    },
+    ...
+  ]
+}
+```
+
+### SPSS (`.sav` / `.zsav`)
+
+Per-variable info is under the `variables` key. SPSS exposes the richest variable-level metadata.
+
+```python
+{
+  "row_count": 5,
+  "version": 2,
+  "compression": "RLE",
+  "encoding": "windows-1252",
+  "file_label": null,
+  "variables": [
+    {
+      "name": "mylabl",
+      "label": "labeled",
+      "type": "Numeric",
+      "measure": "Scale",
+      "alignment": "Right",
+      "display_width": 8,
+      "decimal_places": 2,
+      "format_type": 5,
+      "format_width": 8,
+      "format_decimals": 2,
+      "format_class": null,
+      "value_label": "labels0",
+      "value_labels": {
+        "1": "Male",
+        "2": "Female"
+      },
+      "missing_doubles": [],
+      "missing_strings": [],
+      "missing_range": false,
+      ...
+    },
+    ...
+  ]
+}
+```
 

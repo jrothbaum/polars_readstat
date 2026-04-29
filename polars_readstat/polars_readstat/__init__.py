@@ -619,6 +619,7 @@ def write_readstat(
     path: Any,
     *,
     format: str | None = None,
+    metadata: dict | None = None,
     **kwargs: Any,
 ) -> None:
     """
@@ -633,6 +634,11 @@ def write_readstat(
     format : str, optional
         One of "dta" (Stata) or "sav"/"zsav" (SPSS). If omitted, inferred
         from the file extension.
+    metadata : dict, optional
+        Metadata dict returned by ``ScanReadstat(...).metadata``. Variable
+        labels, value labels, formats, and (for SPSS) measure/alignment/width
+        are extracted automatically. Explicit kwargs take precedence over
+        anything derived from metadata.
     **kwargs : Any
         Stata supports `compress` (bool), `threads` (int),
         `value_labels` (dict[str, dict[int, str]]), `variable_labels` (dict[str, str]),
@@ -647,11 +653,15 @@ def write_readstat(
     df = _prepare_write_df(df)
 
     if fmt in ("dta", "stata"):
-        compress = kwargs.pop("compress", None)
-        threads = kwargs.pop("threads", None)
-        value_labels = kwargs.pop("value_labels", None)
-        variable_labels = kwargs.pop("variable_labels", None)
-        variable_format = kwargs.pop("variable_format", None)
+        base: dict[str, Any] = {}
+        if metadata is not None:
+            variables = [v for v in (metadata.get("variables") or []) if v.get("name") in df.columns]
+            base = stata_variable_metadata_to_write_kwargs(variables)
+        compress = kwargs.pop("compress", base.get("compress"))
+        threads = kwargs.pop("threads", base.get("threads"))
+        value_labels = kwargs.pop("value_labels", base.get("value_labels"))
+        variable_labels = kwargs.pop("variable_labels", base.get("variable_labels"))
+        variable_format = kwargs.pop("variable_format", base.get("variable_format"))
         if kwargs:
             raise TypeError(f"Unsupported kwargs for Stata writer: {sorted(kwargs.keys())}")
         write_stata(
@@ -665,6 +675,10 @@ def write_readstat(
         )
         return
     if fmt in ("sav", "zsav", "spss"):
+        base = {}
+        if metadata is not None:
+            variables = [v for v in (metadata.get("variables") or []) if v.get("name") in df.columns]
+            base = spss_variable_metadata_to_write_kwargs(variables)
         compress = kwargs.pop("compress", None)
         if compress is not None:
             warnings.warn(
@@ -672,12 +686,12 @@ def write_readstat(
                 UserWarning,
                 stacklevel=2,
             )
-        value_labels = kwargs.pop("value_labels", None)
-        variable_labels = kwargs.pop("variable_labels", None)
-        variable_measure = kwargs.pop("variable_measure", None)
-        variable_display_width = kwargs.pop("variable_display_width", None)
-        variable_alignment = kwargs.pop("variable_alignment", None)
-        variable_format = kwargs.pop("variable_format", None)
+        value_labels = kwargs.pop("value_labels", base.get("value_labels"))
+        variable_labels = kwargs.pop("variable_labels", base.get("variable_labels"))
+        variable_measure = kwargs.pop("variable_measure", base.get("variable_measure"))
+        variable_display_width = kwargs.pop("variable_display_width", base.get("variable_display_width"))
+        variable_alignment = kwargs.pop("variable_alignment", base.get("variable_alignment"))
+        variable_format = kwargs.pop("variable_format", base.get("variable_format"))
         if kwargs:
             raise TypeError(f"Unsupported kwargs for SPSS writer: {sorted(kwargs.keys())}")
         write_spss(
