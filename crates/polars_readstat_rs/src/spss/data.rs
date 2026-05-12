@@ -273,10 +273,88 @@ pub fn read_data_frame_streaming(
                 return Ok(());
             }
         }
+    } else if compression == 2 {
+        // ZSAV: each zlib block is independently decompressible (seekable via the
+        // trailer index), but SavRowStream state is maintained across blocks because
+        // rows can span block boundaries. Process blocks one at a time and emit a
+        // batch whenever batch_size rows have been accumulated.
+        let zheader_ofs = reader.stream_position()?;
+        let zheader = read_zheader(&mut reader, endian)?;
+        if zheader.zheader_ofs != zheader_ofs {
+            return Err(Error::ParseError("invalid zsav header offset".to_string()));
+        }
+        reader.seek(SeekFrom::Start(zheader.ztrailer_ofs))?;
+        let ztrailer = read_ztrailer(&mut reader, endian)?;
+        let n_blocks = ztrailer.n_blocks as usize;
+        let mut entries = Vec::with_capacity(n_blocks);
+        for _ in 0..n_blocks {
+            entries.push(read_ztrailer_entry(&mut reader, endian)?);
+        }
+
+        let mut stream = SavRowStream::new(endian, bias);
+        let mut row_idx = 0usize;
+        let mut out_offset = 0usize;
+        let mut builders = make_builders(batch_size);
+        // np depends only on column types, which are fixed — compute once and reuse.
+        let np = build_numeric_plans(&plans, &builders);
+        let mut added = 0usize;
+
+        'blocks: for entry in &entries {
+            reader.seek(SeekFrom::Start(entry.compressed_ofs as u64))?;
+            let mut compressed = vec![0u8; entry.compressed_size as usize];
+            reader.read_exact(&mut compressed)?;
+
+            let mut decoder = ZlibDecoder::new(&compressed[..]);
+            let mut uncompressed = Vec::with_capacity(entry.uncompressed_size as usize);
+            decoder.read_to_end(&mut uncompressed)?;
+            if uncompressed.len() != entry.uncompressed_size as usize {
+                return Err(Error::ParseError("zsav block size mismatch".to_string()));
+            }
+
+            let mut input_offset = 0usize;
+            while input_offset <= uncompressed.len() {
+                let status = stream.decompress_from_slice(
+                    &uncompressed,
+                    &mut input_offset,
+                    &mut row_buf,
+                    &mut out_offset,
+                )?;
+                match status {
+                    StreamStatus::NeedData => break,
+                    StreamStatus::FinishedAll => break 'blocks,
+                    StreamStatus::FinishedRow => {
+                        out_offset = 0;
+                        if row_idx >= start_row && row_idx < end_row {
+                            if let Some(np) = np.as_deref() {
+                                append_numeric_row(&mut builders, &plans, np, &row_buf, endian)?;
+                            } else {
+                                append_row(&mut builders, &plans, &row_buf, endian, metadata.encoding)?;
+                            }
+                            added += 1;
+                            if added >= batch_size {
+                                let df = finish_batch(builders)?;
+                                if !on_batch(df) {
+                                    return Ok(());
+                                }
+                                builders = make_builders(batch_size);
+                                added = 0;
+                            }
+                        }
+                        row_idx += 1;
+                        if row_idx >= end_row {
+                            break 'blocks;
+                        }
+                    }
+                }
+            }
+        }
+
+        if added > 0 {
+            let df = finish_batch(builders)?;
+            on_batch(df);
+        }
     } else {
-        // compression == 2 (ZSAV) or unknown: read the full range at once, then
-        // slice into batches. Block-level streaming for ZSAV is left as a future
-        // improvement.
+        // Unknown compression: fall back to full read.
         let df = read_data_frame_with_reader(
             &mut reader,
             metadata,

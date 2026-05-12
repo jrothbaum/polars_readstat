@@ -121,6 +121,46 @@ impl<'a> ReadBuilder<'a> {
         self
     }
 
+    /// Stream rows in batches of `chunk_size`, calling `on_batch` for each.
+    /// Return `false` from `on_batch` to stop early. Batches are dropped immediately
+    /// after `on_batch` returns, keeping peak memory proportional to one batch.
+    pub fn finish_batched<F>(self, chunk_size: usize, mut on_batch: F) -> Result<()>
+    where
+        F: FnMut(DataFrame) -> bool,
+    {
+        let limit = self
+            .limit
+            .unwrap_or(self.reader.metadata.row_count as usize);
+        let threads = if self.parallel {
+            self.num_threads
+        } else {
+            Some(1)
+        };
+        let mut iter = crate::spss::polars_output::spss_batch_iter_with_reader(
+            &self.reader,
+            self.reader.path.clone(),
+            threads,
+            self.missing_string_as_null,
+            self.value_labels_as_strings,
+            Some(chunk_size),
+            true,
+            None,
+            self.columns,
+            self.offset,
+            Some(limit),
+            self.informative_nulls,
+        )
+        .map_err(|e| Error::ParseError(e.to_string()))?;
+
+        while let Some(batch) = iter.next() {
+            let batch = batch.map_err(|e| Error::ParseError(e.to_string()))?;
+            if !on_batch(batch) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     pub fn finish(self) -> Result<DataFrame> {
         let limit = self
             .limit
