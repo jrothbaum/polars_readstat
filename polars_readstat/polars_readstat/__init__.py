@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from polars.io.plugins import register_io_source
 from polars_readstat.polars_readstat_bindings import (
     PyPolarsReadstat,
-    read_readstat_rs,
     sink_stata,
     write_sas_csv_import as _write_sas_csv_import_rs,
     write_stata as _write_stata_rs,
@@ -567,51 +566,33 @@ def scan_readstat(
     return lf
 
 
+
 def read_readstat(
     path: Any,
     threads: int | None = None,
-    engine: str = "",
-    use_mmap: bool = False,
     missing_string_as_null: bool = False,
     value_labels_as_strings: bool = False,
     columns: list[str] | None = None,
+    preserve_order: bool | PreserveOrderOpts | Dict[str, Any] = False,
     compress: bool | CompressOptions | Dict[str, Any] | None = None,
+    schema_overrides: Dict[Any, Any] | None = None,
+    batch_size: int | None = None,
     informative_nulls: "InformativeNullOpts | dict | None" = None,
 ) -> pl.DataFrame:
-    """
-    Read a ReadStat file (SAS, SPSS, Stata) into a Polars DataFrame using the
-    Rust streaming read path.
-
-    Parameters
-    ----------
-    compress : bool, CompressOptions, or dict, optional
-        Apply Rust-side dual-pass compression (schema probe + cast) while reading.
-        ``True`` enables all transforms; ``False``/``None`` disables compression.
-    informative_nulls : InformativeNullOpts or dict, optional
-        Capture user-defined missing value indicators as parallel indicator columns.
-    """
-    path = str(path)
-    if engine != "":
-        _warn_engine_deprecated()
-    if use_mmap:
-        _warn_use_mmap_deprecated()
-
-    if threads is None:
-        threads = pl.thread_pool_size()
-
-    compress_opts = _normalize_compress_opts(compress)
-    informative_null_opts = _normalize_informative_null_opts(informative_nulls)
-    return read_readstat_rs(
-        path=path,
+    lf = scan_readstat(
+        path,
         threads=threads,
         missing_string_as_null=missing_string_as_null,
         value_labels_as_strings=value_labels_as_strings,
-        columns=columns,
-        compress=compress_opts.to_dict() if compress_opts is not None else None,
-        informative_nulls=informative_null_opts.to_dict() if informative_null_opts is not None else None,
+        preserve_order=preserve_order,
+        compress=compress,
+        schema_overrides=schema_overrides,
+        batch_size=batch_size,
+        informative_nulls=informative_nulls,
     )
-
-
+    if columns is not None:
+        lf = lf.select(columns)
+    return lf.collect()
 
 
 def write_readstat(
@@ -656,7 +637,7 @@ def write_readstat(
         base: dict[str, Any] = {}
         if metadata is not None:
             variables = [v for v in (metadata.get("variables") or []) if v.get("name") in df.columns]
-            base = stata_variable_metadata_to_write_kwargs(variables)
+            base = _stata_variable_metadata_to_write_kwargs(variables)
         compress = kwargs.pop("compress", base.get("compress"))
         threads = kwargs.pop("threads", base.get("threads"))
         value_labels = kwargs.pop("value_labels", base.get("value_labels"))
@@ -678,7 +659,7 @@ def write_readstat(
         base = {}
         if metadata is not None:
             variables = [v for v in (metadata.get("variables") or []) if v.get("name") in df.columns]
-            base = spss_variable_metadata_to_write_kwargs(variables)
+            base = _spss_variable_metadata_to_write_kwargs(variables)
         compress = kwargs.pop("compress", None)
         if compress is not None:
             warnings.warn(
@@ -767,7 +748,7 @@ def write_spss(
     )
 
 
-def spss_variable_metadata_to_write_kwargs(
+def _spss_variable_metadata_to_write_kwargs(
     variables: Mapping[str, Mapping[str, Any]] | list[Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     """
@@ -878,7 +859,7 @@ def _coerce_spss_value_label_key(key: Any) -> Any:
     return value
 
 
-def stata_variable_metadata_to_write_kwargs(
+def _stata_variable_metadata_to_write_kwargs(
     variables: Mapping[str, Mapping[str, Any]] | list[Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     """

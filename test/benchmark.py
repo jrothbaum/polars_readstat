@@ -148,5 +148,5 @@ if __name__ == "__main__":
                                 spss=spss)
 
     test(stata=False,
-         spss=False)
+         spss=True)
 

@@ -101,8 +101,7 @@ def test_spss_variable_metadata_to_write_kwargs(tmp_path: Path) -> None:
     )
 
     metadata = prs.ScanReadstat(str(source_path)).metadata
-    write_kwargs = prs.spss_variable_metadata_to_write_kwargs(metadata["variables"])
-    prs.write_readstat(DF, str(out_path), format="sav", **write_kwargs)
+    prs.write_readstat(DF, str(out_path), format="sav", metadata=metadata)
 
     roundtrip = prs.ScanReadstat(str(out_path)).metadata
     sex_col = _col_by_name(roundtrip, "sex")
@@ -279,8 +278,7 @@ def test_stata_variable_metadata_to_write_kwargs(tmp_path: Path) -> None:
     )
 
     metadata = prs.ScanReadstat(str(source_path)).metadata
-    write_kwargs = prs.stata_variable_metadata_to_write_kwargs(metadata["variables"])
-    prs.write_readstat(DF, str(out_path), format="dta", **write_kwargs)
+    prs.write_readstat(DF, str(out_path), format="dta", metadata=metadata)
 
     roundtrip = prs.ScanReadstat(str(out_path)).metadata
     sex_col = _col_by_name(roundtrip, "sex")

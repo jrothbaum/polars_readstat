@@ -27,8 +27,8 @@ def _assert_matches_base(base: pl.DataFrame, incoming: pl.DataFrame) -> None:
         check_dtypes=False,
         check_row_order=True,
         check_column_order=True,
-        atol=1e-6,
-        rtol=1e-6,
+        abs_tol=1e-6,
+        rel_tol=1e-6,
     )
 
 
