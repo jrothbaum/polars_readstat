@@ -9,7 +9,7 @@ from polars_readstat.polars_readstat_bindings import (
     read_readstat_rs,
     sink_stata,
     write_sas_csv_import as _write_sas_csv_import_rs,
-    write_stata,
+    write_stata as _write_stata_rs,
     write_spss as _write_spss_rs,
 )
 import warnings
@@ -550,7 +550,7 @@ def scan_readstat(
             src.set_with_columns(with_columns)
 
         while (out := src.next()) is not None:
-            if predicate is not None:
+            if predicate is not None and "dynamic_pred" not in str(predicate):
                 out = out.filter(predicate)
 
             yield out
@@ -664,7 +664,7 @@ def write_readstat(
         variable_format = kwargs.pop("variable_format", base.get("variable_format"))
         if kwargs:
             raise TypeError(f"Unsupported kwargs for Stata writer: {sorted(kwargs.keys())}")
-        write_stata(
+        _write_stata_rs(
             df,
             path,
             compress=compress,
@@ -712,6 +712,28 @@ def write_readstat(
         )
 
     raise ValueError(f"Unsupported output format: {fmt}")
+
+
+def write_stata(
+    df: pl.DataFrame | pl.LazyFrame,
+    path: Any,
+    compress: bool | None = None,
+    threads: int | None = None,
+    value_labels: dict[str, dict[int, str]] | None = None,
+    variable_labels: dict[str, str] | None = None,
+    variable_format: dict[str, str] | None = None,
+) -> None:
+    """Write a Stata `.dta` file."""
+    df = _prepare_write_df(df)
+    _write_stata_rs(
+        df,
+        str(path),
+        compress=compress,
+        threads=threads,
+        value_labels=value_labels,
+        variable_labels=variable_labels,
+        variable_format=variable_format,
+    )
 
 
 def write_spss(
