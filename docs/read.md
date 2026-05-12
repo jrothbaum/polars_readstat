@@ -248,3 +248,40 @@ Per-variable info is under the `variables` key. SPSS exposes the richest variabl
 }
 ```
 
+#### SPSS format fields
+
+Each variable includes three format fields from the SAV file header:
+
+- `format_type` — integer code identifying the SPSS format (see table below)
+- `format_width` — total display width in characters
+- `format_decimals` — number of decimal places
+
+You can reconstruct the SPSS format string as `{name}{width}.{decimals}`, e.g. `format_type=5, format_width=8, format_decimals=2` → `"F8.2"`.
+
+**`format_type` codes**
+
+| Code | SPSS name | Description |
+|------|-----------|-------------|
+| 1 | `A` | String (alphanumeric) |
+| 5 | `F` | Standard numeric (fixed decimal) |
+| 20 | `DATE` | Date (dd-mmm-yyyy) |
+| 21 | `TIME` | Time (hh:mm:ss) |
+| 22 | `DATETIME` | Date and time (dd-mmm-yyyy hh:mm:ss) |
+| 23 | `ADATE` | Date (mm/dd/yyyy) |
+| 24 | `JDATE` | Julian date (yyyyddd) |
+| 25 | `DTIME` | Duration / elapsed time (dd hh:mm:ss) |
+| 38 | `EDATE` | European date (dd.mm.yyyy) |
+| 39 | `SDATE` | Sortable date (yyyy/mm/dd) |
+| 41 | `YMDHMS` | ISO-style datetime (yyyy-mm-dd hh:mm:ss) |
+
+Other codes appear in the wild but are less common. The full list is in the [SPSS SAV format specification](https://www.loc.gov/preservation/digital/formats/fdd/fdd000468.shtml).
+
+**`format_class`**
+
+`format_class` is set to `"Date"`, `"Time"`, or `"DateTime"` for temporal formats (codes 20–25, 38–39, 41) so you can detect date/time columns without hardcoding the numeric codes. It is `null` for all other formats (numeric, string, etc.).
+
+**`value_label` vs `value_labels`**
+
+- `value_label` — the name of the label set as stored in the file (a string like `"labels0"`), useful for identifying which variables share the same label set.
+- `value_labels` — the actual mapping of coded values to label strings (the dict you use for display/recoding). This is what you need in practice.
+

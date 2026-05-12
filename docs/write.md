@@ -15,7 +15,12 @@ write_readstat(df, "/path/out.dta")
 write_readstat(df, "/path/out.sav")
 ```
 
-The output format is inferred from the file extension. Pass `format=` to override explicitly (e.g. `format="dta"`).
+## `write_readstat` parameters
+
+| Parameter | Notes |
+| --- | --- |
+| `format` | Override format detection. Accepted values: `"dta"` or `"stata"` for Stata; `"sav"`, `"zsav"`, or `"spss"` for SPSS. Inferred from the file extension if omitted. |
+| `metadata` | Metadata dict from `ScanReadstat(...).metadata`. Extracts variable labels, value labels, and formats automatically. See [Preserving metadata](#preserving-metadata-from-a-source-file). Explicit kwargs take precedence. |
 
 ## Stata parameters (`.dta`)
 
@@ -44,7 +49,7 @@ write_readstat(
 | --- | --- |
 | `value_labels` | Dict mapping column names to `{coded_value: label}`. |
 | `variable_labels` | Dict mapping column names to descriptive label strings. |
-| `variable_format` | Dict mapping column names to SPSS format strings (e.g. `"F10.2"`, `"A20"`). |
+| `variable_format` | Dict mapping column names to SPSS format strings (e.g. `"F10.2"`, `"A20"`), or to a dict with keys `format_type`, `width`, and `decimals` for numeric codes. |
 | `variable_measure` | Dict mapping column names to measurement level: `"nominal"`, `"ordinal"`, or `"scale"`. |
 | `variable_display_width` | Dict mapping column names to display width (int). |
 | `variable_alignment` | Dict mapping column names to alignment: `"left"`, `"right"`, or `"center"`. |
