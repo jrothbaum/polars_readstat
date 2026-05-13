@@ -16,7 +16,6 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-const DEFAULT_SAS_BATCH_SIZE: usize = 8192;
 
 /// Build a Polars DataFrame from rows of parsed values
 pub struct DataFrameBuilder {
@@ -1200,7 +1199,14 @@ pub(crate) fn sas_batch_iter_with_reader(
 ) -> PolarsResult<SasBatchIter> {
     let max_rows = reader.metadata().row_count.saturating_sub(offset);
     let total = n_rows.unwrap_or(max_rows).min(max_rows);
-    let batch_size = chunk_size.unwrap_or(DEFAULT_SAS_BATCH_SIZE).max(1);
+    let batch_size = chunk_size.map(|n| n.max(1)).unwrap_or_else(|| {
+        let n_cols = col_indices
+            .as_ref()
+            .map(|v| v.len())
+            .unwrap_or(reader.metadata().columns.len())
+            .max(1);
+        (1_000_000 / n_cols).clamp(8_192, 32_768)
+    });
     let total_chunks = total.div_ceil(batch_size);
     let partial_read = offset > 0 || total < reader.metadata().row_count;
 

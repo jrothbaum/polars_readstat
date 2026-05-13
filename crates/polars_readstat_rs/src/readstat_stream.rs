@@ -101,6 +101,19 @@ pub fn readstat_batch_iter(
             )?;
             Box::new(iter)
         }
+        ReadStatFormat::SasXpt => {
+            crate::sas::xpt::xpt_batch_iter(
+                path.to_path_buf(),
+                opts.threads,
+                missing_string_as_null,
+                chunk_size,
+                preserve_order,
+                row_index_name.clone(),
+                columns,
+                0,
+                n_rows,
+            )?
+        }
         ReadStatFormat::Stata => {
             let iter = stata_batch_iter(
                 path.to_path_buf(),

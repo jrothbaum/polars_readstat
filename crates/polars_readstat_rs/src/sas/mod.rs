@@ -1,4 +1,5 @@
 pub(crate) mod buffer;
+pub mod catalog;
 pub(crate) mod constants;
 pub(crate) mod data;
 pub(crate) mod decompressor;
@@ -16,10 +17,12 @@ pub mod arrow_output;
 pub mod header;
 pub mod metadata;
 pub mod reader;
+pub mod xpt;
 
 pub use error::{Error, Result};
 pub use polars_output::scan_sas7bdat;
 pub use reader::Sas7bdatReader;
+pub use xpt::{read_xpt_metadata, scan_xpt, xpt_batch_iter, xpt_metadata_json, XptColumn, XptMetadata};
 use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
 pub use types::{Compression, Endian, Format, Platform};

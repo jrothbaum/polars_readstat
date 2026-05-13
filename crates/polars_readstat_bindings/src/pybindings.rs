@@ -1,10 +1,10 @@
 use num_cpus;
 use polars::prelude::*;
 use polars_readstat_rs::{
-    readstat_batch_iter, readstat_metadata_json, readstat_scan, readstat_schema,
-    InformativeNullColumns, InformativeNullMode, InformativeNullOpts, Sas7bdatReader, SasWriter,
-    ScanOptions, SpssAlignment, SpssMeasure, SpssReader, SpssVariableFormat, SpssWriter,
-    StataReader, StataWriter,
+    read_sas7bcat, readstat_batch_iter, readstat_metadata_json, readstat_scan, readstat_schema,
+    CatalogKey, InformativeNullColumns, InformativeNullMode, InformativeNullOpts, Sas7bdatReader,
+    SasWriter, ScanOptions, SpssAlignment, SpssMeasure, SpssReader, SpssVariableFormat,
+    SpssWriter, StataReader, StataWriter,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -20,6 +20,7 @@ use std::sync::{mpsc, Arc, Mutex};
 #[derive(Clone, Copy)]
 enum ReadstatFormat {
     Sas,
+    SasXpt,
     Stata,
     Spss,
 }
@@ -33,6 +34,7 @@ fn detect_format(path: &str) -> PyResult<ReadstatFormat> {
 
     match ext.as_str() {
         "sas7bdat" | "sas7bcat" => Ok(ReadstatFormat::Sas),
+        "xpt" | "xpt5" | "xpt8" => Ok(ReadstatFormat::SasXpt),
         "dta" => Ok(ReadstatFormat::Stata),
         "sav" | "zsav" => Ok(ReadstatFormat::Spss),
         _ => Err(PyValueError::new_err("unknown file extension")),
@@ -178,6 +180,32 @@ fn read_df_with_options(
                 .finish()
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         }
+        ReadstatFormat::SasXpt => {
+            let iter = readstat_batch_iter(
+                path,
+                Some(ScanOptions {
+                    missing_string_as_null: Some(missing_string_as_null),
+                    threads,
+                    ..Default::default()
+                }),
+                Some(polars_readstat_rs::ReadStatFormat::SasXpt),
+                columns,
+                n_rows,
+                None,
+            )
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let mut out: Option<DataFrame> = None;
+            for batch in iter {
+                let df = batch.map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                if let Some(acc) = out.as_mut() {
+                    acc.vstack_mut(&df)
+                        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                } else {
+                    out = Some(df);
+                }
+            }
+            out.unwrap_or_else(DataFrame::empty)
+        }
         ReadstatFormat::Stata => {
             let reader =
                 StataReader::open(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
@@ -292,6 +320,31 @@ fn append_row_index_schema(schema: &mut Schema, name: &str) -> PyResult<()> {
     Ok(())
 }
 
+/// Read a `.sas7bcat` format catalog and return it as a Python dict.
+///
+/// Returns ``dict[str, dict[float | str, str]]``:
+/// outer key is the format name (uppercase, no trailing dot),
+/// inner dict maps each code (float for numeric, str for character) to its label.
+#[pyfunction]
+fn read_sas7bcat_rs(py: Python<'_>, path: String) -> PyResult<PyObject> {
+    let catalog = read_sas7bcat(std::path::Path::new(&path))
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    let outer = PyDict::new(py);
+    for (fmt_name, entries) in catalog {
+        let inner = PyDict::new(py);
+        for (key, label) in entries {
+            let py_key: PyObject = match key {
+                CatalogKey::Numeric(v) => v.into_pyobject(py).map_err(|e| PyRuntimeError::new_err(e.to_string()))?.into(),
+                CatalogKey::Text(s) => s.into_pyobject(py).map_err(|e| PyRuntimeError::new_err(e.to_string()))?.into(),
+            };
+            inner.set_item(py_key, label)?;
+        }
+        outer.set_item(fmt_name, inner)?;
+    }
+    Ok(outer.into())
+}
+
 #[pymodule]
 pub fn polars_readstat_bindings(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyPolarsReadstat>()?;
@@ -303,6 +356,7 @@ pub fn polars_readstat_bindings(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(write_spss, m)?)?;
     m.add_function(wrap_pyfunction!(write_sas_csv_import, m)?)?;
     m.add_function(wrap_pyfunction!(scan_readstat_rs, m)?)?;
+    m.add_function(wrap_pyfunction!(read_sas7bcat_rs, m)?)?;
     Ok(())
 }
 

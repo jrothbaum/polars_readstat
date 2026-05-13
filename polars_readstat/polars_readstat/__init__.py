@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Dict, Iterator, Literal, Mapping
+from typing import Any, Dict, Iterator, Literal, Mapping, Union
 from pathlib import Path
 import polars as pl
 from dataclasses import dataclass
@@ -10,8 +10,11 @@ from polars_readstat.polars_readstat_bindings import (
     write_sas_csv_import as _write_sas_csv_import_rs,
     write_stata as _write_stata_rs,
     write_spss as _write_spss_rs,
+    read_sas7bcat_rs as _read_sas7bcat_rs,
 )
 import warnings
+
+CatalogInput = Union[str, Path, Dict[str, Dict[Any, str]], None]
 
 
 def _warn_engine_deprecated() -> None:
@@ -44,6 +47,7 @@ class ScanReadstat:
         schema_overrides: Dict[Any, Any] | None = None,
         batch_size: int | None = None,
         informative_nulls: "InformativeNullOpts | dict | None" = None,
+        catalog: "CatalogInput" = None,
     ):
         self.path = str(path)
         if engine != "":
@@ -68,19 +72,31 @@ class ScanReadstat:
         self.schema_overrides = schema_overrides
         self.batch_size = batch_size
         self.informative_nulls = _normalize_informative_null_opts(informative_nulls)
+        self.catalog = _normalize_catalog(catalog)
 
     @property
     def schema(self) -> pl.Schema:
         if self._schema is None:
             self._get_schema()
         return self._schema
-    
+
     @property
     def metadata(self) -> dict:
         if self._schema is None:
             self._get_schema()
         return self._metadata
-    
+
+    @property
+    def catalog_labels(self) -> "dict[str, dict] | None":
+        """Column-name-keyed value labels derived from the catalog, or None.
+
+        Maps each column whose format name appears in the catalog to its
+        ``{code: label}`` dict. Triggers a metadata read if not already done.
+        """
+        if self.catalog is None:
+            return None
+        return _catalog_to_column_labels(self.catalog, self.metadata)
+
     @property
     def df(self) -> pl.LazyFrame:
         return scan_readstat(
@@ -94,6 +110,7 @@ class ScanReadstat:
             schema_overrides=self.schema_overrides,
             batch_size=self.batch_size,
             informative_nulls=self.informative_nulls,
+            catalog=self.catalog,
         )
 
     # def iter_batches(
@@ -142,7 +159,7 @@ class ScanReadstat:
         self._metadata = src.get_metadata()
 
     def _validation_check(self, path: str) -> None:
-        valid_files = [".sas7bdat", ".dta", ".sav", ".zsav"]
+        valid_files = [".sas7bdat", ".dta", ".sav", ".zsav", ".xpt", ".xpt5", ".xpt8"]
         is_valid = False
         for fi in valid_files:
             is_valid = is_valid or path.endswith(fi)
@@ -384,6 +401,84 @@ def _normalize_informative_null_opts(
     )
 
 
+def read_sas7bcat(path: Any) -> dict[str, dict[float | str, str]]:
+    """
+    Read a SAS format catalog (``.sas7bcat``) and return its value-label mappings.
+
+    Parameters
+    ----------
+    path : str or Path
+        Path to the ``.sas7bcat`` file.
+
+    Returns
+    -------
+    dict[str, dict[float | str, str]]
+        ``{format_name: {code: label}}``.
+        Format names are uppercased with trailing dots removed.
+        Numeric codes are Python floats; character-format codes are strings.
+    """
+    return _read_sas7bcat_rs(str(path))
+
+
+def _normalize_catalog(
+    catalog: "CatalogInput",
+) -> "dict[str, dict[float | str, str]] | None":
+    """Accept a pre-built dict or a path to a .sas7bcat file."""
+    if catalog is None:
+        return None
+    if isinstance(catalog, dict):
+        return {k.rstrip(".").upper(): v for k, v in catalog.items()}
+    if isinstance(catalog, (str, Path)):
+        raw = _read_sas7bcat_rs(str(catalog))
+        return {k.rstrip(".").upper(): v for k, v in raw.items()}
+    raise TypeError(f"catalog must be a dict or path-like, got {type(catalog)}")
+
+
+def _catalog_to_column_labels(
+    catalog: "dict[str, dict]",
+    metadata: dict,
+) -> "dict[str, dict]":
+    """Translate format-name-keyed catalog to column-name-keyed value labels.
+
+    Handles both SAS (``columns`` key) and SPSS/Stata (``variables`` key)
+    metadata structures.
+    """
+    col_labels: dict[str, dict] = {}
+    entries = metadata.get("variables") or metadata.get("columns") or []
+    for var in entries:
+        name = var.get("name")
+        fmt = var.get("format")
+        if not name or not fmt:
+            continue
+        fmt_key = fmt.rstrip(".").upper()
+        labels = catalog.get(fmt_key)
+        if labels is not None:
+            col_labels[name] = labels
+    return col_labels
+
+
+def _apply_catalog_labels(
+    lf: "pl.LazyFrame",
+    col_labels: "dict[str, dict]",
+    schema: "pl.Schema",
+) -> "pl.LazyFrame":
+    """Replace numeric codes with label strings for columns covered by the catalog."""
+    exprs = []
+    for col_name, labels in col_labels.items():
+        if col_name not in schema:
+            continue
+        old = list(labels.keys())
+        new = [str(v) for v in labels.values()]
+        exprs.append(
+            pl.col(col_name)
+            .replace_strict(old, new, default=pl.col(col_name).cast(pl.String), return_dtype=pl.String)
+            .alias(col_name)
+        )
+    if exprs:
+        lf = lf.with_columns(exprs)
+    return lf
+
+
 def scan_readstat(
     path: Any,
     threads: int | None = None,
@@ -397,6 +492,7 @@ def scan_readstat(
     schema_overrides: Dict[Any, Any] | None = None,
     batch_size: int | None = None,
     informative_nulls: "InformativeNullOpts | dict | None" = None,
+    catalog: "CatalogInput" = None,
     # return_batches: bool = False,
 ) -> pl.LazyFrame:
     """
@@ -438,6 +534,7 @@ def scan_readstat(
     compress = _normalize_compress_opts(compress)
     informative_nulls = _normalize_informative_null_opts(informative_nulls)
     preserve_order_opts = _normalize_preserve_order_opts(preserve_order)
+    catalog = _normalize_catalog(catalog)
 
     if engine != "":
         _warn_engine_deprecated()
@@ -455,6 +552,7 @@ def scan_readstat(
             schema_overrides=schema_overrides,
             batch_size=batch_size,
             informative_nulls=informative_nulls,
+            catalog=catalog,
         )
     else:
         path = reader.path
@@ -466,6 +564,7 @@ def scan_readstat(
         compress = reader.compress
         batch_size = reader.batch_size
         informative_nulls = reader.informative_nulls
+        catalog = reader.catalog
 
     preserve_order_flag, row_index_name, sort_in_python = _resolve_preserve_order_opts(
         preserve_order_opts
@@ -555,6 +654,10 @@ def scan_readstat(
             yield out
 
     lf = register_io_source(io_source=source_generator, schema=schema_generator())
+    if catalog and value_labels_as_strings:
+        col_labels = _catalog_to_column_labels(catalog, reader.metadata)
+        if col_labels:
+            lf = _apply_catalog_labels(lf, col_labels, reader.schema)
     if effective_overrides:
         lf = lf.with_columns([
             pl.col(col).cast(dtype)

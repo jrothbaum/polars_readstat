@@ -10,6 +10,7 @@ pub(crate) mod scan_prefetch;
 pub mod spss;
 pub mod stata;
 
+pub use sas::catalog::{read_sas7bcat, CatalogKey, CatalogMap};
 pub use sas::arrow_output as sas_arrow_output;
 pub(crate) use sas::buffer;
 pub(crate) use sas::constants;
@@ -425,6 +426,7 @@ pub fn compress_df_if_enabled(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadStatFormat {
     Sas,
+    SasXpt,
     Stata,
     Spss,
 }
@@ -436,6 +438,7 @@ fn detect_format(path: &Path) -> Option<ReadStatFormat> {
         .to_ascii_lowercase();
     match ext.as_str() {
         "sas7bdat" | "sas7bcat" => Some(ReadStatFormat::Sas),
+        "xpt" | "xpt5" | "xpt8" => Some(ReadStatFormat::SasXpt),
         "dta" => Some(ReadStatFormat::Stata),
         "sav" | "zsav" => Some(ReadStatFormat::Spss),
         _ => None,
@@ -456,6 +459,7 @@ pub fn readstat_scan(
 
     match format {
         ReadStatFormat::Sas => sas::scan_sas7bdat(path, opts),
+        ReadStatFormat::SasXpt => sas::xpt::scan_xpt(path, opts),
         ReadStatFormat::Stata => stata::scan_dta(path, opts),
         ReadStatFormat::Spss => spss::scan_sav(path, opts),
     }
@@ -481,6 +485,9 @@ pub fn readstat_metadata_json(
         .ok_or("unknown file extension".to_string())?;
     match format {
         ReadStatFormat::Sas => sas::metadata_json(path).map_err(|e| e.to_string()),
+        ReadStatFormat::SasXpt => {
+            sas::xpt::xpt_metadata_json(path).map_err(|e| e.to_string())
+        }
         ReadStatFormat::Stata => stata::metadata_json(path).map_err(|e| e.to_string()),
         ReadStatFormat::Spss => spss::metadata_json(path).map_err(|e| e.to_string()),
     }
