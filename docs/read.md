@@ -2,7 +2,7 @@
 
 ## `scan_readstat(path, **kwargs)`
 
-Returns a Polars `LazyFrame` for SAS, Stata, and SPSS files.
+Returns a Polars `LazyFrame` for SAS (`.sas7bdat`, `.xpt`/`.xpt5`/`.xpt8`), Stata (`.dta`), and SPSS (`.sav`/`.zsav`) files.
 
 ```python
 from polars_readstat import scan_readstat
@@ -23,6 +23,7 @@ Key parameters:
 | `informative_nulls` | `None` | Capture user-defined missing indicators. |
 | `threads` | `None` | Number of threads. Defaults to the Polars thread pool size. |
 | `compress` | `None` | Optional type compression after scan. |
+| `catalog` | `None` | SAS catalog for value labels. See [SAS catalog](#sas-catalog). |
 
 ## Compression options
 
@@ -125,9 +126,54 @@ lf = scan_readstat(
 )
 ```
 
+## SAS Transport (XPT)
+
+`.xpt`, `.xpt5`, and `.xpt8` files (SAS Transport v5/v8) are supported via the same `scan_readstat` / `ScanReadstat` API. Reading is parallelised by row range.
+
+```python
+lf = scan_readstat("file.xpt")
+df = lf.collect()
+```
+
+SAS Transport files do not carry value labels. Use the `catalog` parameter with a `.sas7bcat` file to attach labels from a separate catalog (see [SAS catalog](#sas-catalog)).
+
+## SAS catalog
+
+SAS stores value labels in a separate format catalog (`.sas7bcat`). The `catalog` parameter lets you attach those labels when reading.
+
+`catalog` accepts:
+
+- a path to a `.sas7bcat` file
+- a pre-built `{format_name: {code: label}}` dict
+
+When `catalog` is set and `value_labels_as_strings=True`, columns whose SAS format name appears in the catalog are returned as strings with codes replaced by their labels.
+
+```python
+from polars_readstat import scan_readstat
+
+lf = scan_readstat(
+    "file.sas7bdat",
+    catalog="formats.sas7bcat",
+    value_labels_as_strings=True,
+)
+df = lf.collect()
+```
+
+To inspect which labels would be applied without collecting data, use `ScanReadstat.catalog_labels`:
+
+```python
+from polars_readstat import ScanReadstat
+
+reader = ScanReadstat("file.sas7bdat", catalog="formats.sas7bcat")
+print(reader.catalog_labels)
+# {"sex": {1.0: "Male", 2.0: "Female"}, ...}
+```
+
+`catalog_labels` is a column-name-keyed dict (mapped from format names via the file metadata), or `None` if no catalog was provided.
+
 ## `ScanReadstat(path, **kwargs)`
 
-Reader object that exposes `schema`, `metadata`, and `df`. Useful when you need file metadata before collecting data. Accepts the same parameters as `scan_readstat`.
+Reader object that exposes `schema`, `metadata`, `catalog_labels`, and `df`. Useful when you need file metadata before collecting data. Accepts the same parameters as `scan_readstat`.
 
 ```python
 from polars_readstat import ScanReadstat
@@ -138,6 +184,11 @@ print(reader.schema)
 print(reader.metadata["row_count"])
 
 df = reader.df.collect()
+
+# With a SAS catalog
+reader = ScanReadstat("file.sas7bdat", catalog="formats.sas7bcat")
+print(reader.catalog_labels)   # column-name-keyed label dicts
+df = reader.df.collect()       # re-uses already-read metadata
 ```
 
 Metadata structure varies by format.

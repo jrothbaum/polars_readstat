@@ -608,18 +608,21 @@
 
 
 <h1 id="polars-readstat">polars-readstat</h1>
-<p>Polars plugin for SAS (<code>.sas7bdat</code>), Stata (<code>.dta</code>), and SPSS (<code>.sav</code>/<code>.zsav</code>) files.</p>
+<p>Polars plugin for SAS (<code>.sas7bdat</code>, <code>.xpt</code>/<code>.xpt5</code>/<code>.xpt8</code>), Stata (<code>.dta</code>), and SPSS (<code>.sav</code>/<code>.zsav</code>) files.</p>
 <p>The Python package wraps the Rust core in <code>polars_readstat_rs</code> and exposes a Polars-first API.</p>
 <h2 id="install">Install</h2>
 <pre><code class="language-bash">pip install polars-readstat
 </code></pre>
 <h2 id="quick-start">Quick start</h2>
 <h3 id="reading-a-sas-stata-or-spss-file">Reading a SAS, Stata, or SPSS file</h3>
-<pre><code>import polars as pl
-from polars_readstat import scan_readstat 
+<pre><code class="language-python">import polars as pl
+from polars_readstat import scan_readstat
 
 lf = scan_readstat(&quot;/path/file.sas7bdat&quot;)
 df = lf.select([&quot;SERIALNO&quot;, &quot;AGEP&quot;]).filter(pl.col(&quot;AGEP&quot;) &gt;= 18).collect()
+
+# SAS Transport files work the same way
+lf = scan_readstat(&quot;/path/file.xpt&quot;)
 </code></pre>
 <h3 id="getting-metadata-from-the-file">Getting metadata from the file</h3>
 <pre><code class="language-python">import polars as pl

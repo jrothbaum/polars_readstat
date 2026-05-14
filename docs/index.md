@@ -1,6 +1,6 @@
 # polars-readstat
 
-Polars plugin for SAS (`.sas7bdat`), Stata (`.dta`), and SPSS (`.sav`/`.zsav`) files.
+Polars plugin for SAS (`.sas7bdat`, `.xpt`/`.xpt5`/`.xpt8`), Stata (`.dta`), and SPSS (`.sav`/`.zsav`) files.
 
 The Python package wraps the Rust core in `polars_readstat_rs` and exposes a Polars-first API.
 
@@ -13,9 +13,9 @@ pip install polars-readstat
 ## Quick start
 
 ### Reading a SAS, Stata, or SPSS file
-```
+```python
 import polars as pl
-from polars_readstat import scan_readstat 
+from polars_readstat import scan_readstat
 
 lf = scan_readstat("/path/file.sas7bdat")
 df = lf.select(["SERIALNO", "AGEP"]).filter(pl.col("AGEP") >= 18).collect()
