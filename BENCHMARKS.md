@@ -1,10 +1,9 @@
 # Benchmarks
 
 This project includes practical, workload-driven benchmark checks comparing:
-- `polars_readstat`==0.12.4 (new Rust engine)
-- `polars-readstat==0.11.1` legacy engines (`cpp`/`readstat`)
+- `polars_readstat` v0.17.0
 - `pandas`
-- `pyreadstat`
+- `pyreadstat` (using `read_file_multiprocessing` for parallel reads)
 
 These are intended as reproducible engineering checks, not formal microbenchmarks.
 
@@ -14,7 +13,7 @@ These are intended as reproducible engineering checks, not formal microbenchmark
 - RAM: 14 GiB
 - OS: Linux Mint 22
 - Storage: external SSD
-- Last run date: August 31, 2025 (SAS/Stata); February 24–26, 2026 (SPSS)
+- Last run date: May 14, 2026
 - Timing method: Python `time.time()` wall-clock timing
 
 ## Workloads
@@ -29,12 +28,12 @@ Each benchmark compares four scenarios:
 
 - Stata (`.dta`)
   - Source: IPUMS 2000 5% sample decennial census
-  - Rows used: 10,000,000 (capped to fit laptop memory)
+  - Rows: 10,000,000 (capped to fit laptop memory)
   - Shape: relatively tall and narrow
 
 - SAS (`.sas7bdat`)
   - Source: ACS 5-year Illinois PUMS
-  - Rows used: 623,757
+  - Rows: 623,757
   - Shape: shorter and wider
 
 - SPSS (`.sav`)
@@ -42,6 +41,11 @@ Each benchmark compares four scenarios:
   - Rows: 73,745
   - Columns: 1,030
   - File size: ~87 MB
+
+- zsav (`.zsav`)
+  - Source: ACS 5-year Illinois PUMS (same data as SAS above, SPSS compressed format)
+  - Rows: 623,757
+  - Note: pyreadstat excluded — exhausts RAM on this file
 
 ## Notes
 
@@ -54,24 +58,29 @@ Each benchmark compares four scenarios:
 all times in seconds (speedup relative to pandas in parenthesis below each)
 | Library | Full File | Subset: True | Filter: True | Subset: True, Filter: True |
 |---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
-| polars_readstat<br>[New rust engine](https://crates.io/crates/polars-readstat-rs) | 0.72<br>(2.9×) | 0.04<br>(51.5×) | 1.04<br>(2.9×) | 0.04<br>(52.5×) |
-| polars_readstat<br>engine="cpp"<br>(fastest for 0.11.1) | 1.31<br>(1.6×) | 0.09<br>(22.9×) | 1.56<br>(1.9×) | 0.09<br>(23.2×) |
-| pandas | 2.07 | 2.06 | 3.03 | 2.09 |
-| pyreadstat | 10.75<br>(0.2×) | 0.46<br>(4.5×) | 11.93<br>(0.3×) | 0.50<br>(4.2×) |
+| polars_readstat | 0.55<br>(3.9×) | 0.07<br>(28.4×) | 1.46<br>(2.0×) | 0.08<br>(39.4×) |
+| pandas | 2.16 | 1.99 | 2.93 | 3.15 |
+| pyreadstat | 6.76<br>(0.3×) | 1.64<br>(1.2×) | 7.86<br>(0.4×) | 2.18<br>(1.4×) |
 
 #### Stata
 all times in seconds (speedup relative to pandas in parenthesis below each)
 | Library | Full File | Subset: True | Filter: True | Subset: True, Filter: True |
 |---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
-| polars_readstat<br>[New rust engine](https://crates.io/crates/polars-readstat-rs) | 0.17<br>(6.7×) | 0.12<br>(9.8×) | 0.24<br>(4.1×) | 0.11<br>(8.7×) |
-| polars_readstat<br>engine="readstat"<br>(the only option for 0.11.1) | 1.80<br>(0.6×) | 0.27<br>(4.4×) | 1.31<br>(0.8×) | 0.29<br>(3.3×) |
-| pandas | 1.14 | 1.18 | 0.99 | 0.96 |
-| pyreadstat | 7.46<br>(0.2×) | 2.18<br>(0.5×) | 7.66<br>(0.1×) | 2.24<br>(0.4×) |
+| polars_readstat | 0.16<br>(7.3×) | 0.10<br>(11.7×) | 0.18<br>(7.3×) | 0.09<br>(13.8×) |
+| pandas | 1.17 | 1.17 | 1.31 | 1.24 |
+| pyreadstat | 5.48<br>(0.2×) | 4.57<br>(0.3×) | 5.67<br>(0.2×) | 7.69<br>(0.2×) |
 
 #### SPSS
 all times in seconds (speedup relative to pandas in parenthesis below each)
 | Library | Full File | Subset: True | Filter: True | Subset: True, Filter: True |
 |---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
-| polars_readstat<br>[New rust engine](https://crates.io/crates/polars-readstat-rs) | 0.22<br>(6.6×) | 0.15<br>(9.1×) | 0.25<br>(6.0×) | 0.26<br>(4.5×) |
-| pandas | 1.46 | 1.36 | 1.49 | 1.16 |
-| pyreadstat | 9.25<br>(0.2×) | 4.85<br>(0.3×) | 9.39<br>(0.2×) | 4.75<br>(0.2×) |
+| polars_readstat | 1.09<br>(62.5×) | 0.15<br>(3.9×) | 1.10<br>(62.4×) | 0.15<br>(3.9×) |
+| pandas | 68.12 | 0.59 | 68.67 | 0.59 |
+| pyreadstat | 3.06<br>(22.3×) | 1.15<br>(0.5×) | 7.09<br>(9.7×) | 1.23<br>(0.5×) |
+
+#### zsav
+all times in seconds (speedup relative to pandas in parenthesis below each)
+| Library | Full File | Subset: True | Filter: True | Subset: True, Filter: True |
+|---------|------------------------------|-----------------------------|-----------------------------|----------------------------|
+| polars_readstat | 3.97<br>(5.9×) | 1.04<br>(2.1×) | 4.77<br>(4.7×) | 1.15<br>(2.0×) |
+| pandas | 23.47 | 2.20 | 22.40 | 2.29 |
