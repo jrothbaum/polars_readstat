@@ -50,6 +50,7 @@ FIXTURE = {
         threads=None,
         subset_columns=["SERIALNO", "STATE", "PINCP"],
         filter_col="PINCP", filter_val=5000,
+        exclude_engines=["pyreadstat"],  # exhausts RAM on this file
     ),
     "xpt": dict(
         path=str(TOO_BIG / "polars_readstat_rs/tests/sas/data/too_big/numeric_1000000_2.xpt"),
@@ -59,6 +60,7 @@ FIXTURE = {
         threads=None,
         subset_columns=["VAR1"],
         filter_col="VAR1", filter_val=500000,
+        exclude_engines=["pandas", "pyreadstat"],  # pandas errors; pyreadstat errors
     ),
 }
 
@@ -78,13 +80,15 @@ if __name__ == "__main__":
         columns = fix["subset_columns"] if subset_columns else None
         filter_col = fix["filter_col"]
         filter_val = fix["filter_val"]
+        exclude_engines = fix.get("exclude_engines", [])
 
         engines = [
-            "polars_readstat",
-            "pandas",
-            # "pyreadstat",
+            e for e in ["polars_readstat", "pandas", "pyreadstat"]
+            if e not in exclude_engines
         ]
 
+        #   Throwaway run to warm up the engines and ensure fair timings
+        _ = scan_readstat(path, threads=threads).collect()
         d_timings = {}
         for enginei in engines:
             print(f"Running {enginei}")
@@ -134,7 +138,7 @@ if __name__ == "__main__":
         read_multithreaded_test(fmt, subset_columns=True,  filter_rows=True)
 
     test("sas7bdat")
-    # test("stata")
-    # test("spss")
-    # test("zsav")
-    # test("xpt")
+    test("stata")
+    test("spss")
+    test("zsav")
+    test("xpt")
