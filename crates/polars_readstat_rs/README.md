@@ -3,14 +3,14 @@
 [![Crates.io](https://img.shields.io/crates/v/polars_readstat_rs.svg)](https://crates.io/crates/polars_readstat_rs)
 [![Docs.rs](https://img.shields.io/docsrs/polars_readstat_rs)](https://docs.rs/polars_readstat_rs)
 
-Rust library for reading SAS (`.sas7bdat`), Stata (`.dta`), and SPSS (`.sav`/`.zsav`) files with Polars.
+Rust library for reading SAS (`.sas7bdat`, `.xpt`/`.xpt5`/`.xpt8`), Stata (`.dta`), and SPSS (`.sav`/`.zsav`/`.por`) files with Polars.
 
 The crate provides:
 - format-specific readers (`Sas7bdatReader`, `StataReader`, `SpssReader`)
 - a format-agnostic scan API (`readstat_scan`)
 - metadata/schema helpers
 - Arrow FFI export helpers
-- Stata/SPSS writers
+- Stata, SPSS, XPT, and POR writers
 
 ## Crate and docs
 
@@ -278,6 +278,26 @@ SPSS writer behavior and current limits:
 - Value labels are currently supported for numeric variables only.
 - String value labels are not currently supported.
 - Output encoding is selected automatically: Windows-1252 when possible, otherwise UTF-8 with an SPSS encoding record.
+
+### 8) Writing SAS Transport (XPT)
+
+```rust
+use polars_readstat_rs::write_xpt;
+
+write_xpt(&df, "out.xpt", Default::default())?;
+```
+
+`XptWriteOptions` fields: `version` (5 or 8, default 8), `table_name`, `file_label`, `variable_labels`, `variable_formats`, `storage_widths`. Variable names must be ≤ 8 chars for v5, ≤ 32 for v8, and unique after uppercase mapping.
+
+### 9) Writing SPSS Portable (POR)
+
+```rust
+use polars_readstat_rs::write_por;
+
+write_por(&df, "out.por", Default::default())?;
+```
+
+`PorWriteOptions` fields: `file_label`, `variable_labels`. Variable names must be ≤ 8 chars and unique after uppercase mapping.
 
 ## Informative Nulls
 
