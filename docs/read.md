@@ -2,7 +2,7 @@
 
 ## `scan_readstat(path, **kwargs)`
 
-Returns a Polars `LazyFrame` for SAS (`.sas7bdat`, `.xpt`/`.xpt5`/`.xpt8`), Stata (`.dta`), and SPSS (`.sav`/`.zsav`) files.
+Returns a Polars `LazyFrame` for SAS (`.sas7bdat`, `.xpt`/`.xpt5`/`.xpt8`), Stata (`.dta`), and SPSS (`.sav`/`.zsav`/`.por`) files.
 
 ```python
 from polars_readstat import scan_readstat
@@ -136,6 +136,10 @@ df = lf.collect()
 ```
 
 SAS Transport files do not carry value labels. Use the `catalog` parameter with a `.sas7bcat` file to attach labels from a separate catalog (see [SAS catalog](#sas-catalog)).
+
+## SPSS Portable (POR)
+
+`.por` files are supported via the same `scan_readstat` / `ScanReadstat` API. Variable names are always uppercase in POR files. The format is read in a single sequential pass; streaming and threading options have no effect.
 
 ## SAS catalog
 
@@ -335,4 +339,8 @@ Other codes appear in the wild but are less common. The full list is in the [SPS
 
 - `value_label` — the name of the label set as stored in the file (a string like `"labels0"`), useful for identifying which variables share the same label set.
 - `value_labels` — the actual mapping of coded values to label strings (the dict you use for display/recoding). This is what you need in practice.
+
+### SPSS Portable (`.por`)
+
+`file_label`, `precision`, and a `variables` list with `name`, `type`, `width`, `format_type`, `format_width`, `format_decimals`, and `label`. No value labels or missing value definitions. `format_type` codes follow the same SPSS numbering as SAV.
 

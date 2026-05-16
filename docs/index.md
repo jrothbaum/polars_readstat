@@ -1,6 +1,6 @@
 # polars-readstat
 
-Polars plugin for SAS (`.sas7bdat`, `.xpt`/`.xpt5`/`.xpt8`), Stata (`.dta`), and SPSS (`.sav`/`.zsav`) files.
+Polars plugin for SAS (`.sas7bdat`, `.xpt`/`.xpt5`/`.xpt8`), Stata (`.dta`), and SPSS (`.sav`/`.zsav`/`.por`) files.
 
 The Python package wraps the Rust core in `polars_readstat_rs` and exposes a Polars-first API.
 
@@ -38,10 +38,12 @@ df = sr.df.collect()
 
 ```python
 import polars as pl
-from polars_readstat import write_readstat, write_sas_csv_import
+from polars_readstat import write_readstat, write_xpt, write_por, write_sas_csv_import
 
 write_readstat(df, "/path/out.dta")
 write_readstat(df, "/path/out.sav")
+write_readstat(df, "/path/out.por")
+write_xpt(df, "/path/out.xpt")
 
 # Writes two files: /path/out/sas_bundle.csv and /path/out/sas_bundle.sas
 write_sas_csv_import(df, "/path/out/sas_bundle", dataset_name="my_data")

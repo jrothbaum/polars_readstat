@@ -1,25 +1,29 @@
 # Write (Experimental)
 
-Writing support is experimental and compatibility varies across tools. Stata roundtrip tests are included; SPSS roundtrip coverage is limited.
+Writing support is experimental. Please report issues.
 
 Supported formats:
 
 - Stata: `.dta`
 - SPSS: `.sav`, `.zsav`
+- SPSS Portable: `.por` (via `write_readstat` or `write_por`)
+- SAS Transport: `.xpt` (via `write_xpt`)
 - SAS CSV import bundle: `.csv` + `.sas` script via `write_sas_csv_import` (not binary `.sas7bdat`)
 
 ```python
-from polars_readstat import write_readstat, write_sas_csv_import
+from polars_readstat import write_readstat, write_xpt, write_por, write_sas_csv_import
 
 write_readstat(df, "/path/out.dta")
 write_readstat(df, "/path/out.sav")
+write_readstat(df, "/path/out.por")
+write_xpt(df, "/path/out.xpt")
 ```
 
 ## `write_readstat` parameters
 
 | Parameter | Notes |
 | --- | --- |
-| `format` | Override format detection. Accepted values: `"dta"` or `"stata"` for Stata; `"sav"`, `"zsav"`, or `"spss"` for SPSS. Inferred from the file extension if omitted. |
+| `format` | Override format detection. Accepted values: `"dta"` or `"stata"` for Stata; `"sav"`, `"zsav"`, or `"spss"` for SPSS; `"por"` or `"spss_por"` for SPSS Portable. Inferred from the file extension if omitted. |
 | `metadata` | Metadata dict from `ScanReadstat(...).metadata`. Extracts variable labels, value labels, and formats automatically. See [Preserving metadata](#preserving-metadata-from-a-source-file). Explicit kwargs take precedence. |
 
 ## Stata parameters (`.dta`)
@@ -67,6 +71,27 @@ write_readstat(
 )
 ```
 
+## SAS Transport (`write_xpt`)
+
+```python
+from polars_readstat import write_xpt
+
+write_xpt(df, "/path/out.xpt", version=8, table_name="MYDATA", file_label="My dataset",
+          variable_labels={"id": "Record ID"})
+```
+
+Parameters: `version` (5 or 8, default 5), `table_name`, `file_label`, `variable_labels`, `metadata`. Variable names are uppercased and truncated to 8 characters.
+
+## SPSS Portable (`write_por`)
+
+```python
+from polars_readstat import write_por
+
+write_por(df, "/path/out.por", file_label="My dataset", variable_labels={"ID": "Record ID"})
+```
+
+Parameters: `file_label`, `variable_labels`. Also callable as `write_readstat(df, "out.por")`. Variable names are uppercased and truncated to 8 characters.
+
 ## Preserving metadata from a source file
 
 Pass `metadata=reader.metadata` to carry over variable labels, value labels, formats, and SPSS-specific attributes when writing. Only variables present in the DataFrame being written are used, so this works correctly even when writing a column subset.
@@ -87,7 +112,7 @@ df = reader.df.collect()
 write_readstat(df, "out.sav", metadata=reader.metadata)
 ```
 
-`metadata` extracts `value_labels`, `variable_labels`, and `variable_format` for both formats. For SPSS it also extracts `variable_measure`, `variable_display_width`, and `variable_alignment`. Any explicitly passed kwargs take precedence over what is derived from metadata.
+`metadata` extracts variable labels, value labels, and formats for each format. For SPSS it also extracts `variable_measure`, `variable_display_width`, and `variable_alignment`. Any explicitly passed kwargs take precedence.
 
 Notes:
 
