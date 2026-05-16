@@ -964,12 +964,31 @@ pub fn write_por<P: AsRef<Path>>(
 
     // 8. Variable records.
     let columns = df.columns();
+
+    // Validate names up front: ≤8 chars, no collisions after uppercase mapping.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for col in columns {
         let name_raw = col.name().as_str();
-        // POR variable names: ≤8 chars, uppercase
+        if name_raw.chars().count() > 8 {
+            return Err(Error::ParseError(format!(
+                "POR variable name '{}' exceeds 8 characters", name_raw
+            )));
+        }
+        let upper: String = name_raw
+            .chars()
+            .map(|c: char| if c.is_ascii_alphabetic() { c.to_ascii_uppercase() } else if c.is_ascii_digit() || "_@#$.".contains(c) { c } else { '_' })
+            .collect();
+        if !seen.insert(upper.clone()) {
+            return Err(Error::ParseError(format!(
+                "POR variable name '{}' collides with another column after uppercase mapping", name_raw
+            )));
+        }
+    }
+
+    for col in columns {
+        let name_raw = col.name().as_str();
         let name: String = name_raw
             .chars()
-            .take(8)
             .map(|c: char| if c.is_ascii_alphabetic() { c.to_ascii_uppercase() } else if c.is_ascii_digit() || "_@#$.".contains(c) { c } else { '_' })
             .collect();
 

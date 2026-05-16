@@ -441,6 +441,25 @@ impl XptWriter {
         let mut cols = Vec::with_capacity(df.width());
         let mut offset = 0usize;
 
+        // Validate names up front: length limit and no case collisions.
+        let max_name_len = if self.version >= 8 { 32 } else { 8 };
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for column in df.columns().iter() {
+            let name = column.name().as_str();
+            if name.len() > max_name_len {
+                return Err(PolarsError::ComputeError(
+                    format!("XPT v{} variable name '{}' exceeds {} characters",
+                        self.version, name, max_name_len).into(),
+                ));
+            }
+            let upper = name.to_ascii_uppercase();
+            if !seen.insert(upper) {
+                return Err(PolarsError::ComputeError(
+                    format!("XPT variable name '{}' collides with another column after uppercase mapping", name).into(),
+                ));
+            }
+        }
+
         for column in df.columns().iter() {
             let series = column.as_materialized_series();
             let name = series.name().to_string();
