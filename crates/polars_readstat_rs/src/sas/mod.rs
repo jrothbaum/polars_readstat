@@ -18,11 +18,13 @@ pub mod header;
 pub mod metadata;
 pub mod reader;
 pub mod xpt;
+pub mod xpt_writer;
 
 pub use error::{Error, Result};
 pub use polars_output::scan_sas7bdat;
 pub use reader::Sas7bdatReader;
 pub use xpt::{read_xpt_metadata, scan_xpt, xpt_batch_iter, xpt_metadata_json, XptColumn, XptMetadata};
+pub use xpt_writer::{XptVariableFormats, XptVariableLabels, XptStorageWidths, XptWriter};
 use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
 pub use types::{Compression, Endian, Format, Platform};

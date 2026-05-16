@@ -35,6 +35,7 @@ pub use sas::reader;
 pub use sas::{Compression, Endian, Format, Platform};
 pub use sas::{Error, Result, Sas7bdatReader};
 pub use sas::{SasValueLabelKey, SasValueLabelMap, SasValueLabels, SasVariableLabels, SasWriter};
+pub use sas::{XptVariableFormats, XptVariableLabels, XptStorageWidths, XptWriter};
 
 pub use readstat_stream::{readstat_batch_iter, ReadstatBatchIter, ReadstatBatchStream};
 
@@ -50,6 +51,9 @@ pub use spss::{
     SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels, SpssVariableAlignments,
     SpssVariableDisplayWidths, SpssVariableFormat, SpssVariableFormats, SpssVariableLabels,
     SpssVariableMeasures, SpssWriteColumn, SpssWriteSchema, SpssWriter,
+};
+pub use spss::{
+    metadata_json_por, read_por, scan_por, write_por, PorMetadata, PorVariable, PorWriteOptions,
 };
 pub use stata::{
     compress_df, pandas_make_stata_column_names, pandas_prepare_df_for_stata, pandas_rename_df,

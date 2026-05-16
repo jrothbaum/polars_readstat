@@ -10,6 +10,10 @@ from polars_readstat.polars_readstat_bindings import (
     write_sas_csv_import as _write_sas_csv_import_rs,
     write_stata as _write_stata_rs,
     write_spss as _write_spss_rs,
+    write_xpt as _write_xpt_rs,
+    write_por as _write_por_rs,
+    scan_por_rs as _scan_por_rs,
+    por_metadata_json_rs as _por_metadata_json_rs,
     read_sas7bcat_rs as _read_sas7bcat_rs,
 )
 import warnings
@@ -142,6 +146,9 @@ class ScanReadstat:
     #     )
         
     def _get_schema(self) -> None:
+        if self.path.lower().endswith(".por"):
+            self._schema, self._metadata = _por_schema_and_metadata(self.path)
+            return
         preserve_order, row_index_name, _ = _resolve_preserve_order_opts(self._preserve_order_opts)
         src = PyPolarsReadstat(
             path=self.path,
@@ -159,7 +166,7 @@ class ScanReadstat:
         self._metadata = src.get_metadata()
 
     def _validation_check(self, path: str) -> None:
-        valid_files = [".sas7bdat", ".dta", ".sav", ".zsav", ".xpt", ".xpt5", ".xpt8"]
+        valid_files = [".sas7bdat", ".dta", ".sav", ".zsav", ".xpt", ".xpt5", ".xpt8", ".por"]
         is_valid = False
         for fi in valid_files:
             is_valid = is_valid or path.endswith(fi)
@@ -420,6 +427,40 @@ def read_sas7bcat(path: Any) -> dict[str, dict[float | str, str]]:
     return _read_sas7bcat_rs(str(path))
 
 
+_POR_FORMAT_CLASS: dict[int, str] = {
+    20: "Date", 23: "Date", 24: "Date", 38: "Date", 39: "Date",
+    21: "Time", 25: "Time",
+    22: "DateTime", 41: "DateTime",
+}
+
+def _por_dtype_from_var(var: dict) -> pl.PolarsDataType:
+    if var.get("type") == "Str":
+        return pl.String
+    ft = int(var.get("format_type", 0))
+    # Some SPSS writers shift date/time codes by 82
+    if ft > 82:
+        ft -= 82
+    cls = _POR_FORMAT_CLASS.get(ft)
+    if cls == "Date":
+        return pl.Date
+    if cls == "DateTime":
+        return pl.Datetime("ms")
+    if cls == "Time":
+        return pl.Time
+    return pl.Float64
+
+
+def _por_schema_and_metadata(path: str) -> tuple[pl.Schema, dict]:
+    import json
+    raw = _por_metadata_json_rs(path)
+    meta = json.loads(raw)
+    schema = pl.Schema({
+        v["name"]: _por_dtype_from_var(v)
+        for v in meta.get("variables", [])
+    })
+    return schema, meta
+
+
 def _normalize_catalog(
     catalog: "CatalogInput",
 ) -> "dict[str, dict[float | str, str]] | None":
@@ -540,6 +581,9 @@ def scan_readstat(
         _warn_engine_deprecated()
     if use_mmap:
         _warn_use_mmap_deprecated()
+
+    if path.lower().endswith(".por"):
+        return _scan_por_rs(path).lazy()
 
     if reader is None:
         reader = ScanReadstat(
@@ -789,6 +833,44 @@ def write_readstat(
             variable_format=variable_format,
         )
         return
+    if fmt in ("xpt", "sas_xpt"):
+        base = {}
+        if metadata is not None:
+            base = _xpt_metadata_to_write_kwargs(metadata, df.columns)
+        variable_labels = kwargs.pop("variable_labels", base.get("variable_labels"))
+        variable_format = kwargs.pop("variable_format", base.get("variable_format"))
+        storage_widths = kwargs.pop("storage_widths", base.get("storage_widths"))
+        version = kwargs.pop("version", base.get("version", 8))
+        table_name = kwargs.pop("table_name", base.get("table_name"))
+        file_label = kwargs.pop("file_label", base.get("file_label"))
+        if kwargs:
+            raise TypeError(f"Unsupported kwargs for XPT writer: {sorted(kwargs.keys())}")
+        write_xpt(
+            df,
+            path,
+            version=version,
+            table_name=table_name,
+            file_label=file_label,
+            variable_labels=variable_labels,
+            variable_format=variable_format,
+            storage_widths=storage_widths,
+        )
+        return
+    if fmt in ("por", "spss_por"):
+        file_label = kwargs.pop("file_label", None)
+        variable_labels = kwargs.pop("variable_labels", None)
+        if metadata is not None and file_label is None:
+            file_label = metadata.get("file_label")
+        if metadata is not None and variable_labels is None:
+            variable_labels = {
+                v["name"]: v["label"]
+                for v in (metadata.get("variables") or [])
+                if v.get("label") and v.get("name") in df.columns
+            } or None
+        if kwargs:
+            raise TypeError(f"Unsupported kwargs for POR writer: {sorted(kwargs.keys())}")
+        write_por(df, path, file_label=file_label, variable_labels=variable_labels)
+        return
     if fmt in ("sas7bdat", "sas"):
         raise NotImplementedError(
             "SAS binary (.sas7bdat) writing is not supported; "
@@ -927,7 +1009,7 @@ def _normalize_variable_metadata_items(
     return out
 
 
-def _spss_variable_format_from_metadata(meta: Mapping[str, Any]) -> str | None:
+def _spss_variable_format_from_metadata(meta: Mapping[str, Any]) -> "str | dict | None":
     format_width = meta.get("format_width")
     if format_width is None:
         format_width = meta.get("width")
@@ -941,11 +1023,15 @@ def _spss_variable_format_from_metadata(meta: Mapping[str, Any]) -> str | None:
         decimals = 0
 
     format_type = meta.get("format_type")
+    if format_type is None:
+        return f"F{int(format_width)}.{int(decimals)}"
     if format_type == 1 or str(format_type).upper() == "A":
         return f"A{int(format_width)}"
-    if format_type is None or format_type == 5 or str(format_type).upper() == "F":
+    if format_type == 5 or str(format_type).upper() == "F":
         return f"F{int(format_width)}.{int(decimals)}"
-    return None
+    # All other format types (date, time, datetime variants, etc.) — pass through
+    # as a dict so the numeric code is preserved exactly without string parsing.
+    return {"format_type": int(format_type), "width": int(format_width), "decimals": int(decimals)}
 
 
 def _coerce_spss_value_label_key(key: Any) -> Any:
@@ -1016,6 +1102,135 @@ def _coerce_stata_value_label_key(key: Any) -> Any:
     if value.is_integer():
         return int(value)
     return key
+
+
+def _xpt_metadata_to_write_kwargs(
+    metadata: Mapping[str, Any],
+    df_columns: list[str],
+) -> dict[str, Any]:
+    """
+    Convert XPT metadata (from ``ScanReadstat(...).metadata``) into kwargs
+    accepted by ``write_xpt`` / ``write_readstat``.
+    """
+    col_set = set(df_columns)
+    variable_labels: dict[str, str] = {}
+    variable_format: dict[str, str] = {}
+    storage_widths: dict[str, int] = {}
+
+    for col in metadata.get("columns") or []:
+        name = col.get("name")
+        if not name or name not in col_set:
+            continue
+        label = col.get("label")
+        if label:
+            variable_labels[name] = str(label)
+        fmt = col.get("format")
+        if fmt:
+            variable_format[name] = str(fmt)
+        width = col.get("storage_width")
+        if width is not None:
+            storage_widths[name] = int(width)
+
+    out: dict[str, Any] = {}
+    if variable_labels:
+        out["variable_labels"] = variable_labels
+    if variable_format:
+        out["variable_format"] = variable_format
+    if storage_widths:
+        out["storage_widths"] = storage_widths
+
+    table_name = metadata.get("table_name")
+    if table_name:
+        out["table_name"] = str(table_name)
+    file_label = metadata.get("file_label")
+    if file_label:
+        out["file_label"] = str(file_label)
+    xpt_version = metadata.get("xpt_version")
+    if xpt_version is not None:
+        out["version"] = int(xpt_version)
+
+    return out
+
+
+def write_xpt(
+    df: pl.DataFrame | pl.LazyFrame,
+    path: Any,
+    *,
+    version: int = 8,
+    table_name: str | None = None,
+    file_label: str | None = None,
+    variable_labels: dict[str, str] | None = None,
+    variable_format: dict[str, str] | None = None,
+    storage_widths: dict[str, int] | None = None,
+) -> None:
+    """
+    Write a SAS Transport (`.xpt`) file.
+
+    Parameters
+    ----------
+    df : polars.DataFrame or polars.LazyFrame
+        Data to write.
+    path : str or Path
+        Output path (must end in `.xpt`).
+    version : int, optional
+        XPT version: 5 or 8 (default 8). Version 8 supports variable names
+        up to 32 characters and labels up to unlimited length.
+    table_name : str, optional
+        SAS dataset name embedded in the file (max 8 chars for v5, 32 for v8).
+    file_label : str, optional
+        File-level label (max 40 chars).
+    variable_labels : dict, optional
+        Mapping of column name to variable label text.
+    variable_format : dict, optional
+        Mapping of column name to SAS format string (e.g., ``"DATE9"``,
+        ``"DATETIME20"``, ``"F8.2"``). Date/Datetime/Time columns get
+        sensible defaults automatically.
+    storage_widths : dict, optional
+        Mapping of column name to byte storage width. Numeric columns may
+        use 3–8 bytes (default 8). Character columns default to the maximum
+        observed string length.
+    """
+    df = _prepare_write_df(df)
+    _write_xpt_rs(
+        df,
+        str(path),
+        version=version,
+        table_name=table_name,
+        file_label=file_label,
+        variable_labels=variable_labels,
+        variable_format=variable_format,
+        storage_widths=storage_widths,
+    )
+
+
+def write_por(
+    df: pl.DataFrame | pl.LazyFrame,
+    path: Any,
+    *,
+    file_label: str | None = None,
+    variable_labels: dict[str, str] | None = None,
+) -> None:
+    """
+    Write an SPSS Portable (`.por`) file.
+
+    Parameters
+    ----------
+    df : polars.DataFrame or polars.LazyFrame
+        Data to write.
+    path : str or Path
+        Output path (must end in `.por`).
+    file_label : str, optional
+        File-level label (max 20 chars).
+    variable_labels : dict, optional
+        Mapping of column name to variable label text.
+    """
+    df = _prepare_write_df(df)
+    _write_por_rs(
+        df,
+        str(path),
+        file_label=file_label,
+        variable_labels=variable_labels,
+    )
 
 
 def write_sas_csv_import(

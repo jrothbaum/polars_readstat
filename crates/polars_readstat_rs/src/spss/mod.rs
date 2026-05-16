@@ -4,12 +4,14 @@ pub(crate) mod error;
 pub(crate) mod header;
 pub(crate) mod metadata;
 pub mod polars_output;
+pub mod por;
 pub(crate) mod reader;
 pub(crate) mod types;
 pub mod writer;
 
 pub use error::{Error, Result};
 pub use polars_output::scan_sav;
+pub use por::{metadata_json_por, read_por, scan_por, write_por, PorMetadata, PorVariable, PorWriteOptions};
 pub use reader::SpssReader;
 pub use types::{Alignment, Endian, Header, Measure, Metadata, VarType};
 pub use writer::{

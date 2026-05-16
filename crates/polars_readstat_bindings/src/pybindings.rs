@@ -2,9 +2,9 @@ use num_cpus;
 use polars::prelude::*;
 use polars_readstat_rs::{
     read_sas7bcat, readstat_batch_iter, readstat_metadata_json, readstat_scan, readstat_schema,
-    CatalogKey, InformativeNullColumns, InformativeNullMode, InformativeNullOpts, Sas7bdatReader,
-    SasWriter, ScanOptions, SpssAlignment, SpssMeasure, SpssReader, SpssVariableFormat,
-    SpssWriter, StataReader, StataWriter,
+    CatalogKey, InformativeNullColumns, InformativeNullMode, InformativeNullOpts, PorWriteOptions,
+    Sas7bdatReader, SasWriter, ScanOptions, SpssAlignment, SpssMeasure, SpssReader,
+    SpssVariableFormat, SpssWriter, StataReader, StataWriter, XptWriter,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -354,6 +354,10 @@ pub fn polars_readstat_bindings(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sink_stata, m)?)?;
     m.add_function(wrap_pyfunction!(write_stata, m)?)?;
     m.add_function(wrap_pyfunction!(write_spss, m)?)?;
+    m.add_function(wrap_pyfunction!(write_xpt, m)?)?;
+    m.add_function(wrap_pyfunction!(write_por, m)?)?;
+    m.add_function(wrap_pyfunction!(scan_por_rs, m)?)?;
+    m.add_function(wrap_pyfunction!(por_metadata_json_rs, m)?)?;
     m.add_function(wrap_pyfunction!(write_sas_csv_import, m)?)?;
     m.add_function(wrap_pyfunction!(scan_readstat_rs, m)?)?;
     m.add_function(wrap_pyfunction!(read_sas7bcat_rs, m)?)?;
@@ -991,6 +995,55 @@ fn write_spss(
 #[pyo3(signature = (
     df,
     path,
+    version=8,
+    table_name=None,
+    file_label=None,
+    variable_labels=None,
+    variable_format=None,
+    storage_widths=None,
+))]
+fn write_xpt(
+    df: PyDataFrame,
+    path: String,
+    version: u8,
+    table_name: Option<String>,
+    file_label: Option<String>,
+    variable_labels: Option<&Bound<PyDict>>,
+    variable_format: Option<&Bound<PyDict>>,
+    storage_widths: Option<&Bound<PyDict>>,
+) -> PyResult<()> {
+    ensure_extension(&path, &["xpt"])?;
+    let mut writer = XptWriter::new(path).with_version(version);
+    if let Some(name) = table_name {
+        writer = writer.with_table_name(name);
+    }
+    if let Some(label) = file_label {
+        writer = writer.with_file_label(label);
+    }
+    if let Some(labels) = variable_labels {
+        writer = writer.with_variable_labels(parse_variable_labels_dict(labels)?);
+    }
+    if let Some(formats) = variable_format {
+        writer = writer.with_variable_formats(parse_variable_labels_dict(formats)?);
+    }
+    if let Some(widths) = storage_widths {
+        let mut map = HashMap::new();
+        for (k, v) in widths.iter() {
+            let col = k.extract::<String>()?;
+            let w = v.extract::<usize>()?;
+            map.insert(col, w);
+        }
+        writer = writer.with_storage_widths(map);
+    }
+    writer
+        .write_df(&df.0)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+#[pyo3(signature = (
+    df,
+    path,
     dataset_name=None,
     value_labels=None,
     variable_labels=None
@@ -1019,6 +1072,39 @@ fn write_sas_csv_import(
         csv_path.to_string_lossy().into_owned(),
         sas_path.to_string_lossy().into_owned(),
     ))
+}
+
+#[pyfunction]
+#[pyo3(signature = (df, path, file_label=None, variable_labels=None))]
+fn write_por(
+    df: PyDataFrame,
+    path: String,
+    file_label: Option<String>,
+    variable_labels: Option<&Bound<PyDict>>,
+) -> PyResult<()> {
+    ensure_extension(&path, &["por"])?;
+    let mut opts = PorWriteOptions::default();
+    opts.file_label = file_label;
+    if let Some(labels) = variable_labels {
+        opts.variable_labels = Some(parse_variable_labels_dict(labels)?);
+    }
+    polars_readstat_rs::write_por(&df.0, &path, opts)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+#[pyo3(signature = (path))]
+fn scan_por_rs(path: String) -> PyResult<PyDataFrame> {
+    let (_, df) = polars_readstat_rs::read_por(&path)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(PyDataFrame(df))
+}
+
+#[pyfunction]
+#[pyo3(signature = (path))]
+fn por_metadata_json_rs(path: String) -> PyResult<String> {
+    polars_readstat_rs::metadata_json_por(&path)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 fn parse_stata_value_labels(labels: &Bound<PyDict>) -> PyResult<polars_readstat_rs::ValueLabels> {
