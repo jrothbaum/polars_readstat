@@ -282,17 +282,22 @@ pub(crate) fn stata_batch_iter_with_reader(
     let selected = cols
         .as_ref()
         .map(|c| c.iter().cloned().collect::<HashSet<_>>());
+    let var_name_to_idx: std::collections::HashMap<&str, usize> = reader
+        .metadata()
+        .variables
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (v.name.as_str(), i))
+        .collect();
     let col_indices = cols
         .as_ref()
         .map(|names| {
             names
                 .iter()
                 .map(|name| {
-                    reader
-                        .metadata()
-                        .variables
-                        .iter()
-                        .position(|v| v.name == *name)
+                    var_name_to_idx
+                        .get(name.as_str())
+                        .copied()
                         .ok_or_else(|| PolarsError::ColumnNotFound(name.clone().into()))
                 })
                 .collect::<Result<Vec<_>, _>>()

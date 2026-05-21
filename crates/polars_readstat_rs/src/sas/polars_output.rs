@@ -1682,15 +1682,19 @@ impl AnonymousScan for SasScan {
 
         // Resolve Column Names -> Indices
         let col_indices = if let Some(cols) = opts.with_columns {
+            let col_name_to_idx: std::collections::HashMap<&str, usize> = reader
+                .metadata()
+                .columns
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (c.name.as_str(), i))
+                .collect();
             let mut indices = Vec::with_capacity(cols.len());
             for name in cols.iter() {
-                let idx = reader
-                    .metadata()
-                    .columns
-                    .iter()
-                    .position(|c| c.name == name.as_str())
+                let idx = col_name_to_idx
+                    .get(name.as_str())
+                    .copied()
                     .ok_or_else(|| {
-                        // .to_string() creates an owned String, which satisfies the 'static requirement
                         let err_msg = name.as_str().to_string();
                         PolarsError::ColumnNotFound(err_msg.into())
                     })?;

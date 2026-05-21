@@ -229,6 +229,7 @@ pub(crate) fn spss_batch_iter_with_reader(
             .max(1);
         (1_000_000 / n_cols).clamp(1_000, 100_000)
     });
+    let n_threads = threads.unwrap_or(crate::default_thread_count()).max(1);
 
     if total == 0 {
         return Ok(Box::new(std::iter::empty()));
@@ -250,16 +251,21 @@ pub(crate) fn spss_batch_iter_with_reader(
         let endian = reader.endian();
         let compression = reader.compression();
         let bias = reader.header().bias;
+        let var_name_to_idx: std::collections::HashMap<&str, usize> = metadata
+            .variables
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (v.name.as_str(), i))
+            .collect();
         let cols_idx = cols
             .as_ref()
             .map(|names| {
                 names
                     .iter()
                     .map(|name| {
-                        metadata
-                            .variables
-                            .iter()
-                            .position(|v| v.name == *name)
+                        var_name_to_idx
+                            .get(name.as_str())
+                            .copied()
                             .ok_or_else(|| PolarsError::ColumnNotFound(name.clone().into()))
                     })
                     .collect::<Result<Vec<_>, _>>()
@@ -353,7 +359,6 @@ pub(crate) fn spss_batch_iter_with_reader(
         }));
     }
 
-    let n_threads = threads.unwrap_or(crate::default_thread_count()).max(1);
     if reader.compression() == 0 && n_threads > 1 && total >= 1000 {
         let total_chunks = (total + batch_size - 1) / batch_size;
         let n_workers = n_threads.min(total_chunks.max(1));
@@ -362,16 +367,21 @@ pub(crate) fn spss_batch_iter_with_reader(
         let metadata = Arc::new(reader.metadata().clone());
         let endian = reader.endian();
         let bias = reader.header().bias;
+        let var_name_to_idx: std::collections::HashMap<&str, usize> = metadata
+            .variables
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (v.name.as_str(), i))
+            .collect();
         let cols_idx = cols
             .as_ref()
             .map(|names| {
                 names
                     .iter()
                     .map(|name| {
-                        metadata
-                            .variables
-                            .iter()
-                            .position(|v| v.name == *name)
+                        var_name_to_idx
+                            .get(name.as_str())
+                            .copied()
                             .ok_or_else(|| PolarsError::ColumnNotFound(name.clone().into()))
                     })
                     .collect::<Result<Vec<_>, _>>()
@@ -468,16 +478,21 @@ pub(crate) fn spss_batch_iter_with_reader(
         let endian = reader.endian();
         let compression = reader.compression();
         let bias = reader.header().bias;
+        let var_name_to_idx: std::collections::HashMap<&str, usize> = metadata
+            .variables
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (v.name.as_str(), i))
+            .collect();
         let cols_idx = cols
             .as_ref()
             .map(|names| {
                 names
                     .iter()
                     .map(|name| {
-                        metadata
-                            .variables
-                            .iter()
-                            .position(|v| v.name == *name)
+                        var_name_to_idx
+                            .get(name.as_str())
+                            .copied()
                             .ok_or_else(|| PolarsError::ColumnNotFound(name.clone().into()))
                     })
                     .collect::<Result<Vec<_>, _>>()
@@ -533,16 +548,21 @@ pub(crate) fn spss_batch_iter_with_reader(
     let endian = reader.endian();
     let compression = reader.compression();
     let bias = reader.header().bias;
+    let var_name_to_idx: std::collections::HashMap<&str, usize> = metadata
+        .variables
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (v.name.as_str(), i))
+        .collect();
     let cols_idx = cols
         .as_ref()
         .map(|names| {
             names
                 .iter()
                 .map(|name| {
-                    metadata
-                        .variables
-                        .iter()
-                        .position(|v| v.name == *name)
+                    var_name_to_idx
+                        .get(name.as_str())
+                        .copied()
                         .ok_or_else(|| PolarsError::ColumnNotFound(name.clone().into()))
                 })
                 .collect::<Result<Vec<_>, _>>()

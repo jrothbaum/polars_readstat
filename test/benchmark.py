@@ -83,7 +83,7 @@ if __name__ == "__main__":
         exclude_engines = fix.get("exclude_engines", [])
 
         engines = [
-            e for e in ["polars_readstat", "pandas", "pyreadstat"]
+            e for e in ["polars_readstat", "pandas"]#, "pyreadstat"]
             if e not in exclude_engines
         ]
 
@@ -138,7 +138,7 @@ if __name__ == "__main__":
         read_multithreaded_test(fmt, subset_columns=True,  filter_rows=True)
 
     test("sas7bdat")
-    test("stata")
-    test("spss")
-    test("zsav")
-    test("xpt")
+    # test("stata")
+    # test("spss")
+    # test("zsav")
+    # test("xpt")

@@ -1250,6 +1250,8 @@ mod tests {
         let mut supported = true;
         let metadata = reader.metadata();
 
+        let label_name_to_def: std::collections::HashMap<&str, &crate::spss::types::ValueLabel> =
+            metadata.value_labels.iter().map(|v| (v.name.as_str(), v)).collect();
         for var in &metadata.variables {
             if let Some(label) = var.label.clone() {
                 variable_labels.insert(var.name.clone(), label);
@@ -1257,7 +1259,7 @@ mod tests {
             let Some(label_name) = var.value_label.as_ref() else {
                 continue;
             };
-            let Some(label_def) = metadata.value_labels.iter().find(|v| v.name == *label_name)
+            let Some(label_def) = label_name_to_def.get(label_name.as_str())
             else {
                 continue;
             };

@@ -148,6 +148,8 @@ pub fn read_metadata<R: Read + Seek>(reader: &mut R, header: &Header) -> Result<
     let mut last_var_index: Option<usize> = None;
     let mut label_set_index = 0usize;
     let mut current_offset = 0usize;
+    // offset → variable index, for O(1) lookup in value label records instead of O(N) scan.
+    let mut offset_to_idx: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
 
     loop {
         let rec_type = read_u32(reader, header.endian)?;
@@ -161,12 +163,13 @@ pub fn read_metadata<R: Read + Seek>(reader: &mut R, header: &Header) -> Result<
                     &mut current_offset,
                 )?;
                 if let Some(var) = variable {
+                    offset_to_idx.insert(var.offset, metadata.variables.len());
                     metadata.variables.push(var);
                     last_var_index = Some(metadata.variables.len() - 1);
                 }
             }
             REC_TYPE_VALUE_LABEL => {
-                read_value_label_record(reader, header, &mut metadata, &mut label_set_index)?;
+                read_value_label_record(reader, header, &mut metadata, &mut label_set_index, &offset_to_idx)?;
             }
             REC_TYPE_VALUE_LABEL_VARIABLES => {
                 // part of value-label record; skip count and var indexes
@@ -476,6 +479,7 @@ fn read_value_label_record<R: Read + Seek>(
     header: &Header,
     metadata: &mut Metadata,
     label_set_index: &mut usize,
+    offset_to_idx: &std::collections::HashMap<usize, usize>,
 ) -> Result<()> {
     let entry_count = read_u32(reader, header.endian)? as usize;
     let mut raw_values = Vec::with_capacity(entry_count);
@@ -515,8 +519,8 @@ fn read_value_label_record<R: Read + Seek>(
     let mut is_string = false;
     for off in &var_offsets {
         let target = off.saturating_sub(1) as usize;
-        if let Some(var) = metadata.variables.iter().find(|v| v.offset == target) {
-            if var.var_type == VarType::Str {
+        if let Some(&idx) = offset_to_idx.get(&target) {
+            if metadata.variables[idx].var_type == VarType::Str {
                 is_string = true;
                 break;
             }
@@ -541,8 +545,8 @@ fn read_value_label_record<R: Read + Seek>(
     });
     for off in var_offsets {
         let target = off.saturating_sub(1) as usize;
-        if let Some(var) = metadata.variables.iter_mut().find(|v| v.offset == target) {
-            var.value_label = Some(name.clone());
+        if let Some(&idx) = offset_to_idx.get(&target) {
+            metadata.variables[idx].value_label = Some(name.clone());
         }
     }
     Ok(())
@@ -708,6 +712,11 @@ fn encoding_for_code(code: i32) -> Option<&'static encoding_rs::Encoding> {
 }
 
 fn parse_very_long_string_record(data: &[u8], metadata: &mut Metadata) -> Result<()> {
+    let mut key_to_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, v) in metadata.variables.iter().enumerate() {
+        key_to_idx.entry(v.short_name.to_ascii_lowercase()).or_insert(i);
+        key_to_idx.entry(v.name.to_ascii_lowercase()).or_insert(i);
+    }
     let mut pos = 0usize;
     while pos < data.len() {
         let end = data[pos..]
@@ -721,13 +730,11 @@ fn parse_very_long_string_record(data: &[u8], metadata: &mut Metadata) -> Result
             continue;
         }
         if let Some(eq) = entry.iter().position(|&b| b == b'=') {
-            let key = String::from_utf8_lossy(&entry[..eq]).to_string();
+            let key = String::from_utf8_lossy(&entry[..eq]).to_ascii_lowercase();
             let val = String::from_utf8_lossy(&entry[eq + 1..]).trim().to_string();
             if let Ok(len) = val.parse::<usize>() {
-                if let Some(var) = metadata.variables.iter_mut().find(|v| {
-                    v.short_name.eq_ignore_ascii_case(&key) || v.name.eq_ignore_ascii_case(&key)
-                }) {
-                    var.string_len = len;
+                if let Some(&idx) = key_to_idx.get(&key) {
+                    metadata.variables[idx].string_len = len;
                 }
             }
         }
@@ -736,6 +743,12 @@ fn parse_very_long_string_record(data: &[u8], metadata: &mut Metadata) -> Result
 }
 
 fn parse_long_variable_names_record(data: &[u8], metadata: &mut Metadata) -> Result<()> {
+    let name_to_idx: std::collections::HashMap<String, usize> = metadata
+        .variables
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (v.name.to_ascii_lowercase(), i))
+        .collect();
     let mut pos = 0usize;
     while pos < data.len() {
         let end = data[pos..]
@@ -749,17 +762,13 @@ fn parse_long_variable_names_record(data: &[u8], metadata: &mut Metadata) -> Res
             continue;
         }
         if let Some(eq) = entry.iter().position(|&b| b == b'=') {
-            let key = String::from_utf8_lossy(&entry[..eq]).trim().to_string();
+            let key = String::from_utf8_lossy(&entry[..eq]).trim().to_ascii_lowercase();
             let val = String::from_utf8_lossy(&entry[eq + 1..]).trim().to_string();
             if key.is_empty() || val.is_empty() {
                 continue;
             }
-            if let Some(var) = metadata
-                .variables
-                .iter_mut()
-                .find(|v| v.name.eq_ignore_ascii_case(&key))
-            {
-                var.name = val;
+            if let Some(&idx) = name_to_idx.get(&key) {
+                metadata.variables[idx].name = val;
             }
         }
     }
@@ -771,6 +780,11 @@ fn parse_long_string_value_labels(
     header: &Header,
     metadata: &mut Metadata,
 ) -> Result<()> {
+    let mut key_to_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, v) in metadata.variables.iter().enumerate() {
+        key_to_idx.entry(v.name.to_ascii_lowercase()).or_insert(i);
+        key_to_idx.entry(v.short_name.to_ascii_lowercase()).or_insert(i);
+    }
     let mut pos = 0usize;
     let mut label_set_index = metadata.value_labels.len();
     while pos < data.len() {
@@ -826,13 +840,11 @@ fn parse_long_string_value_labels(
             name: name.clone(),
             mapping,
         });
-        if let Some(var) = metadata.variables.iter_mut().find(|v| {
-            v.name.eq_ignore_ascii_case(&var_name) || v.short_name.eq_ignore_ascii_case(&var_name)
-        }) {
-            if string_len > 0 && var.string_len < string_len {
-                var.string_len = string_len;
+        if let Some(&idx) = key_to_idx.get(&var_name.to_ascii_lowercase()) {
+            if string_len > 0 && metadata.variables[idx].string_len < string_len {
+                metadata.variables[idx].string_len = string_len;
             }
-            var.value_label = Some(name);
+            metadata.variables[idx].value_label = Some(name);
         }
     }
     Ok(())
@@ -843,6 +855,12 @@ fn parse_long_string_missing_values(
     header: &Header,
     metadata: &mut Metadata,
 ) -> Result<()> {
+    let name_to_idx: std::collections::HashMap<String, usize> = metadata
+        .variables
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (v.name.clone(), i))
+        .collect();
     let mut pos = 0usize;
     while pos < data.len() {
         let (name, next) = read_pascal_string(data, pos, header.endian)?;
@@ -877,8 +895,8 @@ fn parse_long_string_missing_values(
             values.push(s);
             pos += len;
         }
-        if let Some(var) = metadata.variables.iter_mut().find(|v| v.name == name) {
-            var.missing_strings = values;
+        if let Some(&idx) = name_to_idx.get(name.as_str()) {
+            metadata.variables[idx].missing_strings = values;
         }
     }
     Ok(())
