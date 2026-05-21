@@ -11,6 +11,21 @@ lf = scan_readstat("file.sas7bdat")
 df = lf.collect()
 ```
 
+Because `scan_readstat` returns a `LazyFrame`, Polars can push operations into the reader before data is loaded:
+
+- **Column selection** — only the selected columns are read from disk:
+  ```python
+  df = scan_readstat("file.sav").select(["id", "age"]).collect()
+  ```
+- **Row limit** — `head()` / `limit()` stops the reader after N rows without loading the full file:
+  ```python
+  df = scan_readstat("file.sas7bdat").head(1000).collect()
+  ```
+- **Filtering** — row filters are applied in Polars after reading, but still benefit from column pushdown:
+  ```python
+  df = scan_readstat("file.dta").select(["id", "age"]).filter(pl.col("age") >= 18).collect()
+  ```
+
 Key parameters:
 
 | Parameter | Default | Notes |
@@ -82,12 +97,6 @@ opts = InformativeNullOpts(
     suffix="_missing",
     use_value_labels=True,
 )
-```
-
-Column projection should use standard Polars lazy syntax:
-
-```python
-lf = scan_readstat("file.sas7bdat").select(["income", "age"])
 ```
 
 ## Preserve order options

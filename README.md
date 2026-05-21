@@ -10,6 +10,7 @@ The Rust engine is generally faster for many workloads, but performance varies b
 - In project benchmarks, the new Rust-backed engine is typically faster than pandas/pyreadstat on large SAS/Stata files, especially for subset/filter workloads.
 - It avoids the older C/C++ toolchain complexity and ships as standard Python wheels.
 - API is Polars-first (`scan_readstat`, `read_readstat`, `write_readstat`, `write_sas_csv_import`).
+- Because `scan_readstat` returns a Polars `LazyFrame`, column selection and row limits are pushed into the reader — only the data you actually need is read from disk.
 
 ## Install
 
@@ -42,6 +43,28 @@ lf = reader.df              # LazyFrame — same as calling scan_readstat(path)
 - `"name"` — column name
 - `"label"` — variable label (description), if present
 - `"value_labels"` — dict mapping coded values to label strings, if present
+
+### Polars lazy evaluation
+
+`scan_readstat` returns a `LazyFrame`, so Polars can push operations into the reader before any data is loaded:
+
+**Read only specific columns** — column selection is pushed into the reader; unselected columns are never read from disk:
+```python
+lf = scan_readstat("file.sav")
+df = lf.select(["id", "age", "income"]).collect()
+```
+
+**Read the first N rows** — `head()` / `limit()` stops the reader after N rows, so you never load the full file:
+```python
+df = scan_readstat("file.sas7bdat").head(1000).collect()
+```
+
+**Filter rows** — filters are applied in Polars after reading, but still benefit from column pushdown if combined with `.select()`:
+```python
+df = scan_readstat("file.dta").select(["id", "age"]).filter(pl.col("age") >= 18).collect()
+```
+
+The benchmark numbers above reflect these optimizations — the large "Subset: True" speedups come from column pushdown.
 
 ### 3) Write (Experimental)
 Writing support is experimental and compatibility varies across tools. Stata roundtrip tests are included; SPSS roundtrip coverage is limited. Please report issues.
