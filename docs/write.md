@@ -24,7 +24,7 @@ write_xpt(df, "/path/out.xpt")
 | Parameter | Notes |
 | --- | --- |
 | `format` | Override format detection. Accepted values: `"dta"` or `"stata"` for Stata; `"sav"`, `"zsav"`, or `"spss"` for SPSS; `"por"` or `"spss_por"` for SPSS Portable. Inferred from the file extension if omitted. |
-| `metadata` | Metadata from `ScanReadstat(...).metadata` (dict) or `ScanReadstat(...).metadata_handle` (opaque handle, faster for very wide files). Extracts variable labels, value labels, and formats automatically. See [Preserving metadata](#preserving-metadata-from-a-source-file). Explicit kwargs take precedence. |
+| `metadata` | Metadata from `ScanReadstat(...).metadata` (dict) or `ScanReadstat(...).metadata_df` (Polars DataFrame, faster for very wide files). Extracts variable labels, value labels, and formats automatically. See [Preserving metadata](#preserving-metadata-from-a-source-file). Explicit kwargs take precedence. |
 
 ## Stata parameters (`.dta`)
 
@@ -51,7 +51,7 @@ write_readstat(
 
 | Parameter | Notes |
 | --- | --- |
-| `value_labels` | Dict mapping column names to `{coded_value: label}`. |
+| `value_labels` | Dict mapping column names to `{coded_value: label}`. Accepts `int`, `float`, or numeric strings as keys. |
 | `variable_labels` | Dict mapping column names to descriptive label strings. |
 | `variable_format` | Dict mapping column names to SPSS format strings (e.g. `"F10.2"`, `"A20"`), or to a dict with keys `format_type`, `width`, and `decimals` for numeric codes. |
 | `variable_measure` | Dict mapping column names to measurement level: `"nominal"`, `"ordinal"`, or `"scale"`. |
@@ -94,7 +94,9 @@ Parameters: `file_label`, `variable_labels`. Also callable as `write_readstat(df
 
 ## Preserving metadata from a source file
 
-`write_readstat` accepts a `metadata=` argument that carries over variable labels, value labels, formats, and SPSS-specific attributes (measure, alignment, display width). Only variables present in the DataFrame being written are included, so this works correctly when writing a column subset.
+`write_readstat` accepts a `metadata=` argument that carries over variable labels, value labels, formats, and SPSS-specific attributes (measure, alignment, display width). Only variables present in the DataFrame being written are included, so this works correctly when writing a column subset. Explicit kwargs always override anything derived from `metadata=`.
+
+Pass `reader.metadata` (a dict) for convenience:
 
 ```python
 from polars_readstat import ScanReadstat, write_readstat
@@ -105,35 +107,64 @@ df = reader.df.collect()
 write_readstat(df, "out.sav", metadata=reader.metadata)
 ```
 
-Explicit kwargs always override anything derived from `metadata=`:
+Pass `reader.metadata_df` (a Polars DataFrame) for better performance on wide files — Rust reads Arrow arrays directly with no JSON serialization:
+
+```python
+reader = ScanReadstat("source.sav")
+df = reader.df.collect()
+
+write_readstat(df, "out.sav", metadata=reader.metadata_df)
+```
+
+Both forms support kwargs overrides that take precedence over the base metadata:
 
 ```python
 write_readstat(
     df, "out.sav",
-    metadata=reader.metadata,
+    metadata=reader.metadata_df,
     variable_labels={"my_col": "Overridden label"},  # takes precedence
 )
+```
+
+### `metadata_df` schema
+
+`reader.metadata_df` is a standard Polars DataFrame with one row per variable:
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `name` | `String` | Variable name |
+| `label` | `String` (nullable) | Variable label |
+| `value_label_codes` | `List[String]` (nullable) | Coded values as strings |
+| `value_label_labels` | `List[String]` (nullable) | Corresponding display labels |
+| `format` | `String` (nullable) | Format string (Stata: e.g. `"%12.2f"`; null for SPSS) |
+| `format_type` | `Int32` (nullable) | SPSS numeric format type code; null for Stata/SAS |
+| `format_width` | `Int32` (nullable) | Format width |
+| `format_decimals` | `Int32` (nullable) | Decimal places |
+| `measure` | `String` (nullable) | SPSS measurement level (`"nominal"`, `"ordinal"`, `"scale"`) |
+| `display_width` | `Int32` (nullable) | SPSS display width |
+| `alignment` | `String` (nullable) | SPSS alignment (`"left"`, `"right"`, `"center"`) |
+
+Because it is an ordinary DataFrame, you can inspect, filter, or edit it before passing it to `write_readstat`:
+
+```python
+reader = ScanReadstat("source.sav")
+mdf = reader.metadata_df
+
+# Inspect
+print(mdf.filter(pl.col("label").is_not_null()))
+
+# Edit: override a label before writing
+mdf = mdf.with_columns(
+    pl.when(pl.col("name") == "income")
+    .then(pl.lit("Annual income (USD)"))
+    .otherwise(pl.col("label"))
+    .alias("label")
+)
+
+write_readstat(df, "out.sav", metadata=mdf)
 ```
 
 Notes:
 
 - `write_readstat(..., format="sas")` is intentionally unsupported because it implies binary `.sas7bdat` output.
 - Use `write_sas_csv_import(...)` to generate a SAS-ingestible bundle (`.csv` + `.sas` import script).
-
-## Roundtripping very wide files (thousands of variables)
-
-For files with a large number of variables, `metadata=reader.metadata` can be slow because it serializes all variable records to JSON, parses them into Python dicts, and crosses the PyO3 boundary.
-
-Use `reader.metadata_handle` instead — an opaque Rust object that bypasses all Python serialization and builds the writer directly in Rust:
-
-```python
-reader = ScanReadstat("source.sav")
-df = reader.df.collect()
-
-# No JSON round-trip — same speed as writing with no metadata
-write_readstat(df, "out.sav", metadata=reader.metadata_handle)
-```
-
-`metadata_handle` cannot be inspected from Python; it exists solely as a passthrough to the writer. Explicit kwargs (`value_labels`, `variable_labels`, etc.) still take precedence over anything in the handle.
-
-`reader.metadata_handle` opens the file once and caches the result. If you access `reader.metadata` (the dict) afterward, it is derived from the same cached handle at no extra I/O cost.

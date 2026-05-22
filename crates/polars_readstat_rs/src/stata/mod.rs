@@ -184,3 +184,87 @@ pub fn configure_writer_from_metadata(
     }
     writer
 }
+
+/// Build a Polars DataFrame from Stata metadata.
+///
+/// Schema: name, label, value_label_codes (List[str]), value_label_labels (List[str]),
+/// format (str), format_type/format_width/format_decimals/measure/display_width/alignment (null).
+pub fn build_metadata_df(meta: &Metadata) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
+    use polars::prelude::*;
+    use types::ValueLabelKey;
+
+    let n = meta.variables.len();
+
+    let mut vl_map: std::collections::HashMap<&str, (Vec<String>, Vec<String>)> =
+        std::collections::HashMap::with_capacity(meta.value_labels.len());
+    for vl in &meta.value_labels {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut codes: Vec<String> = Vec::new();
+        let mut labels: Vec<String> = Vec::new();
+        for (k, lbl) in vl.mapping.iter() {
+            let code = match k {
+                ValueLabelKey::Integer(v) => v.to_string(),
+                ValueLabelKey::Double(v) => v.to_string(),
+                ValueLabelKey::Str(s) => s.clone(),
+            };
+            if seen.insert(code.clone()) {
+                codes.push(code);
+                labels.push(lbl.clone());
+            }
+        }
+        vl_map.insert(vl.name.as_str(), (codes, labels));
+    }
+
+    let mut names: Vec<&str> = Vec::with_capacity(n);
+    let mut var_labels: Vec<Option<&str>> = Vec::with_capacity(n);
+    let mut vl_codes: Vec<Option<Vec<String>>> = Vec::with_capacity(n);
+    let mut vl_lbls: Vec<Option<Vec<String>>> = Vec::with_capacity(n);
+    let mut formats: Vec<Option<&str>> = Vec::with_capacity(n);
+
+    for (i, var) in meta.variables.iter().enumerate() {
+        names.push(var.name.as_str());
+        let lbl = meta.variable_labels.get(i).filter(|s| !s.is_empty()).map(|s| s.as_str());
+        var_labels.push(lbl);
+
+        if let Some(vl_name) = var.value_label_name.as_ref() {
+            if let Some((codes, lbls)) = vl_map.get(vl_name.as_str()) {
+                vl_codes.push(Some(codes.clone()));
+                vl_lbls.push(Some(lbls.clone()));
+            } else {
+                vl_codes.push(None);
+                vl_lbls.push(None);
+            }
+        } else {
+            vl_codes.push(None);
+            vl_lbls.push(None);
+        }
+
+        formats.push(meta.formats.get(i).filter(|s| !s.is_empty()).map(|s| s.as_str()));
+    }
+
+    let list_str_dtype = DataType::List(Box::new(DataType::String));
+    let make_list = |col_name: &str, vecs: Vec<Option<Vec<String>>>| -> PolarsResult<Series> {
+        let any_vals: Vec<AnyValue> = vecs.into_iter().map(|opt| match opt {
+            None => AnyValue::Null,
+            Some(v) => AnyValue::List(Series::new(PlSmallStr::EMPTY, v)),
+        }).collect();
+        Series::from_any_values_and_dtype(col_name.into(), &any_vals, &list_str_dtype, true)
+    };
+
+    let null_i32: Vec<Option<i32>> = vec![None; n];
+    let null_str: Vec<Option<&str>> = vec![None; n];
+
+    DataFrame::new_infer_height(vec![
+        Series::new("name".into(), names).into_column(),
+        Series::new("label".into(), var_labels).into_column(),
+        make_list("value_label_codes", vl_codes)?.into_column(),
+        make_list("value_label_labels", vl_lbls)?.into_column(),
+        Series::new("format".into(), formats).into_column(),
+        Series::new("format_type".into(), null_i32.clone()).into_column(),
+        Series::new("format_width".into(), null_i32.clone()).into_column(),
+        Series::new("format_decimals".into(), null_i32.clone()).into_column(),
+        Series::new("measure".into(), null_str.clone()).into_column(),
+        Series::new("display_width".into(), null_i32).into_column(),
+        Series::new("alignment".into(), null_str).into_column(),
+    ])
+}

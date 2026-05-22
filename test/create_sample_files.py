@@ -93,3 +93,7 @@ prs.write_readstat(
 )
 print(f"SPSS:   {spss_path}")
 print(f"\nOutput directory: {out_dir}")
+
+
+
+reader = prs.ScanReadstat(spss_path)

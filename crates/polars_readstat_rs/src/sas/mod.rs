@@ -28,6 +28,44 @@ pub use xpt_writer::{XptVariableFormats, XptVariableLabels, XptStorageWidths, Xp
 use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
 pub use types::{Compression, Endian, Format, Platform, Header, Metadata};
+
+/// Build a Polars DataFrame from SAS metadata.
+///
+/// Schema: name, label, value_label_codes (List[str] null), value_label_labels (List[str] null),
+/// format (str), format_type/format_width/format_decimals/measure/display_width/alignment (null).
+pub fn build_metadata_df(meta: &Metadata) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
+    use polars::prelude::*;
+
+    let n = meta.columns.len();
+    let mut names: Vec<&str> = Vec::with_capacity(n);
+    let mut labels: Vec<Option<&str>> = Vec::with_capacity(n);
+    let mut formats: Vec<Option<&str>> = Vec::with_capacity(n);
+
+    for col in &meta.columns {
+        names.push(col.name.as_str());
+        labels.push(if col.label.is_empty() { None } else { Some(col.label.as_str()) });
+        formats.push(if col.format.is_empty() { None } else { Some(col.format.as_str()) });
+    }
+
+    let list_str_dtype = DataType::List(Box::new(DataType::String));
+    let null_lists: Vec<AnyValue> = vec![AnyValue::Null; n];
+    let null_i32: Vec<Option<i32>> = vec![None; n];
+    let null_str: Vec<Option<&str>> = vec![None; n];
+
+    DataFrame::new_infer_height(vec![
+        Series::new("name".into(), names).into_column(),
+        Series::new("label".into(), labels).into_column(),
+        Series::from_any_values_and_dtype("value_label_codes".into(), &null_lists, &list_str_dtype, true)?.into_column(),
+        Series::from_any_values_and_dtype("value_label_labels".into(), &null_lists, &list_str_dtype, true)?.into_column(),
+        Series::new("format".into(), formats).into_column(),
+        Series::new("format_type".into(), null_i32.clone()).into_column(),
+        Series::new("format_width".into(), null_i32.clone()).into_column(),
+        Series::new("format_decimals".into(), null_i32.clone()).into_column(),
+        Series::new("measure".into(), null_str.clone()).into_column(),
+        Series::new("display_width".into(), null_i32).into_column(),
+        Series::new("alignment".into(), null_str).into_column(),
+    ])
+}
 pub use writer::{
     SasValueLabelKey, SasValueLabelMap, SasValueLabels, SasVariableLabels, SasWriter,
 };

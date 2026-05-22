@@ -187,3 +187,97 @@ pub fn configure_writer_from_metadata(
     }
     writer
 }
+
+/// Build a Polars DataFrame from SPSS metadata.
+///
+/// Schema: name, label, value_label_codes (List[str]), value_label_labels (List[str]),
+/// format (null for SPSS), format_type (i32), format_width (i32), format_decimals (i32),
+/// measure (str), display_width (i32), alignment (str).
+pub fn build_metadata_df(meta: &Metadata) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
+    use polars::prelude::*;
+    use types::{Alignment, Measure, ValueLabelKey};
+
+    let n = meta.variables.len();
+
+    let mut vl_map: std::collections::HashMap<&str, (Vec<String>, Vec<String>)> =
+        std::collections::HashMap::with_capacity(meta.value_labels.len());
+    for vl in &meta.value_labels {
+        let (codes, labels): (Vec<String>, Vec<String>) = vl.mapping.iter().map(|(k, lbl)| {
+            let code = match k {
+                ValueLabelKey::Double(v) => v.to_string(),
+                ValueLabelKey::Str(s) => s.clone(),
+            };
+            (code, lbl.clone())
+        }).unzip();
+        vl_map.insert(vl.name.as_str(), (codes, labels));
+    }
+
+    let mut names: Vec<&str> = Vec::with_capacity(n);
+    let mut var_labels: Vec<Option<&str>> = Vec::with_capacity(n);
+    let mut vl_codes: Vec<Option<Vec<String>>> = Vec::with_capacity(n);
+    let mut vl_lbls: Vec<Option<Vec<String>>> = Vec::with_capacity(n);
+    let mut format_types: Vec<Option<i32>> = Vec::with_capacity(n);
+    let mut format_widths: Vec<Option<i32>> = Vec::with_capacity(n);
+    let mut format_decimalss: Vec<Option<i32>> = Vec::with_capacity(n);
+    let mut measures: Vec<Option<&str>> = Vec::with_capacity(n);
+    let mut display_widths: Vec<Option<i32>> = Vec::with_capacity(n);
+    let mut alignments: Vec<Option<&str>> = Vec::with_capacity(n);
+
+    for var in &meta.variables {
+        names.push(var.name.as_str());
+        var_labels.push(var.label.as_deref());
+
+        if let Some(vl_name) = var.value_label.as_ref() {
+            if let Some((codes, lbls)) = vl_map.get(vl_name.as_str()) {
+                vl_codes.push(Some(codes.clone()));
+                vl_lbls.push(Some(lbls.clone()));
+            } else {
+                vl_codes.push(None);
+                vl_lbls.push(None);
+            }
+        } else {
+            vl_codes.push(None);
+            vl_lbls.push(None);
+        }
+
+        format_types.push(Some(var.format_type as i32));
+        format_widths.push(Some(var.format_width as i32));
+        format_decimalss.push(Some(var.format_decimals as i32));
+
+        measures.push(var.measure.as_ref().map(|m| match m {
+            Measure::Nominal => "nominal",
+            Measure::Ordinal => "ordinal",
+            Measure::Scale => "scale",
+            Measure::Unknown => "unknown",
+        }));
+        display_widths.push(var.display_width);
+        alignments.push(var.alignment.as_ref().map(|a| match a {
+            Alignment::Left => "left",
+            Alignment::Right => "right",
+            Alignment::Center => "center",
+        }));
+    }
+
+    let list_str_dtype = DataType::List(Box::new(DataType::String));
+    let make_list = |col_name: &str, vecs: Vec<Option<Vec<String>>>| -> PolarsResult<Series> {
+        let any_vals: Vec<AnyValue> = vecs.into_iter().map(|opt| match opt {
+            None => AnyValue::Null,
+            Some(v) => AnyValue::List(Series::new(PlSmallStr::EMPTY, v)),
+        }).collect();
+        Series::from_any_values_and_dtype(col_name.into(), &any_vals, &list_str_dtype, true)
+    };
+
+    DataFrame::new_infer_height(vec![
+        Series::new("name".into(), names).into_column(),
+        Series::new("label".into(), var_labels).into_column(),
+        make_list("value_label_codes", vl_codes)?.into_column(),
+        make_list("value_label_labels", vl_lbls)?.into_column(),
+        Series::new("format".into(), vec![None::<&str>; n]).into_column(),
+        Series::new("format_type".into(), format_types).into_column(),
+        Series::new("format_width".into(), format_widths).into_column(),
+        Series::new("format_decimals".into(), format_decimalss).into_column(),
+        Series::new("measure".into(), measures).into_column(),
+        Series::new("display_width".into(), display_widths).into_column(),
+        Series::new("alignment".into(), alignments).into_column(),
+    ])
+}

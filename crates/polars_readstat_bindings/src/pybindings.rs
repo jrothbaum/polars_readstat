@@ -1,13 +1,19 @@
 use num_cpus;
 use polars::prelude::*;
 use polars_readstat_rs::{
+    build_sas_metadata_df, build_spss_metadata_df, build_stata_metadata_df,
     configure_spss_writer_from_metadata, configure_stata_writer_from_metadata,
     read_sas7bcat, readstat_batch_iter, readstat_metadata_json, readstat_scan, readstat_schema,
     sas_metadata_json_from_meta, spss_metadata_json_from_meta, stata_metadata_json_from_meta,
     CatalogKey, InformativeNullColumns, InformativeNullMode, InformativeNullOpts, PorWriteOptions,
     Sas7bdatReader, SasHeader, SasMetadata, SasWriter, ScanOptions, SpssAlignment, SpssHeader,
-    SpssMeasure, SpssMetadata, SpssReader, SpssVariableFormat, SpssWriter, StataHeader,
-    StataMetadata, StataReader, StataWriter, XptWriter,
+    SpssMeasure, SpssMetadata, SpssReader,
+    SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels,
+    SpssVariableAlignments, SpssVariableDisplayWidths, SpssVariableFormat, SpssVariableFormats,
+    SpssVariableLabels, SpssVariableMeasures, SpssWriter,
+    StataHeader, StataMetadata, StataReader, StataWriter,
+    ValueLabels, VariableFormats, VariableLabels,
+    XptWriter,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -28,11 +34,9 @@ enum ReadstatFormat {
     Spss,
 }
 
-/// Opaque Rust handle that holds format-specific parsed metadata.
-///
-/// Avoids the JSON→Python dict→PyO3 round-trip when passing metadata from a
-/// read to a write of the same format.  The dict representation is computed
-/// lazily on first access to `reader.metadata`.
+/// Cached parsed metadata — held privately in Rust, never exposed to Python.
+/// Serves both JSON serialisation (for the `metadata` dict path) and DataFrame
+/// construction (for the `metadata_df` path).  Opened once, shared across both.
 #[derive(Clone)]
 enum MetadataInner {
     Spss {
@@ -63,20 +67,19 @@ impl MetadataInner {
             }
         }
     }
-}
 
-/// Python-visible opaque metadata handle — pass directly from `reader.metadata_handle`
-/// to `write_readstat`/`write_spss` to skip JSON serialization entirely.
-#[pyclass(name = "MetadataHandle")]
-pub struct PyMetadata {
-    inner: MetadataInner,
-}
-
-#[pymethods]
-impl PyMetadata {
-    /// Serialize to a JSON string (same output as `reader.metadata` but as a string).
-    fn to_json(&self) -> PyResult<String> {
-        self.inner.to_json().map_err(PyValueError::new_err)
+    fn to_df(&self) -> PyResult<DataFrame> {
+        match self {
+            Self::Spss { meta, .. } => {
+                build_spss_metadata_df(meta).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+            }
+            Self::Stata { meta, .. } => {
+                build_stata_metadata_df(meta).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+            }
+            Self::Sas { meta, .. } => {
+                build_sas_metadata_df(meta).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+            }
+        }
     }
 }
 
@@ -107,7 +110,7 @@ fn build_metadata_inner(path: &str, format: ReadstatFormat) -> PyResult<Metadata
             })
         }
         ReadstatFormat::SasXpt => Err(PyValueError::new_err(
-            "metadata_handle is not supported for XPT format",
+            "metadata_df is not supported for XPT format",
         )),
     }
 }
@@ -435,15 +438,14 @@ fn read_sas7bcat_rs(py: Python<'_>, path: String) -> PyResult<PyObject> {
 #[pymodule]
 pub fn polars_readstat_bindings(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyPolarsReadstat>()?;
-    m.add_class::<PyMetadata>()?;
     m.add_function(wrap_pyfunction!(readstat_schema_rs, m)?)?;
     m.add_function(wrap_pyfunction!(readstat_metadata_json_rs, m)?)?;
     m.add_function(wrap_pyfunction!(read_readstat_rs, m)?)?;
     m.add_function(wrap_pyfunction!(sink_stata, m)?)?;
     m.add_function(wrap_pyfunction!(write_stata, m)?)?;
     m.add_function(wrap_pyfunction!(write_spss, m)?)?;
-    m.add_function(wrap_pyfunction!(write_spss_from_handle, m)?)?;
-    m.add_function(wrap_pyfunction!(write_stata_from_handle, m)?)?;
+    m.add_function(wrap_pyfunction!(write_spss_from_df_rs, m)?)?;
+    m.add_function(wrap_pyfunction!(write_stata_from_df_rs, m)?)?;
     m.add_function(wrap_pyfunction!(write_xpt, m)?)?;
     m.add_function(wrap_pyfunction!(write_por, m)?)?;
     m.add_function(wrap_pyfunction!(scan_por_rs, m)?)?;
@@ -597,13 +599,15 @@ impl PyPolarsReadstat {
         Ok(obj.unbind())
     }
 
-    fn get_metadata_handle(&mut self) -> PyResult<PyMetadata> {
-        if let Some(inner) = self.cached_metadata.clone() {
-            return Ok(PyMetadata { inner });
-        }
-        let inner = build_metadata_inner(&self.path, self.format)?;
-        self.cached_metadata = Some(inner.clone());
-        Ok(PyMetadata { inner })
+    fn get_metadata_df(&mut self) -> PyResult<PyDataFrame> {
+        let inner = if let Some(ref inner) = self.cached_metadata {
+            inner.clone()
+        } else {
+            let inner = build_metadata_inner(&self.path, self.format)?;
+            self.cached_metadata = Some(inner.clone());
+            inner
+        };
+        Ok(PyDataFrame(inner.to_df()?))
     }
 
     fn get_column_info(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -1096,72 +1100,175 @@ fn write_spss(
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
-/// Fast write_spss path: build writer directly from a PyMetadata handle, no Python dicts needed.
+/// Write SPSS building the writer directly from a metadata DataFrame — no Python dict overhead.
 #[pyfunction]
-fn write_spss_from_handle(
+fn write_spss_from_df_rs(
     df: PyDataFrame,
     path: String,
-    handle: &PyMetadata,
+    metadata_df: PyDataFrame,
 ) -> PyResult<()> {
     ensure_extension(&path, &["sav", "zsav"])?;
-    match &handle.inner {
-        MetadataInner::Spss { meta, .. } => {
-            let col_names: HashSet<String> = df
-                .0
-                .get_column_names()
-                .iter()
-                .map(|s| s.as_str().to_string())
-                .collect();
-            let writer = configure_spss_writer_from_metadata(
-                SpssWriter::new(&path),
-                meta,
-                &col_names,
-            );
-            writer
-                .write_df(&df.0)
-                .map_err(|e| PyValueError::new_err(e.to_string()))
+    let col_names: HashSet<String> = df.0.get_column_names().iter().map(|s| s.to_string()).collect();
+    let mdf = &metadata_df.0;
+
+    let name_ca = mdf.column("name").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let label_ca = mdf.column("label").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let measure_ca = mdf.column("measure").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let align_ca = mdf.column("alignment").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let dw_ca = mdf.column("display_width").map_err(|e| PyValueError::new_err(e.to_string()))?.i32().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let ft_ca = mdf.column("format_type").map_err(|e| PyValueError::new_err(e.to_string()))?.i32().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let fw_ca = mdf.column("format_width").map_err(|e| PyValueError::new_err(e.to_string()))?.i32().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let fd_ca = mdf.column("format_decimals").map_err(|e| PyValueError::new_err(e.to_string()))?.i32().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let vl_codes_col = mdf.column("value_label_codes").map_err(|e| PyValueError::new_err(e.to_string()))?.as_materialized_series().clone();
+    let vl_labels_col = mdf.column("value_label_labels").map_err(|e| PyValueError::new_err(e.to_string()))?.as_materialized_series().clone();
+
+    let mut variable_labels: SpssVariableLabels = HashMap::new();
+    let mut variable_measures: SpssVariableMeasures = HashMap::new();
+    let mut variable_alignments: SpssVariableAlignments = HashMap::new();
+    let mut variable_display_widths: SpssVariableDisplayWidths = HashMap::new();
+    let mut variable_formats: SpssVariableFormats = HashMap::new();
+    let mut value_labels: SpssValueLabels = HashMap::new();
+
+    for i in 0..mdf.height() {
+        let name = match name_ca.get(i) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if !col_names.contains(&name) {
+            continue;
         }
-        _ => Err(PyValueError::new_err(
-            "write_spss_from_handle requires an SPSS metadata handle",
-        )),
+        if let Some(lbl) = label_ca.get(i) {
+            variable_labels.insert(name.clone(), lbl.to_string());
+        }
+        if let Some(m) = measure_ca.get(i) {
+            let spss_measure = match m {
+                "nominal" => Some(SpssMeasure::Nominal),
+                "ordinal" => Some(SpssMeasure::Ordinal),
+                "scale" => Some(SpssMeasure::Scale),
+                _ => None,
+            };
+            if let Some(measure) = spss_measure {
+                variable_measures.insert(name.clone(), measure);
+            }
+        }
+        if let Some(a) = align_ca.get(i) {
+            let align = match a {
+                "left" => Some(SpssAlignment::Left),
+                "right" => Some(SpssAlignment::Right),
+                "center" => Some(SpssAlignment::Center),
+                _ => None,
+            };
+            if let Some(alignment) = align {
+                variable_alignments.insert(name.clone(), alignment);
+            }
+        }
+        if let Some(dw) = dw_ca.get(i) {
+            variable_display_widths.insert(name.clone(), dw);
+        }
+        if let (Some(ft), Some(fw), Some(fd)) = (ft_ca.get(i), fw_ca.get(i), fd_ca.get(i)) {
+            variable_formats.insert(name.clone(), SpssVariableFormat {
+                format_type: Some(ft as u8),
+                width: Some(fw as u8),
+                decimals: Some(fd as u8),
+            });
+        }
+        let codes_av = vl_codes_col.get(i).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let lbls_av = vl_labels_col.get(i).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if let (AnyValue::List(codes_s), AnyValue::List(lbls_s)) = (codes_av, lbls_av) {
+            let codes_ca = codes_s.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let lbls_ca = lbls_s.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let mut map: SpssValueLabelMap = HashMap::new();
+            for j in 0..codes_s.len() {
+                if let (Some(code), Some(lbl)) = (codes_ca.get(j), lbls_ca.get(j)) {
+                    if let Ok(v) = code.parse::<f64>() {
+                        map.insert(SpssValueLabelKey::from_f64(v), lbl.to_string());
+                    }
+                }
+            }
+            if !map.is_empty() {
+                value_labels.insert(name.clone(), map);
+            }
+        }
     }
+
+    let mut writer = SpssWriter::new(&path);
+    if !variable_labels.is_empty() { writer = writer.with_variable_labels(variable_labels); }
+    if !variable_measures.is_empty() { writer = writer.with_variable_measures(variable_measures); }
+    if !variable_alignments.is_empty() { writer = writer.with_variable_alignments(variable_alignments); }
+    if !variable_display_widths.is_empty() { writer = writer.with_variable_display_widths(variable_display_widths); }
+    if !variable_formats.is_empty() { writer = writer.with_variable_formats(variable_formats); }
+    if !value_labels.is_empty() { writer = writer.with_value_labels(value_labels); }
+    writer.write_df(&df.0).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
-/// Fast write_stata path: build writer directly from a PyMetadata handle, no Python dicts needed.
+/// Write Stata building the writer directly from a metadata DataFrame — no Python dict overhead.
 #[pyfunction]
-fn write_stata_from_handle(
+fn write_stata_from_df_rs(
     df: PyDataFrame,
     path: String,
-    handle: &PyMetadata,
+    metadata_df: PyDataFrame,
     compress: Option<bool>,
     threads: Option<usize>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["dta"])?;
-    match &handle.inner {
-        MetadataInner::Stata { meta, .. } => {
-            let col_names: HashSet<String> = df
-                .0
-                .get_column_names()
-                .iter()
-                .map(|s| s.as_str().to_string())
-                .collect();
-            let mut writer = StataWriter::new(&path);
-            if let Some(enable) = compress {
-                writer = writer.with_compress(enable);
-            }
-            if let Some(n) = threads {
-                writer = writer.with_n_threads(n);
-            }
-            let writer =
-                configure_stata_writer_from_metadata(writer, meta, &col_names);
-            writer
-                .write_df(&df.0)
-                .map_err(|e| PyValueError::new_err(e.to_string()))
+    let col_names: HashSet<String> = df.0.get_column_names().iter().map(|s| s.to_string()).collect();
+    let mdf = &metadata_df.0;
+
+    let name_ca = mdf.column("name").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let label_ca = mdf.column("label").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let format_ca = mdf.column("format").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let vl_codes_col = mdf.column("value_label_codes").map_err(|e| PyValueError::new_err(e.to_string()))?.as_materialized_series().clone();
+    let vl_labels_col = mdf.column("value_label_labels").map_err(|e| PyValueError::new_err(e.to_string()))?.as_materialized_series().clone();
+
+    let mut variable_labels: VariableLabels = HashMap::new();
+    let mut variable_formats: VariableFormats = HashMap::new();
+    let mut value_labels: ValueLabels = HashMap::new();
+
+    for i in 0..mdf.height() {
+        let name = match name_ca.get(i) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if !col_names.contains(&name) {
+            continue;
         }
-        _ => Err(PyValueError::new_err(
-            "write_stata_from_handle requires a Stata metadata handle",
-        )),
+        if let Some(lbl) = label_ca.get(i) {
+            variable_labels.insert(name.clone(), lbl.to_string());
+        }
+        if let Some(fmt) = format_ca.get(i) {
+            variable_formats.insert(name.clone(), fmt.to_string());
+        }
+        let codes_av = vl_codes_col.get(i).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let lbls_av = vl_labels_col.get(i).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if let (AnyValue::List(codes_s), AnyValue::List(lbls_s)) = (codes_av, lbls_av) {
+            let codes_ca = codes_s.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let lbls_ca = lbls_s.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let mut map: BTreeMap<i32, String> = BTreeMap::new();
+            for j in 0..codes_s.len() {
+                if let (Some(code), Some(lbl)) = (codes_ca.get(j), lbls_ca.get(j)) {
+                    if let Ok(v) = code.parse::<i32>() {
+                        map.insert(v, lbl.to_string());
+                    } else if let Ok(fv) = code.parse::<f64>() {
+                        let vi = fv as i32;
+                        if (vi as f64) == fv {
+                            map.insert(vi, lbl.to_string());
+                        }
+                    }
+                }
+            }
+            if !map.is_empty() {
+                value_labels.insert(name.clone(), map);
+            }
+        }
     }
+
+    let mut writer = StataWriter::new(&path);
+    if let Some(enable) = compress { writer = writer.with_compress(enable); }
+    if let Some(n) = threads { writer = writer.with_n_threads(n); }
+    if !variable_labels.is_empty() { writer = writer.with_variable_labels(variable_labels); }
+    if !variable_formats.is_empty() { writer = writer.with_variable_formats(variable_formats); }
+    if !value_labels.is_empty() { writer = writer.with_value_labels(value_labels); }
+    writer.write_df(&df.0).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 #[pyfunction]
@@ -1342,9 +1449,17 @@ fn parse_spss_value_labels(
                 polars_readstat_rs::SpssValueLabelKey::from(v)
             } else if let Ok(v) = key_obj.extract::<i64>() {
                 polars_readstat_rs::SpssValueLabelKey::from(v as f64)
+            } else if let Ok(s) = key_obj.extract::<String>() {
+                if let Ok(v) = s.parse::<f64>() {
+                    polars_readstat_rs::SpssValueLabelKey::from(v)
+                } else {
+                    return Err(PyValueError::new_err(format!(
+                        "SPSS value label key {s:?} is not numeric"
+                    )));
+                }
             } else {
                 return Err(PyValueError::new_err(
-                    "SPSS value label keys must be int or float",
+                    "SPSS value label keys must be int, float, or numeric string",
                 ));
             };
             let value = val_obj.extract::<String>()?;

@@ -6,13 +6,12 @@ from dataclasses import dataclass
 from polars.io.plugins import register_io_source
 from polars_readstat.polars_readstat_bindings import (
     PyPolarsReadstat,
-    MetadataHandle as PyMetadata,
     sink_stata,
     write_sas_csv_import as _write_sas_csv_import_rs,
     write_stata as _write_stata_rs,
     write_spss as _write_spss_rs,
-    write_spss_from_handle as _write_spss_from_handle_rs,
-    write_stata_from_handle as _write_stata_from_handle_rs,
+    write_spss_from_df_rs as _write_spss_from_df_rs,
+    write_stata_from_df_rs as _write_stata_from_df_rs,
     write_xpt as _write_xpt_rs,
     write_por as _write_por_rs,
     scan_por_rs as _scan_por_rs,
@@ -71,7 +70,7 @@ class ScanReadstat:
 
         self._metadata = None
         self._schema = None
-        self._metadata_handle: PyMetadata | None = None
+        self._metadata_df: pl.DataFrame | None = None
         self.missing_string_as_null = missing_string_as_null
         self.value_labels_as_strings = value_labels_as_strings
         self.preserve_order = preserve_order
@@ -95,12 +94,19 @@ class ScanReadstat:
         return self._metadata
 
     @property
-    def metadata_handle(self) -> "PyMetadata":
-        """Opaque Rust metadata handle — pass to write_readstat to skip JSON round-trip."""
-        if self._metadata_handle is None:
+    def metadata_df(self) -> pl.DataFrame:
+        """Per-variable metadata as a Polars DataFrame.
+
+        Columns: name, label, value_label_codes (List[str]), value_label_labels (List[str]),
+        format, format_type, format_width, format_decimals, measure, display_width, alignment.
+
+        Pass directly to ``write_readstat(..., metadata=reader.metadata_df)`` for efficient
+        roundtripping — Rust reads Arrow arrays directly, no JSON serialization.
+        """
+        if self._metadata_df is None:
             src = self._make_src()
-            self._metadata_handle = src.get_metadata_handle()
-        return self._metadata_handle
+            self._metadata_df = src.get_metadata_df()
+        return self._metadata_df
 
     @property
     def catalog_labels(self) -> "dict[str, dict] | None":
@@ -178,19 +184,6 @@ class ScanReadstat:
             return
         src = self._make_src()
         self._schema = src.schema()
-        _is_xpt = self.path.lower().endswith((".xpt", ".xpt5", ".xpt8"))
-        if not _is_xpt:
-            # If the handle was already built (e.g. user accessed metadata_handle first),
-            # reuse it for the dict so we don't re-open the file.
-            if self._metadata_handle is not None:
-                import json as _json
-                self._metadata = _json.loads(self._metadata_handle.to_json())
-                return
-            # Otherwise build handle now (caches in src) then get the dict from src.
-            try:
-                self._metadata_handle = src.get_metadata_handle()
-            except Exception:
-                pass
         self._metadata = src.get_metadata()
 
     def _validation_check(self, path: str) -> None:
@@ -809,48 +802,38 @@ def write_readstat(
     df = _prepare_write_df(df)
 
     if fmt in ("dta", "stata"):
-        # Fast path: metadata is an opaque Rust handle — no Python dict round-trip.
-        if isinstance(metadata, PyMetadata) and not kwargs:
-            _write_stata_from_handle_rs(df, path, metadata)
-            return
-        base: dict[str, Any] = {}
-        if isinstance(metadata, PyMetadata):
-            import json as _json
-            metadata = _json.loads(metadata.to_json())
-        if metadata is not None:
-            _col_set = set(df.columns)
-            variables = [v for v in (metadata.get("variables") or []) if v.get("name") in _col_set]
-            base = _stata_variable_metadata_to_write_kwargs(variables)
-        compress = kwargs.pop("compress", base.get("compress"))
-        threads = kwargs.pop("threads", base.get("threads"))
-        value_labels = kwargs.pop("value_labels", base.get("value_labels"))
-        variable_labels = kwargs.pop("variable_labels", base.get("variable_labels"))
-        variable_format = kwargs.pop("variable_format", base.get("variable_format"))
+        compress = kwargs.pop("compress", None)
+        threads = kwargs.pop("threads", None)
+        value_labels = kwargs.pop("value_labels", None)
+        variable_labels = kwargs.pop("variable_labels", None)
+        variable_format = kwargs.pop("variable_format", None)
         if kwargs:
             raise TypeError(f"Unsupported kwargs for Stata writer: {sorted(kwargs.keys())}")
-        _write_stata_rs(
-            df,
-            path,
-            compress=compress,
-            threads=threads,
-            value_labels=value_labels,
-            variable_labels=variable_labels,
-            variable_format=variable_format,
-        )
+
+        col_set = set(df.columns)
+        if isinstance(metadata, pl.DataFrame):
+            base_df = metadata
+        elif isinstance(metadata, dict):
+            vars_list = [v for v in (metadata.get("variables") or []) if v.get("name") in col_set]
+            kw = _stata_variable_metadata_to_write_kwargs(vars_list)
+            base_df = _stata_kwargs_to_metadata_df(
+                kw.get("value_labels"), kw.get("variable_labels"), kw.get("variable_format")
+            )
+        elif metadata is not None:
+            raise TypeError(f"metadata must be a dict or pl.DataFrame, got {type(metadata)}")
+        else:
+            base_df = None
+
+        kwargs_df = _stata_kwargs_to_metadata_df(value_labels, variable_labels, variable_format)
+        merged_df = _coalesce_metadata_dfs(kwargs_df, base_df)
+
+        if merged_df is not None:
+            _write_stata_from_df_rs(df, path, merged_df, compress, threads)
+        else:
+            _write_stata_rs(df, path, compress=compress, threads=threads,
+                            value_labels=None, variable_labels=None, variable_format=None)
         return
     if fmt in ("sav", "zsav", "spss"):
-        # Fast path: metadata is an opaque Rust handle — no Python dict round-trip.
-        if isinstance(metadata, PyMetadata) and not kwargs:
-            _write_spss_from_handle_rs(df, path, metadata)
-            return
-        base = {}
-        if isinstance(metadata, PyMetadata):
-            import json as _json
-            metadata = _json.loads(metadata.to_json())
-        if metadata is not None:
-            _col_set = set(df.columns)
-            variables = [v for v in (metadata.get("variables") or []) if v.get("name") in _col_set]
-            base = _spss_variable_metadata_to_write_kwargs(variables)
         compress = kwargs.pop("compress", None)
         if compress is not None:
             warnings.warn(
@@ -858,24 +841,40 @@ def write_readstat(
                 UserWarning,
                 stacklevel=2,
             )
-        value_labels = kwargs.pop("value_labels", base.get("value_labels"))
-        variable_labels = kwargs.pop("variable_labels", base.get("variable_labels"))
-        variable_measure = kwargs.pop("variable_measure", base.get("variable_measure"))
-        variable_display_width = kwargs.pop("variable_display_width", base.get("variable_display_width"))
-        variable_alignment = kwargs.pop("variable_alignment", base.get("variable_alignment"))
-        variable_format = kwargs.pop("variable_format", base.get("variable_format"))
+        value_labels = kwargs.pop("value_labels", None)
+        variable_labels = kwargs.pop("variable_labels", None)
+        variable_measure = kwargs.pop("variable_measure", None)
+        variable_display_width = kwargs.pop("variable_display_width", None)
+        variable_alignment = kwargs.pop("variable_alignment", None)
+        variable_format = kwargs.pop("variable_format", None)
         if kwargs:
             raise TypeError(f"Unsupported kwargs for SPSS writer: {sorted(kwargs.keys())}")
-        write_spss(
-            df,
-            path,
-            value_labels=value_labels,
-            variable_labels=variable_labels,
-            variable_measure=variable_measure,
-            variable_display_width=variable_display_width,
-            variable_alignment=variable_alignment,
-            variable_format=variable_format,
+
+        col_set = set(df.columns)
+        if isinstance(metadata, pl.DataFrame):
+            base_df = metadata
+        elif isinstance(metadata, dict):
+            vars_list = [v for v in (metadata.get("variables") or []) if v.get("name") in col_set]
+            kw = _spss_variable_metadata_to_write_kwargs(vars_list)
+            base_df = _spss_kwargs_to_metadata_df(
+                kw.get("value_labels"), kw.get("variable_labels"), kw.get("variable_measure"),
+                kw.get("variable_display_width"), kw.get("variable_alignment"), kw.get("variable_format")
+            )
+        elif metadata is not None:
+            raise TypeError(f"metadata must be a dict or pl.DataFrame, got {type(metadata)}")
+        else:
+            base_df = None
+
+        kwargs_df = _spss_kwargs_to_metadata_df(
+            value_labels, variable_labels, variable_measure,
+            variable_display_width, variable_alignment, variable_format
         )
+        merged_df = _coalesce_metadata_dfs(kwargs_df, base_df)
+
+        if merged_df is not None:
+            _write_spss_from_df_rs(df, path, merged_df)
+        else:
+            _write_spss_rs(df, path, None, None, None, None, None, None)
         return
     if fmt in ("xpt", "sas_xpt"):
         base = {}
@@ -1146,6 +1145,193 @@ def _coerce_stata_value_label_key(key: Any) -> Any:
     if value.is_integer():
         return int(value)
     return key
+
+
+def _make_metadata_df(
+    names: list,
+    labels: list,
+    vl_codes: list,
+    vl_labels: list,
+    formats: list,
+    format_types: list,
+    format_widths: list,
+    format_decimalss: list,
+    measures: list,
+    display_widths: list,
+    alignments: list,
+) -> pl.DataFrame:
+    return pl.DataFrame([
+        pl.Series("name", names, dtype=pl.String),
+        pl.Series("label", labels, dtype=pl.String),
+        pl.Series("value_label_codes", vl_codes, dtype=pl.List(pl.String)),
+        pl.Series("value_label_labels", vl_labels, dtype=pl.List(pl.String)),
+        pl.Series("format", formats, dtype=pl.String),
+        pl.Series("format_type", format_types, dtype=pl.Int32),
+        pl.Series("format_width", format_widths, dtype=pl.Int32),
+        pl.Series("format_decimals", format_decimalss, dtype=pl.Int32),
+        pl.Series("measure", measures, dtype=pl.String),
+        pl.Series("display_width", display_widths, dtype=pl.Int32),
+        pl.Series("alignment", alignments, dtype=pl.String),
+    ])
+
+
+def _stata_kwargs_to_metadata_df(
+    value_labels: "dict | None",
+    variable_labels: "dict | None",
+    variable_format: "dict | None",
+) -> "pl.DataFrame | None":
+    all_names: set[str] = set()
+    for d in (variable_labels, variable_format, value_labels):
+        if d:
+            all_names.update(d.keys())
+    if not all_names:
+        return None
+
+    names = sorted(all_names)
+    n = len(names)
+    labels = [variable_labels.get(nm) if variable_labels else None for nm in names]
+    formats = [variable_format.get(nm) if variable_format else None for nm in names]
+
+    vl_codes_list: list = []
+    vl_labels_list: list = []
+    for nm in names:
+        vl = value_labels.get(nm) if value_labels else None
+        if vl:
+            vl_codes_list.append([str(k) for k in vl.keys()])
+            vl_labels_list.append([str(v) for v in vl.values()])
+        else:
+            vl_codes_list.append(None)
+            vl_labels_list.append(None)
+
+    return _make_metadata_df(
+        names=names, labels=labels,
+        vl_codes=vl_codes_list, vl_labels=vl_labels_list,
+        formats=formats,
+        format_types=[None] * n, format_widths=[None] * n, format_decimalss=[None] * n,
+        measures=[None] * n, display_widths=[None] * n, alignments=[None] * n,
+    )
+
+
+def _parse_spss_format_str(spec: str) -> "tuple[int | None, int | None, int | None]":
+    spec = spec.strip()
+    if len(spec) < 2:
+        return None, None, None
+    kind = spec[0].upper()
+    rest = spec[1:]
+    if kind == "A":
+        try:
+            return 1, int(rest), 0
+        except ValueError:
+            return 1, None, None
+    if kind == "F":
+        w_str, d_str = rest.split(".", 1) if "." in rest else (rest, "0")
+        try:
+            return 5, int(w_str), int(d_str)
+        except ValueError:
+            return 5, None, None
+    return None, None, None
+
+
+def _spss_kwargs_to_metadata_df(
+    value_labels: "dict | None",
+    variable_labels: "dict | None",
+    variable_measure: "dict | None",
+    variable_display_width: "dict | None",
+    variable_alignment: "dict | None",
+    variable_format: "dict | None",
+) -> "pl.DataFrame | None":
+    all_names: set[str] = set()
+    for d in (variable_labels, variable_measure, variable_display_width,
+              variable_alignment, variable_format, value_labels):
+        if d:
+            all_names.update(d.keys())
+    if not all_names:
+        return None
+
+    names = sorted(all_names)
+    n = len(names)
+    labels = [variable_labels.get(nm) if variable_labels else None for nm in names]
+    measures = [variable_measure.get(nm) if variable_measure else None for nm in names]
+    display_widths = [variable_display_width.get(nm) if variable_display_width else None for nm in names]
+    alignments = [variable_alignment.get(nm) if variable_alignment else None for nm in names]
+
+    format_types: list = []
+    format_widths: list = []
+    format_decimalss: list = []
+    for nm in names:
+        fmt = variable_format.get(nm) if variable_format else None
+        if fmt is None:
+            format_types.append(None)
+            format_widths.append(None)
+            format_decimalss.append(None)
+        elif isinstance(fmt, str):
+            ft, fw, fd = _parse_spss_format_str(fmt)
+            format_types.append(ft)
+            format_widths.append(fw)
+            format_decimalss.append(fd)
+        elif isinstance(fmt, dict):
+            format_types.append(fmt.get("format_type"))
+            format_widths.append(fmt.get("width"))
+            fd = fmt.get("decimals")
+            if fd is None:
+                fd = fmt.get("decimal_places")
+            format_decimalss.append(fd)
+        else:
+            format_types.append(None)
+            format_widths.append(None)
+            format_decimalss.append(None)
+
+    vl_codes_list: list = []
+    vl_labels_list: list = []
+    for nm in names:
+        vl = value_labels.get(nm) if value_labels else None
+        if vl:
+            vl_codes_list.append([str(k) for k in vl.keys()])
+            vl_labels_list.append([str(v) for v in vl.values()])
+        else:
+            vl_codes_list.append(None)
+            vl_labels_list.append(None)
+
+    return _make_metadata_df(
+        names=names, labels=labels,
+        vl_codes=vl_codes_list, vl_labels=vl_labels_list,
+        formats=[None] * n,
+        format_types=format_types, format_widths=format_widths, format_decimalss=format_decimalss,
+        measures=measures, display_widths=display_widths, alignments=alignments,
+    )
+
+
+def _coalesce_metadata_dfs(
+    kwargs_df: "pl.DataFrame | None",
+    base_df: "pl.DataFrame | None",
+) -> "pl.DataFrame | None":
+    """Merge base_df (all variables) with kwargs_df (explicit overrides).
+    kwargs_df values take precedence where both are non-null.
+    """
+    if kwargs_df is None:
+        return base_df
+    if base_df is None:
+        return kwargs_df
+
+    data_cols = [c for c in base_df.columns if c != "name"]
+    merged = base_df.join(kwargs_df, on="name", how="full", suffix="_kw", coalesce=True)
+
+    exprs = []
+    kw_cols_to_drop = []
+    for col in data_cols:
+        kw_col = f"{col}_kw"
+        if kw_col in merged.columns:
+            exprs.append(
+                pl.when(pl.col(kw_col).is_not_null())
+                .then(pl.col(kw_col))
+                .otherwise(pl.col(col))
+                .alias(col)
+            )
+            kw_cols_to_drop.append(kw_col)
+
+    if exprs:
+        merged = merged.with_columns(exprs).drop(kw_cols_to_drop)
+    return merged
 
 
 def _xpt_metadata_to_write_kwargs(

@@ -288,3 +288,123 @@ def test_stata_variable_metadata_to_write_kwargs(tmp_path: Path) -> None:
     assert _norm_value_labels(sex_col["value_labels"]) == {"1": "Male", "2": "Female"}
     assert score_col.get("label") == "Test score"
     assert score_col.get("format") == "%12.2f"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# metadata_df roundtrip tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("fmt", ["dta", "sav"])
+def test_metadata_df_roundtrip(tmp_path: Path, fmt: str) -> None:
+    """metadata_df survives a write → read → write → read roundtrip."""
+    source = tmp_path / f"source.{fmt}"
+    out = tmp_path / f"out.{fmt}"
+
+    spss_extra = dict(
+        variable_measure={"sex": "nominal"},
+        variable_alignment={"sex": "center"},
+        variable_display_width={"sex": 12},
+        variable_format={"score": "F10.3"},
+    ) if fmt == "sav" else dict(variable_format={"score": "%12.2f"})
+    prs.write_readstat(DF, str(source), value_labels=VALUE_LABELS, variable_labels=VARIABLE_LABELS, **spss_extra)
+
+    reader = prs.ScanReadstat(str(source))
+    mdf = reader.metadata_df
+
+    assert isinstance(mdf, pl.DataFrame)
+    assert "name" in mdf.columns
+    assert "label" in mdf.columns
+    assert "value_label_codes" in mdf.columns
+    assert "value_label_labels" in mdf.columns
+
+    prs.write_readstat(reader.df.collect(), str(out), metadata=mdf)
+
+    roundtrip = prs.ScanReadstat(str(out)).metadata
+    sex = _col_by_name(roundtrip, "sex")
+    score = _col_by_name(roundtrip, "score")
+
+    assert sex.get("label") == "Sex of respondent"
+    assert _norm_value_labels(sex["value_labels"]) == {"1": "Male", "2": "Female"}
+    assert score.get("label") == "Test score"
+    if fmt == "dta":
+        assert score.get("format") == "%12.2f"
+    else:
+        assert score.get("format_width") == 10
+        assert score.get("decimal_places") == 3
+
+
+@pytest.mark.parametrize("fmt", ["dta", "sav"])
+def test_metadata_df_kwargs_override(tmp_path: Path, fmt: str) -> None:
+    """Explicit kwargs take precedence over metadata_df values (coalesce)."""
+    source = tmp_path / f"source.{fmt}"
+    out = tmp_path / f"out.{fmt}"
+
+    prs.write_readstat(DF, str(source), variable_labels={"sex": "Original", "score": "Original score"})
+
+    reader = prs.ScanReadstat(str(source))
+    mdf = reader.metadata_df
+    df = reader.df.collect()
+
+    prs.write_readstat(df, str(out), metadata=mdf, variable_labels={"sex": "Overridden"})
+
+    roundtrip = prs.ScanReadstat(str(out)).metadata
+    sex = _col_by_name(roundtrip, "sex")
+    score = _col_by_name(roundtrip, "score")
+
+    assert sex.get("label") == "Overridden"
+    assert score.get("label") == "Original score"
+
+
+@pytest.mark.parametrize("fmt", ["dta", "sav"])
+def test_metadata_df_column_subset(tmp_path: Path, fmt: str) -> None:
+    """Passing a full metadata_df but writing only a subset of columns works correctly."""
+    source = tmp_path / f"source.{fmt}"
+    out = tmp_path / f"out.{fmt}"
+
+    prs.write_readstat(DF, str(source), variable_labels=VARIABLE_LABELS)
+
+    reader = prs.ScanReadstat(str(source))
+    mdf = reader.metadata_df
+    df_subset = reader.df.select(["score"]).collect()
+
+    prs.write_readstat(df_subset, str(out), metadata=mdf)
+
+    roundtrip = prs.ScanReadstat(str(out)).metadata
+    variables = roundtrip.get("variables") or roundtrip.get("columns") or []
+    assert [v["name"] for v in variables] == ["score"]
+    assert _col_by_name(roundtrip, "score").get("label") == "Test score"
+
+
+def test_metadata_df_value_label_codes_are_strings(tmp_path: Path) -> None:
+    """value_label_codes in metadata_df are always strings (for cross-format compatibility)."""
+    source = tmp_path / "source.dta"
+    prs.write_readstat(DF, str(source), value_labels=VALUE_LABELS)
+
+    mdf = prs.ScanReadstat(str(source)).metadata_df
+    row = mdf.filter(pl.col("name") == "sex")
+    codes = row["value_label_codes"][0]
+    labels = row["value_label_labels"][0]
+
+    assert set(codes) == {"1", "2"}
+    assert set(labels) == {"Male", "Female"}
+    assert len(codes) == len(labels) == 2
+
+
+def test_spss_write_string_value_label_keys(tmp_path: Path) -> None:
+    """write_spss and write_readstat accept string keys matching reader.metadata output."""
+    source = tmp_path / "source.sav"
+    out1 = tmp_path / "out1.sav"
+    out2 = tmp_path / "out2.sav"
+
+    prs.write_readstat(DF, str(source), value_labels=VALUE_LABELS)
+    reader = prs.ScanReadstat(str(source))
+    string_key_vl = reader.metadata["variables"][0]["value_labels"]  # {"1": "Male", "2": "Female"}
+    df = reader.df.collect()
+
+    prs.write_spss(df, str(out1), value_labels={"sex": string_key_vl})
+    prs.write_readstat(df, str(out2), value_labels={"sex": string_key_vl})
+
+    for path in (out1, out2):
+        rt = prs.ScanReadstat(str(path)).metadata
+        sex = _col_by_name(rt, "sex")
+        assert _norm_value_labels(sex["value_labels"]) == {"1": "Male", "2": "Female"}

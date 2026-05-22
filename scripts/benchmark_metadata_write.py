@@ -4,8 +4,8 @@ Benchmark write performance with and without metadata passthrough.
 
 Compares three write paths:
   1. No metadata (baseline)
-  2. Opaque Rust handle (fast path — avoids all Python dict overhead)
-  3. Python dict (slow path — JSON serialize → dict → PyO3 boundary)
+  2. metadata_df (Polars DataFrame — Rust reads Arrow arrays directly)
+  3. Python dict (JSON serialize → dict → PyO3 boundary)
 
 Usage:
     python scripts/benchmark_metadata_write.py [--rows N]
@@ -70,10 +70,11 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     print("\n=== Step 2: Metadata access ===")
 
-    (handle, t_handle) = timed(
-        "reader.metadata_handle  (opaque Rust handle, no JSON)",
-        lambda: reader.metadata_handle,
+    (mdf, t_mdf) = timed(
+        "reader.metadata_df  (Polars DataFrame, Rust Arrow arrays)",
+        lambda: reader.metadata_df,
     )
+    print(f"  metadata_df shape: {mdf.shape}")
 
     (metadata, t_meta_dict) = timed(
         "reader.metadata  (Rust JSON serialize → Python json.loads, cached)",
@@ -93,10 +94,10 @@ def main() -> None:
         lambda: prs.write_spss(df, str(OUTPUT)),
     )
 
-    print("  --- opaque handle (fast path) ---", flush=True)
-    (_, t_write_handle) = timed(
-        "write_readstat(df, metadata=handle)  [fast path]",
-        lambda: prs.write_readstat(df, str(OUTPUT), metadata=handle),
+    print("  --- metadata_df (fast path) ---", flush=True)
+    (_, t_write_df) = timed(
+        "write_readstat(df, metadata=metadata_df)  [DataFrame path]",
+        lambda: prs.write_readstat(df, str(OUTPUT), metadata=mdf),
     )
 
     print("  --- Python dict (slow path) ---", flush=True)
@@ -110,23 +111,23 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     print("\n=== Summary ===")
     rows = [
-        ("read",                           t_read),
-        ("metadata_handle (Rust handle)",  t_handle),
-        ("metadata dict (JSON + parse)",   t_meta_dict),
-        ("write — baseline (no meta)",     t_write_none),
-        ("write — handle (fast path)",     t_write_handle),
-        ("write — dict  (slow path)",      t_write_dict),
+        ("read",                             t_read),
+        ("metadata_df (Arrow, no JSON)",     t_mdf),
+        ("metadata dict (JSON + parse)",     t_meta_dict),
+        ("write — baseline (no meta)",       t_write_none),
+        ("write — metadata_df (fast path)",  t_write_df),
+        ("write — dict  (slow path)",        t_write_dict),
     ]
     for label, t in rows:
-        print(f"  {label:<42} {_ms(t)}")
+        print(f"  {label:<44} {_ms(t)}")
 
     print()
-    overhead_handle = t_write_handle - t_write_none
-    overhead_dict   = t_write_dict   - t_write_none
-    print(f"  Handle overhead vs baseline : {_ms(overhead_handle)}")
-    print(f"  Dict   overhead vs baseline : {_ms(overhead_dict)}")
+    overhead_df   = t_write_df   - t_write_none
+    overhead_dict = t_write_dict - t_write_none
+    print(f"  metadata_df overhead vs baseline : {_ms(overhead_df)}")
+    print(f"  dict        overhead vs baseline : {_ms(overhead_dict)}")
     if overhead_dict > 1e-3:
-        print(f"  Dict   overhead vs handle   : {_ms(t_write_dict - t_write_handle)}")
+        print(f"  dict        overhead vs df       : {_ms(t_write_dict - t_write_df)}")
 
 
 if __name__ == "__main__":
