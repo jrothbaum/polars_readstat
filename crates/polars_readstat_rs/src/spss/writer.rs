@@ -175,8 +175,10 @@ impl SpssWriter {
             value_labels.as_ref(),
             variable_labels.as_ref(),
         )?;
+
         let file = File::create(&self.path)?;
         let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
+
         write_header(
             &mut writer,
             df.height() as i32,
@@ -518,7 +520,11 @@ fn sanitize_short_base(name: &str) -> String {
     out
 }
 
-fn make_unique_short_name(base: &str, used: &mut HashSet<String>) -> String {
+fn make_unique_short_name(
+    base: &str,
+    used: &mut HashSet<String>,
+    next_counter: &mut HashMap<String, usize>,
+) -> String {
     let mut candidate = base.to_string();
     if candidate.len() > 8 {
         candidate.truncate(8);
@@ -527,25 +533,29 @@ fn make_unique_short_name(base: &str, used: &mut HashSet<String>) -> String {
         used.insert(candidate.clone());
         return candidate;
     }
-    let mut i = 1usize;
+    // Track the next counter per 8-char base so we never re-scan from 1.
+    // This turns O(N) probing-per-call into O(1) amortised.
+    let counter = next_counter.entry(candidate.clone()).or_insert(1);
     loop {
-        let suffix = i.to_string();
+        let suffix = counter.to_string();
         let max_base = 8usize.saturating_sub(suffix.len());
-        let mut b = base.to_string();
-        if b.len() > max_base {
-            b.truncate(max_base);
-        }
-        let cand = format!("{b}{suffix}");
+        let prefix = if candidate.len() > max_base {
+            &candidate[..max_base]
+        } else {
+            &candidate
+        };
+        let cand = format!("{prefix}{suffix}");
+        *counter += 1;
         if !used.contains(&cand) {
             used.insert(cand.clone());
             return cand;
         }
-        i += 1;
     }
 }
 
 fn build_short_names(names: &[String]) -> Result<Vec<String>> {
     let mut used: HashSet<String> = HashSet::new();
+    let mut next_counter: HashMap<String, usize> = HashMap::new();
     let mut out = Vec::with_capacity(names.len());
     for name in names {
         let base = if is_valid_short_name(name) {
@@ -553,7 +563,7 @@ fn build_short_names(names: &[String]) -> Result<Vec<String>> {
         } else {
             sanitize_short_base(name)
         };
-        let short = make_unique_short_name(&base, &mut used);
+        let short = make_unique_short_name(&base, &mut used, &mut next_counter);
         out.push(short);
     }
     Ok(out)

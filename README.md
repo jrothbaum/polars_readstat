@@ -34,12 +34,12 @@ df = lf.select(["SERIALNO", "AGEP"]).filter(pl.col("AGEP") >= 18).collect()
 from polars_readstat import ScanReadstat
 
 reader = ScanReadstat(path="/path/file.sav")
-schema = reader.schema      # polars.Schema
-metadata = reader.metadata  # dict with file info and per-column details
-lf = reader.df              # LazyFrame — same as calling scan_readstat(path)
+schema = reader.schema           # polars.Schema
+metadata = reader.metadata       # dict with file info and per-column details
+lf = reader.df                   # LazyFrame — same as calling scan_readstat(path)
 ```
 
-`metadata` is a dict with a `columns` list. Each column entry includes:
+`metadata` is a dict with a `variables` (SPSS/Stata) or `columns` (SAS) list. Each entry includes:
 - `"name"` — column name
 - `"label"` — variable label (description), if present
 - `"value_labels"` — dict mapping coded values to label strings, if present

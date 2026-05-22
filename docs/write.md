@@ -24,7 +24,7 @@ write_xpt(df, "/path/out.xpt")
 | Parameter | Notes |
 | --- | --- |
 | `format` | Override format detection. Accepted values: `"dta"` or `"stata"` for Stata; `"sav"`, `"zsav"`, or `"spss"` for SPSS; `"por"` or `"spss_por"` for SPSS Portable. Inferred from the file extension if omitted. |
-| `metadata` | Metadata dict from `ScanReadstat(...).metadata`. Extracts variable labels, value labels, and formats automatically. See [Preserving metadata](#preserving-metadata-from-a-source-file). Explicit kwargs take precedence. |
+| `metadata` | Metadata from `ScanReadstat(...).metadata` (dict) or `ScanReadstat(...).metadata_handle` (opaque handle, faster for very wide files). Extracts variable labels, value labels, and formats automatically. See [Preserving metadata](#preserving-metadata-from-a-source-file). Explicit kwargs take precedence. |
 
 ## Stata parameters (`.dta`)
 
@@ -94,27 +94,46 @@ Parameters: `file_label`, `variable_labels`. Also callable as `write_readstat(df
 
 ## Preserving metadata from a source file
 
-Pass `metadata=reader.metadata` to carry over variable labels, value labels, formats, and SPSS-specific attributes when writing. Only variables present in the DataFrame being written are used, so this works correctly even when writing a column subset.
-
-Note: since Polars DataFrames do not carry file metadata, use `ScanReadstat` to access when reading the table so it is available when writing.
+`write_readstat` accepts a `metadata=` argument that carries over variable labels, value labels, formats, and SPSS-specific attributes (measure, alignment, display width). Only variables present in the DataFrame being written are included, so this works correctly when writing a column subset.
 
 ```python
 from polars_readstat import ScanReadstat, write_readstat
 
-# Stata
-reader = ScanReadstat("source.dta")
-df = reader.df.collect()
-write_readstat(df, "out.dta", metadata=reader.metadata)
-
-# SPSS
 reader = ScanReadstat("source.sav")
 df = reader.df.collect()
+
 write_readstat(df, "out.sav", metadata=reader.metadata)
 ```
 
-`metadata` extracts variable labels, value labels, and formats for each format. For SPSS it also extracts `variable_measure`, `variable_display_width`, and `variable_alignment`. Any explicitly passed kwargs take precedence.
+Explicit kwargs always override anything derived from `metadata=`:
+
+```python
+write_readstat(
+    df, "out.sav",
+    metadata=reader.metadata,
+    variable_labels={"my_col": "Overridden label"},  # takes precedence
+)
+```
 
 Notes:
 
 - `write_readstat(..., format="sas")` is intentionally unsupported because it implies binary `.sas7bdat` output.
 - Use `write_sas_csv_import(...)` to generate a SAS-ingestible bundle (`.csv` + `.sas` import script).
+
+## Roundtripping very wide files (thousands of variables)
+
+For files with a large number of variables, `metadata=reader.metadata` can be slow because it serializes all variable records to JSON, parses them into Python dicts, and crosses the PyO3 boundary.
+
+Use `reader.metadata_handle` instead — an opaque Rust object that bypasses all Python serialization and builds the writer directly in Rust:
+
+```python
+reader = ScanReadstat("source.sav")
+df = reader.df.collect()
+
+# No JSON round-trip — same speed as writing with no metadata
+write_readstat(df, "out.sav", metadata=reader.metadata_handle)
+```
+
+`metadata_handle` cannot be inspected from Python; it exists solely as a passthrough to the writer. Explicit kwargs (`value_labels`, `variable_labels`, etc.) still take precedence over anything in the handle.
+
+`reader.metadata_handle` opens the file once and caches the result. If you access `reader.metadata` (the dict) afterward, it is derived from the same cached handle at no extra I/O cost.

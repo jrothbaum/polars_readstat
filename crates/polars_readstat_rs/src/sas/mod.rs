@@ -27,7 +27,7 @@ pub use xpt::{read_xpt_metadata, scan_xpt, xpt_batch_iter, xpt_metadata_json, Xp
 pub use xpt_writer::{XptVariableFormats, XptVariableLabels, XptStorageWidths, XptWriter};
 use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
-pub use types::{Compression, Endian, Format, Platform};
+pub use types::{Compression, Endian, Format, Platform, Header, Metadata};
 pub use writer::{
     SasValueLabelKey, SasValueLabelMap, SasValueLabels, SasVariableLabels, SasWriter,
 };
@@ -35,11 +35,8 @@ pub use writer::{
 use serde_json::json;
 use std::path::Path;
 
-/// Export SAS metadata as a JSON string.
-pub fn metadata_json(path: impl AsRef<Path>) -> Result<String> {
-    let reader = Sas7bdatReader::open(path)?;
-    let meta = reader.metadata();
-    let hdr = reader.header();
+/// Build SAS metadata JSON from an already-parsed Metadata + Header (avoids re-reading the file).
+pub fn metadata_json_from_meta(meta: &Metadata, hdr: &Header) -> Result<String> {
     let columns = meta
         .columns
         .iter()
@@ -60,7 +57,6 @@ pub fn metadata_json(path: impl AsRef<Path>) -> Result<String> {
     let os_name = hdr.os_name.trim();
     let file_type = hdr.file_type.trim();
     let creator_proc = meta.creator_proc.trim();
-    // Use the raw SAS encoding name (not the encoding_rs remapped name)
     let encoding_name = encoding::get_encoding_name(meta.encoding_byte);
     let v = json!({
         "compression": format!("{:?}", meta.compression),
@@ -81,6 +77,12 @@ pub fn metadata_json(path: impl AsRef<Path>) -> Result<String> {
         "columns": columns,
     });
     Ok(v.to_string())
+}
+
+/// Export SAS metadata as a JSON string.
+pub fn metadata_json(path: impl AsRef<Path>) -> Result<String> {
+    let reader = Sas7bdatReader::open(path)?;
+    metadata_json_from_meta(reader.metadata(), reader.header())
 }
 
 #[derive(Debug, Clone)]

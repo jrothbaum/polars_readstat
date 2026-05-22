@@ -6,10 +6,13 @@ from dataclasses import dataclass
 from polars.io.plugins import register_io_source
 from polars_readstat.polars_readstat_bindings import (
     PyPolarsReadstat,
+    MetadataHandle as PyMetadata,
     sink_stata,
     write_sas_csv_import as _write_sas_csv_import_rs,
     write_stata as _write_stata_rs,
     write_spss as _write_spss_rs,
+    write_spss_from_handle as _write_spss_from_handle_rs,
+    write_stata_from_handle as _write_stata_from_handle_rs,
     write_xpt as _write_xpt_rs,
     write_por as _write_por_rs,
     scan_por_rs as _scan_por_rs,
@@ -68,6 +71,7 @@ class ScanReadstat:
 
         self._metadata = None
         self._schema = None
+        self._metadata_handle: PyMetadata | None = None
         self.missing_string_as_null = missing_string_as_null
         self.value_labels_as_strings = value_labels_as_strings
         self.preserve_order = preserve_order
@@ -89,6 +93,14 @@ class ScanReadstat:
         if self._schema is None:
             self._get_schema()
         return self._metadata
+
+    @property
+    def metadata_handle(self) -> "PyMetadata":
+        """Opaque Rust metadata handle — pass to write_readstat to skip JSON round-trip."""
+        if self._metadata_handle is None:
+            src = self._make_src()
+            self._metadata_handle = src.get_metadata_handle()
+        return self._metadata_handle
 
     @property
     def catalog_labels(self) -> "dict[str, dict] | None":
@@ -145,12 +157,9 @@ class ScanReadstat:
     #         return_batches=True,
     #     )
         
-    def _get_schema(self) -> None:
-        if self.path.lower().endswith(".por"):
-            self._schema, self._metadata = _por_schema_and_metadata(self.path)
-            return
+    def _make_src(self) -> PyPolarsReadstat:
         preserve_order, row_index_name, _ = _resolve_preserve_order_opts(self._preserve_order_opts)
-        src = PyPolarsReadstat(
+        return PyPolarsReadstat(
             path=self.path,
             size_hint=10_000,
             n_rows=None,
@@ -162,7 +171,26 @@ class ScanReadstat:
             informative_nulls=self.informative_nulls.to_dict() if self.informative_nulls is not None else None,
             row_index_name=row_index_name,
         )
+
+    def _get_schema(self) -> None:
+        if self.path.lower().endswith(".por"):
+            self._schema, self._metadata = _por_schema_and_metadata(self.path)
+            return
+        src = self._make_src()
         self._schema = src.schema()
+        _is_xpt = self.path.lower().endswith((".xpt", ".xpt5", ".xpt8"))
+        if not _is_xpt:
+            # If the handle was already built (e.g. user accessed metadata_handle first),
+            # reuse it for the dict so we don't re-open the file.
+            if self._metadata_handle is not None:
+                import json as _json
+                self._metadata = _json.loads(self._metadata_handle.to_json())
+                return
+            # Otherwise build handle now (caches in src) then get the dict from src.
+            try:
+                self._metadata_handle = src.get_metadata_handle()
+            except Exception:
+                pass
         self._metadata = src.get_metadata()
 
     def _validation_check(self, path: str) -> None:
@@ -781,9 +809,17 @@ def write_readstat(
     df = _prepare_write_df(df)
 
     if fmt in ("dta", "stata"):
+        # Fast path: metadata is an opaque Rust handle — no Python dict round-trip.
+        if isinstance(metadata, PyMetadata) and not kwargs:
+            _write_stata_from_handle_rs(df, path, metadata)
+            return
         base: dict[str, Any] = {}
+        if isinstance(metadata, PyMetadata):
+            import json as _json
+            metadata = _json.loads(metadata.to_json())
         if metadata is not None:
-            variables = [v for v in (metadata.get("variables") or []) if v.get("name") in df.columns]
+            _col_set = set(df.columns)
+            variables = [v for v in (metadata.get("variables") or []) if v.get("name") in _col_set]
             base = _stata_variable_metadata_to_write_kwargs(variables)
         compress = kwargs.pop("compress", base.get("compress"))
         threads = kwargs.pop("threads", base.get("threads"))
@@ -803,9 +839,17 @@ def write_readstat(
         )
         return
     if fmt in ("sav", "zsav", "spss"):
+        # Fast path: metadata is an opaque Rust handle — no Python dict round-trip.
+        if isinstance(metadata, PyMetadata) and not kwargs:
+            _write_spss_from_handle_rs(df, path, metadata)
+            return
         base = {}
+        if isinstance(metadata, PyMetadata):
+            import json as _json
+            metadata = _json.loads(metadata.to_json())
         if metadata is not None:
-            variables = [v for v in (metadata.get("variables") or []) if v.get("name") in df.columns]
+            _col_set = set(df.columns)
+            variables = [v for v in (metadata.get("variables") or []) if v.get("name") in _col_set]
             base = _spss_variable_metadata_to_write_kwargs(variables)
         compress = kwargs.pop("compress", None)
         if compress is not None:

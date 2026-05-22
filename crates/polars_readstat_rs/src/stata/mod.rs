@@ -66,11 +66,8 @@ fn value_label_key_to_string(
     }
 }
 
-/// Export Stata metadata as a JSON string.
-pub fn metadata_json(path: impl AsRef<Path>) -> Result<String> {
-    let reader = StataReader::open(path)?;
-    let meta = reader.metadata();
-    let hdr = reader.header();
+/// Build Stata metadata JSON from an already-parsed Metadata + Header (avoids re-reading the file).
+pub fn metadata_json_from_meta(meta: &Metadata, hdr: &Header) -> Result<String> {
     let missing_rules = crate::stata::value::missing_rules(hdr.version);
     let mut value_labels_by_name: HashMap<String, Value> = HashMap::new();
     for label in &meta.value_labels {
@@ -113,4 +110,77 @@ pub fn metadata_json(path: impl AsRef<Path>) -> Result<String> {
         "variables": variables,
     });
     Ok(v.to_string())
+}
+
+/// Export Stata metadata as a JSON string.
+pub fn metadata_json(path: impl AsRef<Path>) -> Result<String> {
+    let reader = StataReader::open(path)?;
+    metadata_json_from_meta(reader.metadata(), reader.header())
+}
+
+/// Configure a StataWriter with metadata from a parsed Stata file, filtered to the given columns.
+pub fn configure_writer_from_metadata(
+    mut writer: StataWriter,
+    meta: &Metadata,
+    col_names: &std::collections::HashSet<String>,
+) -> StataWriter {
+    use std::collections::BTreeMap;
+
+    // Build label_name → BTreeMap<i32, String> from meta.value_labels
+    let mut label_by_name: HashMap<String, BTreeMap<i32, String>> = HashMap::new();
+    for vl in &meta.value_labels {
+        let mut map: BTreeMap<i32, String> = BTreeMap::new();
+        for (key, value) in vl.mapping.iter() {
+            let key_i32 = match key {
+                types::ValueLabelKey::Integer(v) => Some(*v),
+                types::ValueLabelKey::Double(v) => {
+                    let iv = *v as i32;
+                    if (iv as f64) == *v && *v >= i32::MIN as f64 && *v <= i32::MAX as f64 {
+                        Some(iv)
+                    } else {
+                        None
+                    }
+                }
+                types::ValueLabelKey::Str(_) => None,
+            };
+            if let Some(k) = key_i32 {
+                map.insert(k, value.clone());
+            }
+        }
+        label_by_name.insert(vl.name.clone(), map);
+    }
+
+    let mut value_labels: writer::ValueLabels = HashMap::new();
+    let mut variable_labels: writer::VariableLabels = HashMap::new();
+    let mut variable_formats: writer::VariableFormats = HashMap::new();
+
+    for v in &meta.variables {
+        if !col_names.contains(&v.name) {
+            continue;
+        }
+        if let Some(label_name) = &v.value_label_name {
+            if let Some(map) = label_by_name.get(label_name) {
+                if !map.is_empty() {
+                    value_labels.insert(v.name.clone(), map.clone());
+                }
+            }
+        }
+        if let Some(label) = &v.label {
+            variable_labels.insert(v.name.clone(), label.clone());
+        }
+        if let Some(fmt) = &v.format {
+            variable_formats.insert(v.name.clone(), fmt.clone());
+        }
+    }
+
+    if !value_labels.is_empty() {
+        writer = writer.with_value_labels(value_labels);
+    }
+    if !variable_labels.is_empty() {
+        writer = writer.with_variable_labels(variable_labels);
+    }
+    if !variable_formats.is_empty() {
+        writer = writer.with_variable_formats(variable_formats);
+    }
+    writer
 }

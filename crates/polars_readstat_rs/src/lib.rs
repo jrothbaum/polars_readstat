@@ -32,8 +32,9 @@ pub use sas::header;
 pub use sas::metadata;
 pub use sas::reader;
 
-pub use sas::{Compression, Endian, Format, Platform};
+pub use sas::{Compression, Endian, Format, Platform, Header as SasHeader, Metadata as SasMetadata};
 pub use sas::{Error, Result, Sas7bdatReader};
+pub use sas::metadata_json_from_meta as sas_metadata_json_from_meta;
 pub use sas::{SasValueLabelKey, SasValueLabelMap, SasValueLabels, SasVariableLabels, SasWriter};
 pub use sas::{XptVariableFormats, XptVariableLabels, XptStorageWidths, XptWriter};
 
@@ -44,9 +45,11 @@ pub use sas::row_reader::{sas_row_readers, SasColumnInfo, SasColumnKind, SasRowR
 pub use sas::scan_sas7bdat;
 
 pub use spss::{
-    scan_sav, Alignment as SpssAlignment, Error as SpssError, Measure as SpssMeasure,
-    Result as SpssResult, SpssReader,
+    scan_sav, Alignment as SpssAlignment, Error as SpssError, Header as SpssHeader,
+    Measure as SpssMeasure, Metadata as SpssMetadata, Result as SpssResult, SpssReader,
 };
+pub use spss::metadata_json_from_meta as spss_metadata_json_from_meta;
+pub use spss::configure_writer_from_metadata as configure_spss_writer_from_metadata;
 pub use spss::{
     SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels, SpssVariableAlignments,
     SpssVariableDisplayWidths, SpssVariableFormat, SpssVariableFormats, SpssVariableLabels,
@@ -57,10 +60,12 @@ pub use spss::{
 };
 pub use stata::{
     compress_df, pandas_make_stata_column_names, pandas_prepare_df_for_stata, pandas_rename_df,
-    scan_dta, CompressOptions, Error as StataError, Result as StataResult, StataReader,
-    StataWriteColumn, StataWriteSchema, StataWriter, ValueLabelMap, ValueLabels, VariableFormats,
-    VariableLabels,
+    scan_dta, CompressOptions, Error as StataError, Header as StataHeader, Metadata as StataMetadata,
+    Result as StataResult, StataReader, StataWriteColumn, StataWriteSchema, StataWriter,
+    ValueLabelMap, ValueLabels, VariableFormats, VariableLabels,
 };
+pub use stata::metadata_json_from_meta as stata_metadata_json_from_meta;
+pub use stata::configure_writer_from_metadata as configure_stata_writer_from_metadata;
 
 use polars::prelude::DataFrame;
 use polars_core::POOL;

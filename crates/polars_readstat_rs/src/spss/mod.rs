@@ -24,23 +24,20 @@ use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Export SPSS metadata as a JSON string.
-pub fn metadata_json(path: impl AsRef<Path>) -> Result<String> {
-    let reader = SpssReader::open(path)?;
-    let meta = reader.metadata();
-    let hdr = reader.header();
+/// Build SPSS metadata JSON from an already-parsed Metadata + Header (avoids re-reading the file).
+pub fn metadata_json_from_meta(meta: &Metadata, hdr: &Header) -> Result<String> {
     let compression_str = match hdr.compression {
         0 => "None",
         2 => "ZLIB",
-        _ => "RLE", // 1 = bytecode/RLE
+        _ => "RLE",
     };
     let mut value_labels_by_name: HashMap<String, Value> = HashMap::new();
     for label in &meta.value_labels {
         let mut mapping = Map::new();
         for (key, value) in &label.mapping {
             let key_str = match key {
-                crate::spss::types::ValueLabelKey::Double(v) => v.to_string(),
-                crate::spss::types::ValueLabelKey::Str(s) => s.clone(),
+                types::ValueLabelKey::Double(v) => v.to_string(),
+                types::ValueLabelKey::Str(s) => s.clone(),
             };
             mapping.insert(key_str, json!(value));
         }
@@ -75,14 +72,8 @@ pub fn metadata_json(path: impl AsRef<Path>) -> Result<String> {
             obj.insert("decimal_places".to_string(), json!(v.format_decimals));
             obj.insert("format_decimals".to_string(), json!(v.format_decimals));
             obj.insert("write_format_type".to_string(), json!(v.write_format_type));
-            obj.insert(
-                "write_format_width".to_string(),
-                json!(v.write_format_width),
-            );
-            obj.insert(
-                "write_format_decimals".to_string(),
-                json!(v.write_format_decimals),
-            );
+            obj.insert("write_format_width".to_string(), json!(v.write_format_width));
+            obj.insert("write_format_decimals".to_string(), json!(v.write_format_decimals));
             obj.insert(
                 "format_class".to_string(),
                 json!(v.format_class.map(|c| format!("{:?}", c))),
@@ -110,4 +101,89 @@ pub fn metadata_json(path: impl AsRef<Path>) -> Result<String> {
         "variables": variables,
     });
     Ok(v.to_string())
+}
+
+/// Export SPSS metadata as a JSON string.
+pub fn metadata_json(path: impl AsRef<Path>) -> Result<String> {
+    let reader = SpssReader::open(path)?;
+    metadata_json_from_meta(reader.metadata(), reader.header())
+}
+
+/// Configure a SpssWriter with metadata from a parsed SPSS file, filtered to the given columns.
+pub fn configure_writer_from_metadata(
+    mut writer: SpssWriter,
+    meta: &Metadata,
+    col_names: &std::collections::HashSet<String>,
+) -> SpssWriter {
+    // Build label_name → SpssValueLabelMap from meta.value_labels
+    let mut label_by_name: HashMap<String, SpssValueLabelMap> = HashMap::new();
+    for vl in &meta.value_labels {
+        let mut map: SpssValueLabelMap = HashMap::new();
+        for (key, value) in &vl.mapping {
+            if let types::ValueLabelKey::Double(v) = key {
+                map.insert(SpssValueLabelKey::from_f64(*v), value.clone());
+            }
+        }
+        label_by_name.insert(vl.name.clone(), map);
+    }
+
+    let mut value_labels: SpssValueLabels = HashMap::new();
+    let mut variable_labels: SpssVariableLabels = HashMap::new();
+    let mut variable_measures: SpssVariableMeasures = HashMap::new();
+    let mut variable_alignments: SpssVariableAlignments = HashMap::new();
+    let mut variable_display_widths: SpssVariableDisplayWidths = HashMap::new();
+    let mut variable_formats: SpssVariableFormats = HashMap::new();
+
+    for v in &meta.variables {
+        if !col_names.contains(&v.name) {
+            continue;
+        }
+        if let Some(label_name) = &v.value_label {
+            if let Some(map) = label_by_name.get(label_name) {
+                if !map.is_empty() {
+                    value_labels.insert(v.name.clone(), map.clone());
+                }
+            }
+        }
+        if let Some(label) = &v.label {
+            variable_labels.insert(v.name.clone(), label.clone());
+        }
+        if let Some(measure) = v.measure {
+            variable_measures.insert(v.name.clone(), measure);
+        }
+        if let Some(alignment) = v.alignment {
+            variable_alignments.insert(v.name.clone(), alignment);
+        }
+        if let Some(dw) = v.display_width {
+            variable_display_widths.insert(v.name.clone(), dw);
+        }
+        variable_formats.insert(
+            v.name.clone(),
+            SpssVariableFormat {
+                format_type: Some(v.format_type),
+                width: Some(v.format_width),
+                decimals: Some(v.format_decimals),
+            },
+        );
+    }
+
+    if !value_labels.is_empty() {
+        writer = writer.with_value_labels(value_labels);
+    }
+    if !variable_labels.is_empty() {
+        writer = writer.with_variable_labels(variable_labels);
+    }
+    if !variable_measures.is_empty() {
+        writer = writer.with_variable_measures(variable_measures);
+    }
+    if !variable_alignments.is_empty() {
+        writer = writer.with_variable_alignments(variable_alignments);
+    }
+    if !variable_display_widths.is_empty() {
+        writer = writer.with_variable_display_widths(variable_display_widths);
+    }
+    if !variable_formats.is_empty() {
+        writer = writer.with_variable_formats(variable_formats);
+    }
+    writer
 }

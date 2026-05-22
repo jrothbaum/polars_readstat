@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const ROW_LIMIT: usize = 200_000;
+const ROW_LIMIT_WIDE: usize = 1_000; // very wide files (100k+ cols) — full load would freeze
 const BATCH_SIZE: usize = 8_192;
 
 fn find_files(pattern: &str) -> Vec<PathBuf> {
@@ -73,13 +74,56 @@ fn bench_spss(c: &mut Criterion) {
         "{}/tests/spss/data/too_big/*.sav",
         env!("CARGO_MANIFEST_DIR")
     );
-    let mut files = find_files(&pattern_sav);
+    // Exclude the very wide file — it is benchmarked separately with a small row limit.
+    let mut files: Vec<_> = find_files(&pattern_sav)
+        .into_iter()
+        .filter(|p| {
+            p.file_name()
+                .map(|n| n != "export_output_anon_v1.sav")
+                .unwrap_or(true)
+        })
+        .collect();
     let pattern_zsav = format!(
         "{}/tests/spss/data/too_big/*.zsav",
         env!("CARGO_MANIFEST_DIR")
     );
     files.extend(find_files(&pattern_zsav));
     bench_format(c, "spss", files, ReadStatFormat::Spss);
+}
+
+fn bench_spss_wide(c: &mut Criterion) {
+    let file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/spss/data/too_big/export_output_anon_v1.sav");
+    if !file.exists() {
+        return;
+    }
+    let mut group = c.benchmark_group("stream_spss_wide");
+    group.bench_with_input(
+        criterion::BenchmarkId::from_parameter("export_output_anon_v1_1000rows"),
+        &file,
+        |b, p| {
+            b.iter(|| {
+                let opts = ScanOptions::default();
+                let mut iter = readstat_batch_iter(
+                    black_box(p.as_path()),
+                    Some(opts),
+                    Some(ReadStatFormat::Spss),
+                    None,
+                    Some(ROW_LIMIT_WIDE),
+                    Some(BATCH_SIZE),
+                )
+                .expect("batch iter");
+                let mut rows = 0usize;
+                while let Some(batch) = iter.next() {
+                    let df = batch.expect("batch");
+                    rows += df.height();
+                    black_box(&df);
+                }
+                black_box(rows);
+            });
+        },
+    );
+    group.finish();
 }
 
 fn criterion_config() -> Criterion {
@@ -92,7 +136,7 @@ fn criterion_config() -> Criterion {
 criterion_group! {
     name = benches;
     config = criterion_config();
-    targets = bench_sas, bench_stata, bench_spss,
+    targets = bench_sas, bench_stata, bench_spss, bench_spss_wide,
 }
 
 criterion_main!(benches);

@@ -1,10 +1,13 @@
 use num_cpus;
 use polars::prelude::*;
 use polars_readstat_rs::{
+    configure_spss_writer_from_metadata, configure_stata_writer_from_metadata,
     read_sas7bcat, readstat_batch_iter, readstat_metadata_json, readstat_scan, readstat_schema,
+    sas_metadata_json_from_meta, spss_metadata_json_from_meta, stata_metadata_json_from_meta,
     CatalogKey, InformativeNullColumns, InformativeNullMode, InformativeNullOpts, PorWriteOptions,
-    Sas7bdatReader, SasWriter, ScanOptions, SpssAlignment, SpssMeasure, SpssReader,
-    SpssVariableFormat, SpssWriter, StataReader, StataWriter, XptWriter,
+    Sas7bdatReader, SasHeader, SasMetadata, SasWriter, ScanOptions, SpssAlignment, SpssHeader,
+    SpssMeasure, SpssMetadata, SpssReader, SpssVariableFormat, SpssWriter, StataHeader,
+    StataMetadata, StataReader, StataWriter, XptWriter,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -12,7 +15,7 @@ use pyo3::types::{PyDict, PyList};
 use pyo3::wrap_pyfunction;
 use pyo3_polars::{PyDataFrame, PyLazyFrame, PySchema};
 use std::cmp::min;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
@@ -23,6 +26,90 @@ enum ReadstatFormat {
     SasXpt,
     Stata,
     Spss,
+}
+
+/// Opaque Rust handle that holds format-specific parsed metadata.
+///
+/// Avoids the JSON→Python dict→PyO3 round-trip when passing metadata from a
+/// read to a write of the same format.  The dict representation is computed
+/// lazily on first access to `reader.metadata`.
+#[derive(Clone)]
+enum MetadataInner {
+    Spss {
+        meta: Arc<SpssMetadata>,
+        hdr: Arc<SpssHeader>,
+    },
+    Stata {
+        meta: Arc<StataMetadata>,
+        hdr: Arc<StataHeader>,
+    },
+    Sas {
+        meta: Arc<SasMetadata>,
+        hdr: Arc<SasHeader>,
+    },
+}
+
+impl MetadataInner {
+    fn to_json(&self) -> Result<String, String> {
+        match self {
+            Self::Spss { meta, hdr } => {
+                spss_metadata_json_from_meta(meta, hdr).map_err(|e| e.to_string())
+            }
+            Self::Stata { meta, hdr } => {
+                stata_metadata_json_from_meta(meta, hdr).map_err(|e| e.to_string())
+            }
+            Self::Sas { meta, hdr } => {
+                sas_metadata_json_from_meta(meta, hdr).map_err(|e| e.to_string())
+            }
+        }
+    }
+}
+
+/// Python-visible opaque metadata handle — pass directly from `reader.metadata_handle`
+/// to `write_readstat`/`write_spss` to skip JSON serialization entirely.
+#[pyclass(name = "MetadataHandle")]
+pub struct PyMetadata {
+    inner: MetadataInner,
+}
+
+#[pymethods]
+impl PyMetadata {
+    /// Serialize to a JSON string (same output as `reader.metadata` but as a string).
+    fn to_json(&self) -> PyResult<String> {
+        self.inner.to_json().map_err(PyValueError::new_err)
+    }
+}
+
+fn build_metadata_inner(path: &str, format: ReadstatFormat) -> PyResult<MetadataInner> {
+    match format {
+        ReadstatFormat::Spss => {
+            let reader =
+                SpssReader::open(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            Ok(MetadataInner::Spss {
+                meta: Arc::new(reader.metadata().clone()),
+                hdr: Arc::new(reader.header().clone()),
+            })
+        }
+        ReadstatFormat::Stata => {
+            let reader =
+                StataReader::open(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            Ok(MetadataInner::Stata {
+                meta: Arc::new(reader.metadata().clone()),
+                hdr: Arc::new(reader.header().clone()),
+            })
+        }
+        ReadstatFormat::Sas => {
+            let reader =
+                Sas7bdatReader::open(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            Ok(MetadataInner::Sas {
+                meta: Arc::new(reader.metadata().clone()),
+                hdr: Arc::new(reader.header().clone()),
+            })
+        }
+        ReadstatFormat::SasXpt => Err(PyValueError::new_err(
+            "metadata_handle is not supported for XPT format",
+        )),
+    }
 }
 
 fn detect_format(path: &str) -> PyResult<ReadstatFormat> {
@@ -348,12 +435,15 @@ fn read_sas7bcat_rs(py: Python<'_>, path: String) -> PyResult<PyObject> {
 #[pymodule]
 pub fn polars_readstat_bindings(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyPolarsReadstat>()?;
+    m.add_class::<PyMetadata>()?;
     m.add_function(wrap_pyfunction!(readstat_schema_rs, m)?)?;
     m.add_function(wrap_pyfunction!(readstat_metadata_json_rs, m)?)?;
     m.add_function(wrap_pyfunction!(read_readstat_rs, m)?)?;
     m.add_function(wrap_pyfunction!(sink_stata, m)?)?;
     m.add_function(wrap_pyfunction!(write_stata, m)?)?;
     m.add_function(wrap_pyfunction!(write_spss, m)?)?;
+    m.add_function(wrap_pyfunction!(write_spss_from_handle, m)?)?;
+    m.add_function(wrap_pyfunction!(write_stata_from_handle, m)?)?;
     m.add_function(wrap_pyfunction!(write_xpt, m)?)?;
     m.add_function(wrap_pyfunction!(write_por, m)?)?;
     m.add_function(wrap_pyfunction!(scan_por_rs, m)?)?;
@@ -382,6 +472,7 @@ pub struct PyPolarsReadstat {
     n_rows: Option<usize>,
     iter: Option<Mutex<polars_readstat_rs::ReadstatBatchIter>>,
     informative_nulls: Option<InformativeNullOpts>,
+    cached_metadata: Option<MetadataInner>,
 }
 
 #[pymethods]
@@ -429,6 +520,7 @@ impl PyPolarsReadstat {
             n_rows,
             iter: None,
             informative_nulls: parsed_informative_nulls,
+            cached_metadata: None,
         })
     }
 
@@ -494,14 +586,27 @@ impl PyPolarsReadstat {
         }
     }
 
-    fn get_metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let json = readstat_metadata_json(&self.path, None).map_err(PyValueError::new_err)?;
+    fn get_metadata(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let json = if let Some(ref inner) = self.cached_metadata {
+            inner.to_json().map_err(PyValueError::new_err)?
+        } else {
+            readstat_metadata_json(&self.path, None).map_err(PyValueError::new_err)?
+        };
         let json_mod = py.import("json")?;
         let obj = json_mod.call_method1("loads", (json,))?;
         Ok(obj.unbind())
     }
 
-    fn get_column_info(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    fn get_metadata_handle(&mut self) -> PyResult<PyMetadata> {
+        if let Some(inner) = self.cached_metadata.clone() {
+            return Ok(PyMetadata { inner });
+        }
+        let inner = build_metadata_inner(&self.path, self.format)?;
+        self.cached_metadata = Some(inner.clone());
+        Ok(PyMetadata { inner })
+    }
+
+    fn get_column_info(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let md_obj = self.get_metadata(py)?;
         let md = md_obj.bind(py).cast::<PyDict>()?;
         if let Ok(Some(cols)) = md.get_item("columns") {
@@ -513,7 +618,7 @@ impl PyPolarsReadstat {
         Err(PyValueError::new_err("No columns/variables in metadata"))
     }
 
-    fn get_file_info(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    fn get_file_info(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let md_obj = self.get_metadata(py)?;
         let md = md_obj.bind(py).cast::<PyDict>()?;
         let info = PyDict::new(py);
@@ -989,6 +1094,74 @@ fn write_spss(
     writer
         .write_df(&df.0)
         .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// Fast write_spss path: build writer directly from a PyMetadata handle, no Python dicts needed.
+#[pyfunction]
+fn write_spss_from_handle(
+    df: PyDataFrame,
+    path: String,
+    handle: &PyMetadata,
+) -> PyResult<()> {
+    ensure_extension(&path, &["sav", "zsav"])?;
+    match &handle.inner {
+        MetadataInner::Spss { meta, .. } => {
+            let col_names: HashSet<String> = df
+                .0
+                .get_column_names()
+                .iter()
+                .map(|s| s.as_str().to_string())
+                .collect();
+            let writer = configure_spss_writer_from_metadata(
+                SpssWriter::new(&path),
+                meta,
+                &col_names,
+            );
+            writer
+                .write_df(&df.0)
+                .map_err(|e| PyValueError::new_err(e.to_string()))
+        }
+        _ => Err(PyValueError::new_err(
+            "write_spss_from_handle requires an SPSS metadata handle",
+        )),
+    }
+}
+
+/// Fast write_stata path: build writer directly from a PyMetadata handle, no Python dicts needed.
+#[pyfunction]
+fn write_stata_from_handle(
+    df: PyDataFrame,
+    path: String,
+    handle: &PyMetadata,
+    compress: Option<bool>,
+    threads: Option<usize>,
+) -> PyResult<()> {
+    ensure_extension(&path, &["dta"])?;
+    match &handle.inner {
+        MetadataInner::Stata { meta, .. } => {
+            let col_names: HashSet<String> = df
+                .0
+                .get_column_names()
+                .iter()
+                .map(|s| s.as_str().to_string())
+                .collect();
+            let mut writer = StataWriter::new(&path);
+            if let Some(enable) = compress {
+                writer = writer.with_compress(enable);
+            }
+            if let Some(n) = threads {
+                writer = writer.with_n_threads(n);
+            }
+            let writer =
+                configure_stata_writer_from_metadata(writer, meta, &col_names);
+            writer
+                .write_df(&df.0)
+                .map_err(|e| PyValueError::new_err(e.to_string()))
+        }
+        _ => Err(PyValueError::new_err(
+            "write_stata_from_handle requires a Stata metadata handle",
+        )),
+    }
 }
 
 #[pyfunction]

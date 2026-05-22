@@ -137,8 +137,8 @@ if __name__ == "__main__":
         read_multithreaded_test(fmt, subset_columns=False, filter_rows=True)
         read_multithreaded_test(fmt, subset_columns=True,  filter_rows=True)
 
-    test("sas7bdat")
-    # test("stata")
-    # test("spss")
-    # test("zsav")
+    # test("sas7bdat")
+    test("stata")
+    test("spss")
+    test("zsav")
     # test("xpt")
