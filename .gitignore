@@ -1,6 +1,8 @@
 # environment
 .idea/
 .vscode/
+.cargo/config.toml
+.claude/settings.json
 # target
 /target/
 # cargo
