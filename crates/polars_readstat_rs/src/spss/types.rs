@@ -49,24 +49,20 @@ pub struct Header {
     pub data_label: Option<String>,
 }
 
+/// Per-variable information needed by the data reader and metadata JSON path.
+/// User-visible display metadata (label, format_type/width/decimals, measure,
+/// display_width, alignment) lives in `Metadata.metadata_df` instead.
 #[derive(Debug, Clone)]
-pub struct Variable {
+pub struct ColumnPlan {
     pub name: String,
     pub short_name: String,
     pub var_type: VarType,
     pub width: usize,      // number of 8-byte segments
     pub string_len: usize, // declared string length in bytes (0 for numeric)
-    pub format_type: u8,
-    pub format_width: u8,
-    pub format_decimals: u8,
+    pub format_class: Option<FormatClass>,
     pub write_format_type: u8,
     pub write_format_width: u8,
     pub write_format_decimals: u8,
-    pub format_class: Option<FormatClass>,
-    pub measure: Option<Measure>,
-    pub display_width: Option<i32>,
-    pub alignment: Option<Alignment>,
-    pub label: Option<String>,
     pub value_label: Option<String>,
     pub offset: usize, // segment offset within row
     pub missing_range: bool,
@@ -77,7 +73,8 @@ pub struct Variable {
 
 #[derive(Debug, Clone)]
 pub struct Metadata {
-    pub variables: Vec<Variable>,
+    pub variables: Vec<ColumnPlan>,
+    pub metadata_df: polars::prelude::DataFrame,
     pub row_count: u64,
     pub data_offset: Option<u64>,
     pub encoding: &'static encoding_rs::Encoding,
@@ -88,6 +85,7 @@ impl Default for Metadata {
     fn default() -> Self {
         Self {
             variables: Vec::new(),
+            metadata_df: polars::prelude::DataFrame::empty(),
             row_count: 0,
             data_offset: None,
             encoding: encoding_rs::WINDOWS_1252,

@@ -82,7 +82,6 @@ pub struct Header {
 #[derive(Debug, Clone)]
 pub struct Column {
     pub name: String,
-    pub label: String,
     pub format: String,
     pub col_type: ColumnType,
     pub offset: usize,
@@ -106,6 +105,7 @@ pub struct Metadata {
     pub mix_page_row_count: usize,
     pub column_count: usize,
     pub columns: Vec<Column>,
+    pub metadata_df: polars::prelude::DataFrame,
     pub creator: String,
     pub creator_proc: String,
     pub encoding_byte: u8,

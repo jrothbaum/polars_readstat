@@ -193,7 +193,6 @@ impl SpssWriter {
         write_variable_display_record(&mut writer, &columns)?;
         write_long_var_names_record(&mut writer, &columns, encoding)?;
         write_very_long_string_record(&mut writer, &columns)?;
-        write_encoding_record(&mut writer, encoding)?;
         write_number_of_cases_record(&mut writer, df.height() as u64)?;
         write_dict_termination(&mut writer)?;
         write_data(&mut writer, df, &columns, encoding)?;
@@ -341,18 +340,12 @@ fn apply_format_override(
 
 fn variable_measure(
     name: &str,
-    var_type: VarType,
+    _var_type: VarType,
     variable_measures: Option<&SpssVariableMeasures>,
 ) -> Measure {
     variable_measures
         .and_then(|m| m.get(name).copied())
-        .unwrap_or_else(|| {
-            if var_type == VarType::Str {
-                Measure::Nominal
-            } else {
-                Measure::Scale
-            }
-        })
+        .unwrap_or(Measure::Unknown)
 }
 
 fn variable_alignment(
@@ -373,20 +366,14 @@ fn variable_alignment(
 
 fn variable_display_width(
     name: &str,
-    var_type: VarType,
-    string_len: usize,
-    format_width: u8,
+    _var_type: VarType,
+    _string_len: usize,
+    _format_width: u8,
     variable_display_widths: Option<&SpssVariableDisplayWidths>,
 ) -> Result<i32> {
     let width = variable_display_widths
         .and_then(|widths| widths.get(name).copied())
-        .unwrap_or_else(|| {
-            if var_type == VarType::Str {
-                string_len.min(255).max(1) as i32
-            } else {
-                format_width.max(1) as i32
-            }
-        });
+        .unwrap_or(8);
     if width <= 0 {
         return Err(Error::ParseError(format!(
             "SPSS variable display width must be > 0 for {name}"
@@ -423,8 +410,7 @@ fn dtype_to_spss(
         DataType::Date => Ok((VarType::Numeric, 0, 1, 20, 11, 0)),
         DataType::Datetime(_, _) => Ok((VarType::Numeric, 0, 1, 22, 20, 0)),
         DataType::Time => Ok((VarType::Numeric, 0, 1, 21, 8, 0)),
-        DataType::Float32 | DataType::Float64 => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 2)),
-        _ => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 0)),
+        _ => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 2)),
     }
 }
 
@@ -445,8 +431,7 @@ fn infer_series(series: &Series) -> Result<(VarType, usize, usize, u8, u8, u8)> 
         DataType::Date => Ok((VarType::Numeric, 0, 1, 20, 11, 0)),
         DataType::Datetime(_, _) => Ok((VarType::Numeric, 0, 1, 22, 20, 0)),
         DataType::Time => Ok((VarType::Numeric, 0, 1, 21, 8, 0)),
-        DataType::Float32 | DataType::Float64 => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 2)),
-        _ => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 0)),
+        _ => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 2)),
     }
 }
 
@@ -492,6 +477,10 @@ fn validate_long_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+fn is_spss_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '.'
+}
+
 fn is_valid_short_name(name: &str) -> bool {
     if name.is_empty() || name.as_bytes().len() > 8 || !name.is_ascii() {
         return false;
@@ -501,13 +490,13 @@ fn is_valid_short_name(name: &str) -> bool {
     if !first.is_ascii_alphabetic() {
         return false;
     }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    chars.all(is_spss_name_char)
 }
 
 fn sanitize_short_base(name: &str) -> String {
     let mut out = String::new();
     for c in name.chars() {
-        if c.is_ascii_alphanumeric() || c == '_' {
+        if is_spss_name_char(c) {
             out.push(c.to_ascii_uppercase());
         }
     }
@@ -614,88 +603,92 @@ fn merge_variable_labels(
 }
 
 fn choose_encoding(
-    df: &DataFrame,
-    columns: &[ColumnSpec],
-    value_labels: Option<&SpssValueLabels>,
-    variable_labels: Option<&SpssVariableLabels>,
+    _df: &DataFrame,
+    _columns: &[ColumnSpec],
+    _value_labels: Option<&SpssValueLabels>,
+    _variable_labels: Option<&SpssVariableLabels>,
 ) -> Result<&'static encoding_rs::Encoding> {
-    let enc_1252 = encoding_rs::WINDOWS_1252;
-    let mut needs_utf8 = false;
-
-    if let Some(labels) = variable_labels {
-        for label in labels.values() {
-            let (_, _, had_errors) = enc_1252.encode(label);
-            if had_errors {
-                needs_utf8 = true;
-                break;
-            }
-        }
-    }
-
-    if !needs_utf8 {
-        if let Some(vlabels) = value_labels {
-            for map in vlabels.values() {
-                for label in map.values() {
-                    let (_, _, had_errors) = enc_1252.encode(label);
-                    if had_errors {
-                        needs_utf8 = true;
-                        break;
-                    }
-                }
-                if needs_utf8 {
-                    break;
-                }
-            }
-        }
-    }
-
-    if !needs_utf8 {
-        for col in columns {
-            let (_, _, had_errors) = enc_1252.encode(&col.name);
-            if had_errors {
-                needs_utf8 = true;
-                break;
-            }
-            if col.var_type != VarType::Str {
-                continue;
-            }
-            let series = df
-                .column(&col.name)
-                .map_err(|e| Error::ParseError(e.to_string()))?
-                .as_materialized_series();
-            let ca = series.str().map_err(|e| Error::ParseError(e.to_string()))?;
-            for opt in ca.into_iter() {
-                if let Some(s) = opt {
-                    let (_, _, had_errors) = enc_1252.encode(s);
-                    if had_errors {
-                        needs_utf8 = true;
-                        break;
-                    }
-                }
-            }
-            if needs_utf8 {
-                break;
-            }
-        }
-    }
-
-    Ok(if needs_utf8 {
-        encoding_rs::UTF_8
-    } else {
-        enc_1252
-    })
+    Ok(encoding_rs::UTF_8)
 }
 
 fn write_header<W: Write>(writer: &mut W, row_count: i32, nominal_case_size: usize) -> Result<()> {
-    let mut buf = vec![0u8; SAV_HEADER_LEN];
+    // SAV header layout (176 bytes):
+    //   0–3    rec_type "$FL2"
+    //   4–63   prod_name (60 bytes, space-padded)
+    //   64–67  layout_code = 2
+    //   68–71  nominal_case_size
+    //   72–75  compression = 0
+    //   76–79  weight_index = 0
+    //   80–83  ncases
+    //   84–91  bias = 100.0 (f64)
+    //   92–100 creation_date (9 bytes "DD MMM YY", space-padded)
+    //   101–108 creation_time (8 bytes "HH:MM:SS", space-padded)
+    //   109–172 file_label (64 bytes, space-padded per spec)
+    //   173–175 padding (3 null bytes)
+    let mut buf = vec![b' '; SAV_HEADER_LEN];
     buf[0..4].copy_from_slice(b"$FL2");
+    let prod = b"@(#) SPSS DATA FILE";
+    buf[4..4 + prod.len()].copy_from_slice(prod);
     buf[64..68].copy_from_slice(&2i32.to_le_bytes());
     buf[68..72].copy_from_slice(&(nominal_case_size as i32).to_le_bytes());
     buf[72..76].copy_from_slice(&0i32.to_le_bytes());
+    buf[76..80].copy_from_slice(&0i32.to_le_bytes());
     buf[80..84].copy_from_slice(&row_count.to_le_bytes());
     buf[84..92].copy_from_slice(&100.0f64.to_le_bytes());
+
+    // Write current date/time into the fixed-width fields.
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let (date_str, time_str) = format_sav_datetime(secs);
+    buf[92..92 + date_str.len()].copy_from_slice(date_str.as_bytes());
+    buf[101..101 + time_str.len()].copy_from_slice(time_str.as_bytes());
+
+    // Padding must be null bytes.
+    buf[173..176].fill(0);
     writer.write_all(&buf)?;
     Ok(())
+}
+
+fn format_sav_datetime(unix_secs: u64) -> (String, String) {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let mut days = (unix_secs / 86400) as i64;
+    let time_of_day = (unix_secs % 86400) as u64;
+    let h = time_of_day / 3600;
+    let m = (time_of_day % 3600) / 60;
+    let s = time_of_day % 60;
+
+    let mut year = 1970i32;
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+        if days < days_in_year {
+            break;
+        }
+        days -= days_in_year;
+        year += 1;
+    }
+    let month_days: [i64; 12] = if is_leap_year(year) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    let mut month = 0usize;
+    while month < 12 && days >= month_days[month] {
+        days -= month_days[month];
+        month += 1;
+    }
+    let day = days + 1;
+    let yy = year % 100;
+    let date = format!("{:02} {} {:02}", day, MONTHS[month], yy);
+    let time = format!("{:02}:{:02}:{:02}", h, m, s);
+    (date, time)
+}
+
+fn is_leap_year(y: i32) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
 fn write_variable_records<W: Write>(
@@ -1262,9 +1255,11 @@ mod tests {
 
         let label_name_to_def: std::collections::HashMap<&str, &crate::spss::types::ValueLabel> =
             metadata.value_labels.iter().map(|v| (v.name.as_str(), v)).collect();
-        for var in &metadata.variables {
-            if let Some(label) = var.label.clone() {
-                variable_labels.insert(var.name.clone(), label);
+        let label_col = metadata.metadata_df.column("label").ok();
+        let label_ca = label_col.as_ref().and_then(|c| c.str().ok());
+        for (i, var) in metadata.variables.iter().enumerate() {
+            if let Some(label) = label_ca.and_then(|ca| ca.get(i)).filter(|s| !s.is_empty()) {
+                variable_labels.insert(var.name.clone(), label.to_string());
             }
             let Some(label_name) = var.value_label.as_ref() else {
                 continue;

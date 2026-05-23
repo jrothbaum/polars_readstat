@@ -32,18 +32,22 @@ pub struct Header {
     pub timestamp: Option<String>,
 }
 
+/// Per-variable information needed by the data reader.
+/// Label and value_label_name are still included: label is used by the writer's
+/// build_labels path; value_label_name is used by the data reader for value label
+/// expansion. The user-visible metadata_df lives in `Metadata.metadata_df`.
 #[derive(Debug, Clone)]
 pub struct Variable {
     pub name: String,
     pub var_type: VarType,
     pub format: Option<String>,
-    pub label: Option<String>,
     pub value_label_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Metadata {
     pub variables: Vec<Variable>,
+    pub metadata_df: polars::prelude::DataFrame,
     pub value_labels: Vec<ValueLabel>,
     pub sort_order: Vec<u32>,
     pub byte_order: Endian,
@@ -51,8 +55,6 @@ pub struct Metadata {
     pub data_label: Option<String>,
     pub timestamp: Option<String>,
     pub storage_widths: Vec<u16>,
-    pub formats: Vec<String>,
-    pub variable_labels: Vec<String>,
     pub data_offset: Option<u64>,
     pub strls_offset: Option<u64>,
     pub value_labels_offset: Option<u64>,
@@ -63,6 +65,7 @@ impl Default for Metadata {
     fn default() -> Self {
         Self {
             variables: Vec::new(),
+            metadata_df: polars::prelude::DataFrame::empty(),
             value_labels: Vec::new(),
             sort_order: Vec::new(),
             byte_order: Endian::Little,
@@ -70,8 +73,6 @@ impl Default for Metadata {
             data_label: None,
             timestamp: None,
             storage_widths: Vec::new(),
-            formats: Vec::new(),
-            variable_labels: Vec::new(),
             data_offset: None,
             strls_offset: None,
             value_labels_offset: None,

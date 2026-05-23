@@ -49,7 +49,11 @@ fn test_stata_value_labels_roundtrip() {
 
     let var = meta.variables.iter().find(|v| v.name == "status").unwrap();
     assert_eq!(var.value_label_name.as_deref(), Some("status"));
-    assert_eq!(var.label.as_deref(), Some("Status Label"));
+    let status_idx = meta.variables.iter().position(|v| v.name == "status").unwrap();
+    let label = meta.metadata_df.column("label").ok()
+        .and_then(|c| c.str().ok())
+        .and_then(|ca| ca.get(status_idx));
+    assert_eq!(label, Some("Status Label"));
 
     let label = meta
         .value_labels

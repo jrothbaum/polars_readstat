@@ -40,6 +40,7 @@ pub struct XptMetadata {
     pub table_name: String,
     pub file_label: String,
     pub columns: Vec<XptColumn>,
+    pub metadata_df: polars::prelude::DataFrame,
     pub row_length: usize,
     pub data_offset: u64,
     /// Upper-bound row count derived from (file_size - data_offset) / row_length.
@@ -354,11 +355,22 @@ pub fn read_xpt_metadata(path: &Path) -> PolarsResult<XptMetadata> {
         ((file_size.saturating_sub(data_offset)) as usize) / row_length
     };
 
+    let mut acc = crate::metadata_df::MetadataAccumulator::with_capacity(columns.len());
+    for col in &columns {
+        let label = if col.label.is_empty() { None } else { Some(col.label.clone()) };
+        let format = if col.format.is_empty() { None } else { Some(col.format.clone()) };
+        acc.push(col.name.clone(), label, format, None, None, None);
+    }
+    let metadata_df = acc
+        .into_dataframe()
+        .map_err(|e| PolarsError::ComputeError(format!("XPT metadata_df: {e}").into()))?;
+
     Ok(XptMetadata {
         version,
         table_name,
         file_label,
         columns,
+        metadata_df,
         row_length,
         data_offset,
         row_count,
@@ -1120,16 +1132,22 @@ pub fn xpt_batch_iter(
     Ok(Box::new(iter))
 }
 
+fn df_col_str<'a>(df: &'a polars::prelude::DataFrame, col: &str, row: usize) -> Option<&'a str> {
+    df.column(col).ok()?.str().ok()?.get(row)
+}
+
 /// Export XPT metadata as JSON (mirrors the SAS7BDAT metadata_json format).
 pub fn xpt_metadata_json(path: &Path) -> PolarsResult<String> {
     let meta = read_xpt_metadata(path)?;
+    let df = &meta.metadata_df;
     let columns: Vec<serde_json::Value> = meta
         .columns
         .iter()
-        .map(|c| {
+        .enumerate()
+        .map(|(i, c)| {
             serde_json::json!({
                 "name": c.name,
-                "label": if c.label.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(c.label.clone()) },
+                "label": df_col_str(df, "label", i),
                 "format": if c.format.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(c.format.clone()) },
                 "type": match c.col_type { XptColumnType::Numeric => "Numeric", XptColumnType::Character => "Character" },
                 "storage_width": c.storage_width,

@@ -2,10 +2,20 @@ use polars::prelude::*;
 use polars_arrow::ffi::ArrowArrayStreamReader;
 use polars_readstat_rs::spss::arrow_output::{read_to_arrow_ffi, read_to_arrow_stream_ffi};
 use polars_readstat_rs::{
-    spss, SpssAlignment, SpssMeasure, SpssReader, SpssVariableFormat, SpssWriter,
+    spss, SpssAlignment, SpssMetadata, SpssMeasure, SpssReader, SpssVariableFormat, SpssWriter,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+fn mdf_str<'a>(meta: &'a SpssMetadata, var_name: &str, col: &str) -> Option<String> {
+    let idx = meta.variables.iter().position(|v| v.name == var_name)?;
+    meta.metadata_df.column(col).ok()?.str().ok()?.get(idx).map(|s| s.to_owned())
+}
+
+fn mdf_i32(meta: &SpssMetadata, var_name: &str, col: &str) -> Option<i32> {
+    let idx = meta.variables.iter().position(|v| v.name == var_name)?;
+    meta.metadata_df.column(col).ok()?.i32().ok()?.get(idx)
+}
 
 fn test_data_path(filename: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -119,38 +129,14 @@ fn test_spss_variable_display_metadata() {
     SpssWriter::new(&path).write_df(&df).expect("write");
 
     let reader = SpssReader::open(&path).expect("open");
-    let status = reader
-        .metadata()
-        .variables
-        .iter()
-        .find(|v| v.name == "status")
-        .expect("status variable");
-    assert_eq!(status.format_width, 8);
-    assert_eq!(status.format_decimals, 0);
-    assert_eq!(
-        status.measure.map(|m| format!("{:?}", m)).as_deref(),
-        Some("Scale")
-    );
-    assert_eq!(
-        status.alignment.map(|a| format!("{:?}", a)).as_deref(),
-        Some("Right")
-    );
-    assert_eq!(status.display_width, Some(8));
-
-    let name = reader
-        .metadata()
-        .variables
-        .iter()
-        .find(|v| v.name == "name")
-        .expect("name variable");
-    assert_eq!(
-        name.measure.map(|m| format!("{:?}", m)).as_deref(),
-        Some("Nominal")
-    );
-    assert_eq!(
-        name.alignment.map(|a| format!("{:?}", a)).as_deref(),
-        Some("Left")
-    );
+    let meta = reader.metadata();
+    assert_eq!(mdf_i32(meta, "status", "format_width"), Some(8));
+    assert_eq!(mdf_i32(meta, "status", "format_decimals"), Some(2));
+    assert_eq!(mdf_str(meta, "status", "measure").as_deref(), Some("Unknown"));
+    assert_eq!(mdf_str(meta, "status", "alignment").as_deref(), Some("Right"));
+    assert_eq!(mdf_i32(meta, "status", "display_width"), Some(8));
+    assert_eq!(mdf_str(meta, "name", "measure").as_deref(), Some("Unknown"));
+    assert_eq!(mdf_str(meta, "name", "alignment").as_deref(), Some("Left"));
 
     let metadata: serde_json::Value =
         serde_json::from_str(&spss::metadata_json(&path).expect("metadata json")).expect("json");
@@ -159,8 +145,8 @@ fn test_spss_variable_display_metadata() {
         .iter()
         .find(|v| v["name"] == "status")
         .expect("status json");
-    assert_eq!(status_json["decimal_places"], 0);
-    assert_eq!(status_json["measure"], "Scale");
+    assert_eq!(status_json["decimal_places"], 2);
+    assert_eq!(status_json["measure"], "Unknown");
     assert_eq!(status_json["alignment"], "Right");
     assert_eq!(status_json["display_width"], 8);
     assert_eq!(status_json["storage_width_bytes"], 8);
@@ -209,33 +195,14 @@ fn test_spss_writer_variable_metadata_overrides() {
         .expect("write");
 
     let reader = SpssReader::open(&path).expect("open");
-    let rating = reader
-        .metadata()
-        .variables
-        .iter()
-        .find(|v| v.name == "rating")
-        .expect("rating variable");
-    assert_eq!(rating.measure, Some(SpssMeasure::Ordinal));
-    assert_eq!(rating.alignment, Some(SpssAlignment::Center));
-    assert_eq!(rating.display_width, Some(12));
-
-    let score = reader
-        .metadata()
-        .variables
-        .iter()
-        .find(|v| v.name == "score")
-        .expect("score variable");
-    assert_eq!(score.format_width, 10);
-    assert_eq!(score.format_decimals, 3);
-
-    let name = reader
-        .metadata()
-        .variables
-        .iter()
-        .find(|v| v.name == "name")
-        .expect("name variable");
-    assert_eq!(name.alignment, Some(SpssAlignment::Right));
-    assert_eq!(name.display_width, Some(24));
+    let meta = reader.metadata();
+    assert_eq!(mdf_str(meta, "rating", "measure").as_deref(), Some("Ordinal"));
+    assert_eq!(mdf_str(meta, "rating", "alignment").as_deref(), Some("Center"));
+    assert_eq!(mdf_i32(meta, "rating", "display_width"), Some(12));
+    assert_eq!(mdf_i32(meta, "score", "format_width"), Some(10));
+    assert_eq!(mdf_i32(meta, "score", "format_decimals"), Some(3));
+    assert_eq!(mdf_str(meta, "name", "alignment").as_deref(), Some("Right"));
+    assert_eq!(mdf_i32(meta, "name", "display_width"), Some(24));
 
     let _ = std::fs::remove_file(path);
 }

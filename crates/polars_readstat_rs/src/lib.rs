@@ -4,6 +4,7 @@
 //! It supports all format variants (32/64-bit, big/little endian) and
 //! all compression types (None, RLE, RDC).
 
+pub mod metadata_df;
 mod readstat_stream;
 pub mod sas;
 pub(crate) mod scan_prefetch;
@@ -35,8 +36,6 @@ pub use sas::reader;
 pub use sas::{Compression, Endian, Format, Platform, Header as SasHeader, Metadata as SasMetadata};
 pub use sas::{Error, Result, Sas7bdatReader};
 pub use sas::metadata_json_from_meta as sas_metadata_json_from_meta;
-pub use sas::build_metadata_df as build_sas_metadata_df;
-pub use sas::build_xpt_metadata_df as build_xpt_metadata_df;
 pub use sas::{SasValueLabelKey, SasValueLabelMap, SasValueLabels, SasVariableLabels, SasWriter};
 pub use sas::{read_xpt_metadata, XptMetadata, XptVariableFormats, XptVariableLabels, XptStorageWidths, XptWriter};
 
@@ -51,9 +50,6 @@ pub use spss::{
     Measure as SpssMeasure, Metadata as SpssMetadata, Result as SpssResult, SpssReader,
 };
 pub use spss::metadata_json_from_meta as spss_metadata_json_from_meta;
-pub use spss::configure_writer_from_metadata as configure_spss_writer_from_metadata;
-pub use spss::build_metadata_df as build_spss_metadata_df;
-pub use spss::build_por_metadata_df as build_por_metadata_df;
 pub use spss::{
     SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels, SpssVariableAlignments,
     SpssVariableDisplayWidths, SpssVariableFormat, SpssVariableFormats, SpssVariableLabels,
@@ -69,8 +65,6 @@ pub use stata::{
     ValueLabelMap, ValueLabels, VariableFormats, VariableLabels,
 };
 pub use stata::metadata_json_from_meta as stata_metadata_json_from_meta;
-pub use stata::configure_writer_from_metadata as configure_stata_writer_from_metadata;
-pub use stata::build_metadata_df as build_stata_metadata_df;
 
 use polars::prelude::DataFrame;
 use polars_core::POOL;

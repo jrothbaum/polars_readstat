@@ -1,3 +1,4 @@
+use crate::metadata_df::MetadataAccumulator;
 use crate::stata::encoding;
 use crate::stata::error::{Error, Result};
 use crate::stata::types::{
@@ -70,24 +71,24 @@ pub fn read_metadata<R: Read + Seek>(reader: &mut R, header: &Header) -> Result<
     )?;
 
     metadata.sort_order = sort_order;
-    metadata.formats = formats.clone();
-    metadata.variable_labels = variable_labels.clone();
 
-    let mut variables = Vec::with_capacity(header.nvars as usize);
-    let mut storage_widths = Vec::with_capacity(header.nvars as usize);
+    let n = header.nvars as usize;
+    let mut variables = Vec::with_capacity(n);
+    let mut storage_widths = Vec::with_capacity(n);
+    let mut acc = MetadataAccumulator::with_capacity(n);
 
-    for i in 0..header.nvars as usize {
+    for i in 0..n {
         let (var_type, storage_width) = typecode_to_vartype(typlist[i], &layout)?;
         storage_widths.push(storage_width);
         let name = varnames.get(i).cloned().unwrap_or_default();
         let format = formats.get(i).cloned().filter(|s| !s.is_empty());
         let label = variable_labels.get(i).cloned().filter(|s| !s.is_empty());
         let value_label_name = value_label_names.get(i).cloned().filter(|s| !s.is_empty());
+        acc.push(name.clone(), label, format.clone(), None, None, None);
         variables.push(Variable {
             name,
             var_type,
             format,
-            label,
             value_label_name,
         });
     }
@@ -109,7 +110,36 @@ pub fn read_metadata<R: Read + Seek>(reader: &mut R, header: &Header) -> Result<
         }
     }
 
-    metadata.value_labels = read_value_labels(reader, header, &layout, &metadata)?;
+    let value_labels = read_value_labels(reader, header, &layout, &metadata)?;
+
+    // Populate value-label groups in accumulator for metadata_df resolution.
+    for (i, var) in metadata.variables.iter().enumerate() {
+        if let Some(vl_name) = &var.value_label_name {
+            if let Some(vl) = value_labels.iter().find(|v| &v.name == vl_name) {
+                let (codes, labels): (Vec<String>, Vec<String>) = vl
+                    .mapping
+                    .iter()
+                    .map(|(k, l)| {
+                        let code = match k {
+                            ValueLabelKey::Integer(v) => v.to_string(),
+                            ValueLabelKey::Double(v) => v.to_string(),
+                            ValueLabelKey::Str(s) => s.clone(),
+                        };
+                        (code, l.clone())
+                    })
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .unzip();
+                acc.add_value_label_group(vl_name.clone(), codes, labels);
+            }
+            acc.set_value_label_name(i, vl_name.clone());
+        }
+    }
+
+    metadata.metadata_df = acc
+        .into_dataframe()
+        .map_err(|e| Error::ParseError(e.to_string()))?;
+    metadata.value_labels = value_labels;
 
     Ok(metadata)
 }

@@ -876,17 +876,24 @@ impl MetadataBuilder {
             columns[idx].label = label;
         }
 
+        let mut acc = crate::metadata_df::MetadataAccumulator::with_capacity(column_count);
         let columns = columns
             .into_iter()
-            .map(|cb| Column {
-                name: cb.name,
-                label: cb.label,
-                format: cb.format,
-                col_type: cb.col_type,
-                offset: cb.offset,
-                length: cb.length,
+            .map(|cb| {
+                let label = if cb.label.is_empty() { None } else { Some(cb.label.clone()) };
+                let format = if cb.format.is_empty() { None } else { Some(cb.format.clone()) };
+                acc.push(cb.name.clone(), label, format, None, None, None);
+                Column {
+                    name: cb.name,
+                    format: cb.format,
+                    col_type: cb.col_type,
+                    offset: cb.offset,
+                    length: cb.length,
+                }
             })
             .collect();
+
+        let metadata_df = acc.into_dataframe().map_err(|e| Error::ParseError(e.to_string()))?;
 
         Ok(Metadata {
             compression: self.compression,
@@ -895,10 +902,11 @@ impl MetadataBuilder {
             mix_page_row_count,
             column_count,
             columns,
+            metadata_df,
             creator: self.creator,
             creator_proc: self.creator_proc,
             encoding_byte: self.encoding_byte,
-            page_index: Vec::new(), // TODO: Build page index for fast seeking
+            page_index: Vec::new(),
         })
     }
 }

@@ -1,5 +1,5 @@
 use crate::spss::error::{Error, Result};
-use crate::spss::types::{Endian, FormatClass, Metadata, VarType, Variable};
+use crate::spss::types::{ColumnPlan as SpssColumnPlan, Endian, FormatClass, Metadata, VarType};
 use flate2::read::ZlibDecoder;
 use polars::prelude::*;
 use std::collections::HashSet;
@@ -1493,7 +1493,7 @@ struct ColumnPlan {
 
 impl ColumnPlan {
     fn new(
-        var: &Variable,
+        var: &SpssColumnPlan,
         offset: usize,
         width: usize,
         label_map: Option<Arc<LabelMap>>,

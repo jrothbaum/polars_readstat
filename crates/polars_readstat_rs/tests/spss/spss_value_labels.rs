@@ -50,7 +50,11 @@ fn test_spss_value_and_variable_labels() {
             v.short_name.eq_ignore_ascii_case("status") || v.name.eq_ignore_ascii_case("status")
         })
         .expect("status variable");
-    assert_eq!(var.label.as_deref(), Some("Status Label"));
+    let status_idx = meta.variables.iter().position(|v| v.name == var.name).unwrap();
+    let label = meta.metadata_df.column("label").ok()
+        .and_then(|c| c.str().ok())
+        .and_then(|ca| ca.get(status_idx));
+    assert_eq!(label, Some("Status Label"));
     assert!(var.value_label.is_some());
 
     let out = reader

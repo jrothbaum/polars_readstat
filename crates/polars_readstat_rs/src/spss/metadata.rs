@@ -1,6 +1,7 @@
+use crate::metadata_df::MetadataAccumulator;
 use crate::spss::error::{Error, Result};
 use crate::spss::types::{
-    Alignment, Endian, FormatClass, Header, Measure, Metadata, VarType, Variable,
+    ColumnPlan, Endian, FormatClass, Header, Metadata, VarType,
 };
 use std::io::{Read, Seek, SeekFrom};
 
@@ -9,7 +10,6 @@ use std::io::{Read, Seek, SeekFrom};
 /// unlike `seek(SeekFrom::Current(n))` which calls `stream_position()` for every seek.
 #[inline]
 fn drain<R: Read>(reader: &mut R, n: usize) -> std::io::Result<()> {
-    // Stack buffer; large enough for all typical label/record skips.
     let mut buf = [0u8; 512];
     let mut remaining = n;
     while remaining > 0 {
@@ -56,7 +56,6 @@ fn prescan_char_encoding_inner<R: Read + Seek>(
         let rec_type = read_u32(reader, header.endian).ok()?;
         match rec_type {
             REC_TYPE_VARIABLE => {
-                // Skip: read fixed 28 bytes, then optionally a label
                 let mut buf = [0u8; 28];
                 reader.read_exact(&mut buf).ok()?;
                 let has_label = read_i32(&buf[4..8], header.endian);
@@ -72,23 +71,18 @@ fn prescan_char_encoding_inner<R: Read + Seek>(
                 }
             }
             REC_TYPE_VALUE_LABEL => {
-                // Mirror the actual read_value_label_record format:
-                // N entries of (8 bytes key + 1 byte len + padded label),
-                // followed by an embedded REC_TYPE_VALUE_LABEL_VARIABLES record.
                 let count = read_u32(reader, header.endian).ok()? as usize;
                 for _ in 0..count {
-                    drain(reader, 8).ok()?; // 8-byte raw value
+                    drain(reader, 8).ok()?;
                     let vlen = read_u8(reader).ok()? as usize;
                     let padded = ((vlen + 8) / 8) * 8 - 1;
                     drain(reader, padded).ok()?;
                 }
-                // Consume embedded value_label_variables record
-                let _rec = read_u32(reader, header.endian).ok()?; // should be 4
+                let _rec = read_u32(reader, header.endian).ok()?;
                 let var_count = read_u32(reader, header.endian).ok()? as usize;
                 drain(reader, var_count * 4).ok()?;
             }
             REC_TYPE_VALUE_LABEL_VARIABLES => {
-                // Should not normally appear here (consumed inside VALUE_LABEL), but skip it.
                 let var_count = read_u32(reader, header.endian).ok()? as usize;
                 drain(reader, var_count * 4).ok()?;
             }
@@ -137,42 +131,54 @@ fn read_u8<R: Read>(reader: &mut R) -> Result<u8> {
 }
 
 pub fn read_metadata<R: Read + Seek>(reader: &mut R, header: &Header) -> Result<Metadata> {
-    let mut metadata = Metadata::default();
-    // Pre-scan to find character encoding before reading variable labels,
-    // since the encoding info record comes after the variable records in the file.
-    if let Some(enc) = prescan_char_encoding(reader, header) {
-        metadata.encoding = enc;
-    }
-    metadata.row_count = header.row_count.max(0) as u64;
+    let capacity = header.nominal_case_size.max(0) as usize;
+    let encoding = prescan_char_encoding(reader, header)
+        .unwrap_or(encoding_rs::WINDOWS_1252);
+
+    let mut variables: Vec<ColumnPlan> = Vec::with_capacity(capacity);
+    let mut acc = MetadataAccumulator::with_capacity(capacity);
+
+    let mut row_count = header.row_count.max(0) as u64;
+    let mut data_offset: Option<u64> = None;
+    let mut value_labels_out: Vec<crate::spss::types::ValueLabel> = Vec::new();
 
     let mut last_var_index: Option<usize> = None;
     let mut label_set_index = 0usize;
     let mut current_offset = 0usize;
-    // offset → variable index, for O(1) lookup in value label records instead of O(N) scan.
-    let mut offset_to_idx: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut offset_to_idx: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
 
     loop {
         let rec_type = read_u32(reader, header.endian)?;
         match rec_type {
             REC_TYPE_VARIABLE => {
-                let variable = read_variable_record(
+                if let Some(plan) = read_variable_record(
                     reader,
                     header,
+                    encoding,
                     last_var_index,
-                    &mut metadata,
+                    &mut variables,
+                    &mut acc,
                     &mut current_offset,
-                )?;
-                if let Some(var) = variable {
-                    offset_to_idx.insert(var.offset, metadata.variables.len());
-                    metadata.variables.push(var);
-                    last_var_index = Some(metadata.variables.len() - 1);
+                )? {
+                    offset_to_idx.insert(plan.offset, variables.len());
+                    last_var_index = Some(variables.len());
+                    variables.push(plan);
                 }
             }
             REC_TYPE_VALUE_LABEL => {
-                read_value_label_record(reader, header, &mut metadata, &mut label_set_index, &offset_to_idx)?;
+                read_value_label_record(
+                    reader,
+                    header,
+                    encoding,
+                    &mut variables,
+                    &mut acc,
+                    &mut value_labels_out,
+                    &mut label_set_index,
+                    &offset_to_idx,
+                )?;
             }
             REC_TYPE_VALUE_LABEL_VARIABLES => {
-                // part of value-label record; skip count and var indexes
                 let var_count = read_u32(reader, header.endian)? as usize;
                 drain(reader, var_count * 4)?;
             }
@@ -188,44 +194,50 @@ pub fn read_metadata<R: Read + Seek>(reader: &mut R, header: &Header) -> Result<
                 if subtype == SUBTYPE_INTEGER_INFO && data_len >= 8 * 4 {
                     let mut buf = vec![0u8; data_len];
                     reader.read_exact(&mut buf)?;
-                    parse_integer_info(&buf, header, &mut metadata)?;
+                    if let Some(new_enc) = parse_integer_info_encoding(&buf, header)? {
+                        if new_enc != encoding {
+                            redecode_all(&mut variables, &mut acc, &mut value_labels_out, encoding, new_enc);
+                        }
+                    }
                 } else if subtype == SUBTYPE_VAR_DISPLAY && data_len > 0 {
                     let mut buf = vec![0u8; data_len];
                     reader.read_exact(&mut buf)?;
-                    parse_variable_display_parameters(&buf, header, count, &mut metadata)?;
+                    parse_variable_display_parameters(&buf, header, count, &mut variables, &mut acc)?;
                 } else if subtype == SUBTYPE_CHAR_ENCODING && data_len > 0 {
                     let mut buf = vec![0u8; data_len];
                     reader.read_exact(&mut buf)?;
                     if let Ok(codepage) = std::str::from_utf8(&buf) {
-                        if let Some(enc) =
+                        if let Some(new_enc) =
                             encoding_rs::Encoding::for_label(codepage.trim().as_bytes())
                         {
-                            update_encoding(&mut metadata, enc);
+                            if new_enc != encoding {
+                                redecode_all(&mut variables, &mut acc, &mut value_labels_out, encoding, new_enc);
+                            }
                         }
                     }
                 } else if subtype == SUBTYPE_VERY_LONG_STR && data_len > 0 {
                     let mut buf = vec![0u8; data_len];
                     reader.read_exact(&mut buf)?;
-                    parse_very_long_string_record(&buf, &mut metadata)?;
+                    parse_very_long_string_record(&buf, &mut variables)?;
                 } else if subtype == SUBTYPE_LONG_VAR_NAME && data_len > 0 {
                     let mut buf = vec![0u8; data_len];
                     reader.read_exact(&mut buf)?;
-                    parse_long_variable_names_record(&buf, &mut metadata)?;
+                    parse_long_variable_names_record(&buf, &mut variables, &mut acc)?;
                 } else if subtype == SUBTYPE_LONG_STRING_VALUE_LABELS && data_len > 0 {
                     let mut buf = vec![0u8; data_len];
                     reader.read_exact(&mut buf)?;
-                    parse_long_string_value_labels(&buf, header, &mut metadata)?;
+                    parse_long_string_value_labels(&buf, header, encoding, &mut variables, &mut acc, &mut value_labels_out, &mut label_set_index)?;
                 } else if subtype == SUBTYPE_LONG_STRING_MISSING_VALUES && data_len > 0 {
                     let mut buf = vec![0u8; data_len];
                     reader.read_exact(&mut buf)?;
-                    parse_long_string_missing_values(&buf, header, &mut metadata)?;
+                    parse_long_string_missing_values(&buf, header, encoding, &mut variables)?;
                 } else {
                     drain(reader, data_len)?;
                 }
             }
             REC_TYPE_DICT_TERMINATION => {
                 let _filler = read_u32(reader, header.endian)?;
-                metadata.data_offset = Some(reader.stream_position()?);
+                data_offset = Some(reader.stream_position()?);
                 break;
             }
             _ => {
@@ -237,15 +249,35 @@ pub fn read_metadata<R: Read + Seek>(reader: &mut R, header: &Header) -> Result<
         }
     }
 
-    coalesce_very_long_strings(&mut metadata)?;
-    Ok(metadata)
+    // Coalesce very-long-string continuation segments.
+    coalesce_very_long_strings(&mut variables, &mut acc)?;
+
+    // Row count from the number-of-cases extension record overrides the header value.
+    // (We don't parse subtype 16 above, but keep the header-derived count as a fallback.)
+    let _ = row_count; // already set from header
+
+    let metadata_df = acc
+        .into_dataframe()
+        .map_err(|e| Error::ParseError(e.to_string()))?;
+
+    Ok(Metadata {
+        variables,
+        metadata_df,
+        row_count,
+        data_offset,
+        encoding,
+        value_labels: value_labels_out,
+    })
 }
 
-fn coalesce_very_long_strings(metadata: &mut Metadata) -> Result<()> {
+fn coalesce_very_long_strings(
+    variables: &mut Vec<ColumnPlan>,
+    acc: &mut MetadataAccumulator,
+) -> Result<()> {
     let mut i = 0usize;
-    while i < metadata.variables.len() {
-        let string_len = metadata.variables[i].string_len;
-        let is_long = metadata.variables[i].var_type == VarType::Str && string_len > 255;
+    while i < variables.len() {
+        let string_len = variables[i].string_len;
+        let is_long = variables[i].var_type == VarType::Str && string_len > 255;
         if !is_long {
             i += 1;
             continue;
@@ -258,28 +290,32 @@ fn coalesce_very_long_strings(metadata: &mut Metadata) -> Result<()> {
         }
 
         let end = i + n_segments;
-        if end > metadata.variables.len() {
+        if end > variables.len() {
             return Err(Error::ParseError(format!(
                 "invalid very long string segment count for {}",
-                metadata.variables[i].name
+                variables[i].name
             )));
         }
 
-        let total_width: usize = metadata.variables[i..end].iter().map(|v| v.width).sum();
-        metadata.variables[i].width = total_width;
-        metadata.variables.drain(i + 1..end);
+        let total_width: usize = variables[i..end].iter().map(|v| v.width).sum();
+        variables[i].width = total_width;
+        variables.drain(i + 1..end);
+        acc.drain(i + 1..end);
         i += 1;
     }
     Ok(())
 }
 
+/// Returns `(plan, pushed_to_acc)` — `None` if this is a string-continuation record.
 fn read_variable_record<R: Read + Seek>(
     reader: &mut R,
     header: &Header,
+    encoding: &'static encoding_rs::Encoding,
     last_var_index: Option<usize>,
-    metadata: &mut Metadata,
+    variables: &mut Vec<ColumnPlan>,
+    acc: &mut MetadataAccumulator,
     current_offset: &mut usize,
-) -> Result<Option<Variable>> {
+) -> Result<Option<ColumnPlan>> {
     let mut buf = [0u8; 28];
     reader.read_exact(&mut buf)?;
 
@@ -287,30 +323,26 @@ fn read_variable_record<R: Read + Seek>(
     let has_label = read_i32(&buf[4..8], header.endian);
     let n_missing = read_i32(&buf[8..12], header.endian);
     let print_format = read_i32(&buf[12..16], header.endian);
-    let _write = read_i32(&buf[16..20], header.endian);
+    let write_format = read_i32(&buf[16..20], header.endian);
     let name = read_name(&buf[20..28]);
 
     if typ < 0 {
         let idx = last_var_index.ok_or_else(|| {
             Error::ParseError("string continuation without base variable".to_string())
         })?;
-        metadata.variables[idx].width += 1;
+        variables[idx].width += 1;
         *current_offset += 1;
         return Ok(None);
     }
 
-    let var_type = if typ == 0 {
-        VarType::Numeric
-    } else {
-        VarType::Str
-    };
+    let var_type = if typ == 0 { VarType::Numeric } else { VarType::Str };
     let string_len = if typ > 0 { typ as usize } else { 0 };
     let width = 1;
     let offset = *current_offset;
     *current_offset += width;
 
     let (format_type, format_width, format_decimals) = decode_format(print_format);
-    let (write_format_type, write_format_width, write_format_decimals) = decode_format(_write);
+    let (write_format_type, write_format_width, write_format_decimals) = decode_format(write_format);
     let format_class = format_class_from_type(format_type);
 
     let mut label: Option<String> = None;
@@ -320,12 +352,7 @@ fn read_variable_record<R: Read + Seek>(
         let mut label_buf = vec![0u8; padded];
         reader.read_exact(&mut label_buf)?;
         let raw = &label_buf[..len.min(label_buf.len())];
-        let text = metadata
-            .encoding
-            .decode_without_bom_handling(raw)
-            .0
-            .to_string();
-        let text = text.trim().to_string();
+        let text = encoding.decode_without_bom_handling(raw).0.trim().to_string();
         if !text.is_empty() {
             label = Some(text);
         }
@@ -350,29 +377,31 @@ fn read_variable_record<R: Read + Seek>(
                 missing_doubles.push(v);
                 missing_double_bits.push(v.to_bits());
             } else {
-                let s = decode_string(&raw, header.endian, metadata.encoding);
+                let s = decode_string(&raw, header.endian, encoding);
                 missing_strings.push(s);
             }
         }
     }
 
-    Ok(Some(Variable {
+    acc.push(
+        name.clone(),
+        label,
+        None, // format (SPSS uses format_type/width/decimals, not a string format)
+        Some(format_type as i32),
+        Some(format_width as i32),
+        Some(format_decimals as i32),
+    );
+
+    Ok(Some(ColumnPlan {
         name: name.clone(),
         short_name: name,
         var_type,
         width,
         string_len,
-        format_type,
-        format_width,
-        format_decimals,
+        format_class,
         write_format_type,
         write_format_width,
         write_format_decimals,
-        format_class,
-        measure: None,
-        display_width: None,
-        alignment: None,
-        label,
         value_label: None,
         offset,
         missing_range,
@@ -395,18 +424,19 @@ fn parse_variable_display_parameters(
     data: &[u8],
     header: &Header,
     count: usize,
-    metadata: &mut Metadata,
+    variables: &mut Vec<ColumnPlan>,
+    acc: &mut MetadataAccumulator,
 ) -> Result<()> {
     if count == 0 || data.len() < count * 4 {
         return Ok(());
     }
 
-    let var_count = metadata.variables.len();
+    let var_count = variables.len();
     if var_count == 0 {
         return Ok(());
     }
 
-    let total_segments: usize = metadata.variables.iter().map(|v| v.width.max(1)).sum();
+    let total_segments: usize = variables.iter().map(|v| v.width.max(1)).sum();
     let (params_per_var, segment_based) = if count == var_count * 3 {
         (3, false)
     } else if count == var_count * 2 {
@@ -416,7 +446,6 @@ fn parse_variable_display_parameters(
     } else if count == total_segments * 2 {
         (2, true)
     } else {
-        // Unknown variant. The record is display-only metadata, so keep data reading tolerant.
         return Ok(());
     };
 
@@ -426,16 +455,16 @@ fn parse_variable_display_parameters(
     }
 
     let mut pos = 0usize;
-    for var in &mut metadata.variables {
+    for (i, var) in variables.iter().enumerate() {
         if pos + params_per_var > values.len() {
             break;
         }
-        var.measure = measure_from_i32(values[pos]);
+        acc.set_measure(i, measure_str_from_i32(values[pos]));
         if params_per_var == 3 {
-            var.display_width = Some(values[pos + 1]);
-            var.alignment = alignment_from_i32(values[pos + 2]);
+            acc.set_display_width(i, Some(values[pos + 1]));
+            acc.set_alignment(i, alignment_str_from_i32(values[pos + 2]));
         } else {
-            var.alignment = alignment_from_i32(values[pos + 1]);
+            acc.set_alignment(i, alignment_str_from_i32(values[pos + 1]));
         }
         pos += params_per_var * if segment_based { var.width.max(1) } else { 1 };
     }
@@ -443,32 +472,29 @@ fn parse_variable_display_parameters(
     Ok(())
 }
 
-fn measure_from_i32(value: i32) -> Option<Measure> {
+fn measure_str_from_i32(value: i32) -> Option<&'static str> {
     match value {
-        0 => Some(Measure::Unknown),
-        1 => Some(Measure::Nominal),
-        2 => Some(Measure::Ordinal),
-        3 => Some(Measure::Scale),
+        0 => Some("Unknown"),
+        1 => Some("Nominal"),
+        2 => Some("Ordinal"),
+        3 => Some("Scale"),
         _ => None,
     }
 }
 
-fn alignment_from_i32(value: i32) -> Option<Alignment> {
+fn alignment_str_from_i32(value: i32) -> Option<&'static str> {
     match value {
-        0 => Some(Alignment::Left),
-        1 => Some(Alignment::Right),
-        2 => Some(Alignment::Center),
+        0 => Some("Left"),
+        1 => Some("Right"),
+        2 => Some("Center"),
         _ => None,
     }
 }
 
 fn format_class_from_type(code: u8) -> Option<FormatClass> {
     match code {
-        // DATE, ADATE, JDATE, EDATE, SDATE
         20 | 23 | 24 | 38 | 39 => Some(FormatClass::Date),
-        // TIME, DTIME
         21 | 25 => Some(FormatClass::Time),
-        // DATETIME, YMDHMS
         22 | 41 => Some(FormatClass::DateTime),
         _ => None,
     }
@@ -477,7 +503,10 @@ fn format_class_from_type(code: u8) -> Option<FormatClass> {
 fn read_value_label_record<R: Read + Seek>(
     reader: &mut R,
     header: &Header,
-    metadata: &mut Metadata,
+    encoding: &'static encoding_rs::Encoding,
+    variables: &mut Vec<ColumnPlan>,
+    acc: &mut MetadataAccumulator,
+    value_labels_out: &mut Vec<crate::spss::types::ValueLabel>,
     label_set_index: &mut usize,
     offset_to_idx: &std::collections::HashMap<usize, usize>,
 ) -> Result<()> {
@@ -494,7 +523,7 @@ fn read_value_label_record<R: Read + Seek>(
         let padded = ((unpadded + 8) / 8) * 8 - 1;
         let mut label_buf = vec![0u8; padded];
         reader.read_exact(&mut label_buf)?;
-        let label = decode_string(&label_buf, header.endian, metadata.encoding);
+        let label = decode_string(&label_buf, header.endian, encoding);
         raw_values.push(raw);
         labels.push(label);
     }
@@ -515,38 +544,307 @@ fn read_value_label_record<R: Read + Seek>(
     let name = format!("labels{}", *label_set_index);
     *label_set_index += 1;
 
-    let mut mapping = Vec::with_capacity(entry_count);
     let mut is_string = false;
     for off in &var_offsets {
         let target = off.saturating_sub(1) as usize;
         if let Some(&idx) = offset_to_idx.get(&target) {
-            if metadata.variables[idx].var_type == VarType::Str {
+            if variables[idx].var_type == VarType::Str {
                 is_string = true;
                 break;
             }
         }
     }
+
+    let mut mapping = Vec::with_capacity(entry_count);
+    let mut codes = Vec::with_capacity(entry_count);
+    let mut code_labels = Vec::with_capacity(entry_count);
+
     for (raw, label) in raw_values.into_iter().zip(labels.into_iter()) {
         if label.is_empty() {
             continue;
         }
         if is_string {
-            let s = decode_string(&raw, header.endian, metadata.encoding);
+            let s = decode_string(&raw, header.endian, encoding);
+            codes.push(s.clone());
+            code_labels.push(label.clone());
             mapping.push((crate::spss::types::ValueLabelKey::Str(s), label));
         } else {
             let v = read_f64(&raw, header.endian);
+            codes.push(v.to_string());
+            code_labels.push(label.clone());
             mapping.push((crate::spss::types::ValueLabelKey::Double(v), label));
         }
     }
 
-    metadata.value_labels.push(crate::spss::types::ValueLabel {
-        name: name.clone(),
-        mapping,
-    });
+    acc.add_value_label_group(name.clone(), codes, code_labels);
+    value_labels_out.push(crate::spss::types::ValueLabel { name: name.clone(), mapping });
+
     for off in var_offsets {
         let target = off.saturating_sub(1) as usize;
         if let Some(&idx) = offset_to_idx.get(&target) {
-            metadata.variables[idx].value_label = Some(name.clone());
+            variables[idx].value_label = Some(name.clone());
+            acc.set_value_label_name(idx, name.clone());
+        }
+    }
+    Ok(())
+}
+
+fn parse_integer_info_encoding(
+    data: &[u8],
+    header: &Header,
+) -> Result<Option<&'static encoding_rs::Encoding>> {
+    if data.len() < 32 {
+        return Ok(None);
+    }
+    let character_code = read_i32_from(data, 28, header.endian)?;
+    if character_code > 0 {
+        return Ok(encoding_for_code(character_code));
+    }
+    Ok(None)
+}
+
+fn redecode_all(
+    variables: &mut Vec<ColumnPlan>,
+    acc: &mut MetadataAccumulator,
+    value_labels: &mut Vec<crate::spss::types::ValueLabel>,
+    from: &'static encoding_rs::Encoding,
+    to: &'static encoding_rs::Encoding,
+) {
+    for var in variables.iter_mut() {
+        var.name = redecode_string(&var.name, from, to);
+        var.short_name = redecode_string(&var.short_name, from, to);
+        if let Some(vl) = var.value_label.as_mut() {
+            *vl = redecode_string(vl, from, to);
+        }
+        var.missing_strings = var
+            .missing_strings
+            .iter()
+            .map(|s| redecode_string(s, from, to))
+            .collect();
+    }
+    acc.redecode_strings(from, to);
+    for vl in value_labels.iter_mut() {
+        vl.name = redecode_string(&vl.name, from, to);
+        for (key, label) in vl.mapping.iter_mut() {
+            if let crate::spss::types::ValueLabelKey::Str(s) = key {
+                *s = redecode_string(s, from, to);
+            }
+            *label = redecode_string(label, from, to);
+        }
+    }
+}
+
+fn parse_very_long_string_record(data: &[u8], variables: &mut Vec<ColumnPlan>) -> Result<()> {
+    let mut key_to_idx: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for (i, v) in variables.iter().enumerate() {
+        key_to_idx
+            .entry(v.short_name.to_ascii_lowercase())
+            .or_insert(i);
+        key_to_idx
+            .entry(v.name.to_ascii_lowercase())
+            .or_insert(i);
+    }
+    let mut pos = 0usize;
+    while pos < data.len() {
+        let end = data[pos..]
+            .iter()
+            .position(|&b| b == b'\t')
+            .map(|i| pos + i)
+            .unwrap_or(data.len());
+        let entry: Vec<u8> = data[pos..end]
+            .iter()
+            .copied()
+            .filter(|b| *b != 0)
+            .collect();
+        pos = if end < data.len() { end + 1 } else { end };
+        if entry.is_empty() {
+            continue;
+        }
+        if let Some(eq) = entry.iter().position(|&b| b == b'=') {
+            let key = String::from_utf8_lossy(&entry[..eq]).to_ascii_lowercase();
+            let val = String::from_utf8_lossy(&entry[eq + 1..]).trim().to_string();
+            if let Ok(len) = val.parse::<usize>() {
+                if let Some(&idx) = key_to_idx.get(&key) {
+                    variables[idx].string_len = len;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_long_variable_names_record(
+    data: &[u8],
+    variables: &mut Vec<ColumnPlan>,
+    acc: &mut MetadataAccumulator,
+) -> Result<()> {
+    let name_to_idx: std::collections::HashMap<String, usize> = variables
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (v.name.to_ascii_lowercase(), i))
+        .collect();
+    let mut pos = 0usize;
+    while pos < data.len() {
+        let end = data[pos..]
+            .iter()
+            .position(|&b| b == b'\t')
+            .map(|i| pos + i)
+            .unwrap_or(data.len());
+        let entry: Vec<u8> = data[pos..end]
+            .iter()
+            .copied()
+            .filter(|b| *b != 0)
+            .collect();
+        pos = if end < data.len() { end + 1 } else { end };
+        if entry.is_empty() {
+            continue;
+        }
+        if let Some(eq) = entry.iter().position(|&b| b == b'=') {
+            let key = String::from_utf8_lossy(&entry[..eq])
+                .trim()
+                .to_ascii_lowercase();
+            let val = String::from_utf8_lossy(&entry[eq + 1..])
+                .trim()
+                .to_string();
+            if key.is_empty() || val.is_empty() {
+                continue;
+            }
+            if let Some(&idx) = name_to_idx.get(&key) {
+                variables[idx].name = val.clone();
+                acc.rename(idx, val);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_long_string_value_labels(
+    data: &[u8],
+    header: &Header,
+    encoding: &'static encoding_rs::Encoding,
+    variables: &mut Vec<ColumnPlan>,
+    acc: &mut MetadataAccumulator,
+    value_labels_out: &mut Vec<crate::spss::types::ValueLabel>,
+    label_set_index: &mut usize,
+) -> Result<()> {
+    let mut key_to_idx: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for (i, v) in variables.iter().enumerate() {
+        key_to_idx
+            .entry(v.name.to_ascii_lowercase())
+            .or_insert(i);
+        key_to_idx
+            .entry(v.short_name.to_ascii_lowercase())
+            .or_insert(i);
+    }
+    let mut pos = 0usize;
+    while pos < data.len() {
+        let (var_name, next) = read_pascal_string(data, pos, header.endian)?;
+        pos = next;
+        if pos >= data.len() {
+            break;
+        }
+        if pos + 8 > data.len() {
+            return Err(Error::ParseError(
+                "invalid long string value label header".to_string(),
+            ));
+        }
+        let string_len = read_u32_from(data, pos, header.endian)? as usize;
+        pos += 4;
+        let label_count = read_u32_from(data, pos, header.endian)? as usize;
+        pos += 4;
+        let mut mapping = Vec::with_capacity(label_count);
+        let mut codes = Vec::with_capacity(label_count);
+        let mut code_labels = Vec::with_capacity(label_count);
+        for _ in 0..label_count {
+            let value_len = read_u32_from(data, pos, header.endian)? as usize;
+            pos += 4;
+            if pos + value_len > data.len() {
+                return Err(Error::ParseError(
+                    "invalid long string value label value".to_string(),
+                ));
+            }
+            let value = decode_string(&data[pos..pos + value_len], header.endian, encoding);
+            pos += value_len;
+            let label_len = read_u32_from(data, pos, header.endian)? as usize;
+            pos += 4;
+            if pos + label_len > data.len() {
+                return Err(Error::ParseError("invalid long string value label".to_string()));
+            }
+            let label = decode_string(&data[pos..pos + label_len], header.endian, encoding);
+            pos += label_len;
+            if !label.is_empty() {
+                codes.push(value.clone());
+                code_labels.push(label.clone());
+                mapping.push((crate::spss::types::ValueLabelKey::Str(value), label));
+            }
+        }
+        let name = format!("labels{}", *label_set_index);
+        *label_set_index += 1;
+        acc.add_value_label_group(name.clone(), codes, code_labels);
+        value_labels_out.push(crate::spss::types::ValueLabel {
+            name: name.clone(),
+            mapping,
+        });
+        if let Some(&idx) = key_to_idx.get(&var_name.to_ascii_lowercase()) {
+            if string_len > 0 && variables[idx].string_len < string_len {
+                variables[idx].string_len = string_len;
+            }
+            variables[idx].value_label = Some(name.clone());
+            acc.set_value_label_name(idx, name);
+        }
+    }
+    Ok(())
+}
+
+fn parse_long_string_missing_values(
+    data: &[u8],
+    header: &Header,
+    encoding: &'static encoding_rs::Encoding,
+    variables: &mut Vec<ColumnPlan>,
+) -> Result<()> {
+    let name_to_idx: std::collections::HashMap<String, usize> = variables
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (v.name.clone(), i))
+        .collect();
+    let mut pos = 0usize;
+    while pos < data.len() {
+        let (name, next) = read_pascal_string(data, pos, header.endian)?;
+        pos = next;
+        if pos >= data.len() {
+            return Err(Error::ParseError(
+                "unexpected end in long string missing values".to_string(),
+            ));
+        }
+        let n_missing = data[pos] as usize;
+        pos += 1;
+        if n_missing == 0 || n_missing > 3 {
+            return Err(Error::ParseError(
+                "invalid long string missing count".to_string(),
+            ));
+        }
+        if pos + 4 > data.len() {
+            return Err(Error::ParseError(
+                "invalid long string missing value length".to_string(),
+            ));
+        }
+        let len = read_u32_from(data, pos, header.endian)? as usize;
+        pos += 4;
+        let mut values = Vec::with_capacity(n_missing);
+        for _ in 0..n_missing {
+            if pos + len > data.len() {
+                return Err(Error::ParseError(
+                    "invalid long string missing value".to_string(),
+                ));
+            }
+            let s = decode_string(&data[pos..pos + len], header.endian, encoding);
+            values.push(s);
+            pos += len;
+        }
+        if let Some(&idx) = name_to_idx.get(name.as_str()) {
+            variables[idx].missing_strings = values;
         }
     }
     Ok(())
@@ -567,6 +865,24 @@ fn read_i32(buf: &[u8], endian: Endian) -> i32 {
         Endian::Little => i32::from_le_bytes(bytes),
         Endian::Big => i32::from_be_bytes(bytes),
     }
+}
+
+fn read_i32_from(data: &[u8], offset: usize, endian: Endian) -> Result<i32> {
+    if offset + 4 > data.len() {
+        return Err(Error::ParseError("read_i32_from out of bounds".to_string()));
+    }
+    Ok(read_i32(&data[offset..offset + 4], endian))
+}
+
+fn read_u32_from(data: &[u8], offset: usize, endian: Endian) -> Result<u32> {
+    if offset + 4 > data.len() {
+        return Err(Error::ParseError("read_u32_from out of bounds".to_string()));
+    }
+    let bytes: [u8; 4] = data[offset..offset + 4].try_into().expect("u32 slice");
+    Ok(match endian {
+        Endian::Little => u32::from_le_bytes(bytes),
+        Endian::Big => u32::from_be_bytes(bytes),
+    })
 }
 
 fn read_name(buf: &[u8]) -> String {
@@ -599,61 +915,6 @@ fn redecode_string(
     let (bytes, _, _) = from.encode(value);
     let s = to.decode_without_bom_handling(&bytes).0;
     s.trim().to_string()
-}
-
-fn redecode_metadata_strings(
-    metadata: &mut Metadata,
-    from: &'static encoding_rs::Encoding,
-    to: &'static encoding_rs::Encoding,
-) {
-    for var in &mut metadata.variables {
-        var.name = redecode_string(&var.name, from, to);
-        var.short_name = redecode_string(&var.short_name, from, to);
-        if let Some(label) = var.label.as_mut() {
-            *label = redecode_string(label, from, to);
-        }
-        if let Some(label_name) = var.value_label.as_mut() {
-            *label_name = redecode_string(label_name, from, to);
-        }
-        if !var.missing_strings.is_empty() {
-            var.missing_strings = var
-                .missing_strings
-                .iter()
-                .map(|s| redecode_string(s, from, to))
-                .collect();
-        }
-    }
-
-    for value_label in &mut metadata.value_labels {
-        value_label.name = redecode_string(&value_label.name, from, to);
-        for (key, label) in value_label.mapping.iter_mut() {
-            if let crate::spss::types::ValueLabelKey::Str(s) = key {
-                *s = redecode_string(s, from, to);
-            }
-            *label = redecode_string(label, from, to);
-        }
-    }
-}
-
-fn update_encoding(metadata: &mut Metadata, new_encoding: &'static encoding_rs::Encoding) {
-    if metadata.encoding != new_encoding {
-        let previous = metadata.encoding;
-        metadata.encoding = new_encoding;
-        redecode_metadata_strings(metadata, previous, new_encoding);
-    }
-}
-
-fn parse_integer_info(data: &[u8], header: &Header, metadata: &mut Metadata) -> Result<()> {
-    if data.len() < 32 {
-        return Ok(());
-    }
-    let character_code = read_i32_from(data, 28, header.endian)?;
-    if character_code > 0 {
-        if let Some(enc) = encoding_for_code(character_code) {
-            update_encoding(metadata, enc);
-        }
-    }
-    Ok(())
 }
 
 fn encoding_for_code(code: i32) -> Option<&'static encoding_rs::Encoding> {
@@ -711,197 +972,6 @@ fn encoding_for_code(code: i32) -> Option<&'static encoding_rs::Encoding> {
     encoding_rs::Encoding::for_label(label.as_bytes())
 }
 
-fn parse_very_long_string_record(data: &[u8], metadata: &mut Metadata) -> Result<()> {
-    let mut key_to_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for (i, v) in metadata.variables.iter().enumerate() {
-        key_to_idx.entry(v.short_name.to_ascii_lowercase()).or_insert(i);
-        key_to_idx.entry(v.name.to_ascii_lowercase()).or_insert(i);
-    }
-    let mut pos = 0usize;
-    while pos < data.len() {
-        let end = data[pos..]
-            .iter()
-            .position(|&b| b == b'\t')
-            .map(|i| pos + i)
-            .unwrap_or(data.len());
-        let entry: Vec<u8> = data[pos..end].iter().copied().filter(|b| *b != 0).collect();
-        pos = if end < data.len() { end + 1 } else { end };
-        if entry.is_empty() {
-            continue;
-        }
-        if let Some(eq) = entry.iter().position(|&b| b == b'=') {
-            let key = String::from_utf8_lossy(&entry[..eq]).to_ascii_lowercase();
-            let val = String::from_utf8_lossy(&entry[eq + 1..]).trim().to_string();
-            if let Ok(len) = val.parse::<usize>() {
-                if let Some(&idx) = key_to_idx.get(&key) {
-                    metadata.variables[idx].string_len = len;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn parse_long_variable_names_record(data: &[u8], metadata: &mut Metadata) -> Result<()> {
-    let name_to_idx: std::collections::HashMap<String, usize> = metadata
-        .variables
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (v.name.to_ascii_lowercase(), i))
-        .collect();
-    let mut pos = 0usize;
-    while pos < data.len() {
-        let end = data[pos..]
-            .iter()
-            .position(|&b| b == b'\t')
-            .map(|i| pos + i)
-            .unwrap_or(data.len());
-        let entry: Vec<u8> = data[pos..end].iter().copied().filter(|b| *b != 0).collect();
-        pos = if end < data.len() { end + 1 } else { end };
-        if entry.is_empty() {
-            continue;
-        }
-        if let Some(eq) = entry.iter().position(|&b| b == b'=') {
-            let key = String::from_utf8_lossy(&entry[..eq]).trim().to_ascii_lowercase();
-            let val = String::from_utf8_lossy(&entry[eq + 1..]).trim().to_string();
-            if key.is_empty() || val.is_empty() {
-                continue;
-            }
-            if let Some(&idx) = name_to_idx.get(&key) {
-                metadata.variables[idx].name = val;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn parse_long_string_value_labels(
-    data: &[u8],
-    header: &Header,
-    metadata: &mut Metadata,
-) -> Result<()> {
-    let mut key_to_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for (i, v) in metadata.variables.iter().enumerate() {
-        key_to_idx.entry(v.name.to_ascii_lowercase()).or_insert(i);
-        key_to_idx.entry(v.short_name.to_ascii_lowercase()).or_insert(i);
-    }
-    let mut pos = 0usize;
-    let mut label_set_index = metadata.value_labels.len();
-    while pos < data.len() {
-        let (var_name, next) = read_pascal_string(data, pos, header.endian)?;
-        pos = next;
-        if pos >= data.len() {
-            break;
-        }
-        if pos + 8 > data.len() {
-            return Err(Error::ParseError(
-                "invalid long string value label header".to_string(),
-            ));
-        }
-        let string_len = read_u32_from(data, pos, header.endian)? as usize;
-        pos += 4;
-        let label_count = read_u32_from(data, pos, header.endian)? as usize;
-        pos += 4;
-        let mut mapping = Vec::with_capacity(label_count);
-        for _ in 0..label_count {
-            let value_len = read_u32_from(data, pos, header.endian)? as usize;
-            pos += 4;
-            if pos + value_len > data.len() {
-                return Err(Error::ParseError(
-                    "invalid long string value label value".to_string(),
-                ));
-            }
-            let value = decode_string(
-                &data[pos..pos + value_len],
-                header.endian,
-                metadata.encoding,
-            );
-            pos += value_len;
-            let label_len = read_u32_from(data, pos, header.endian)? as usize;
-            pos += 4;
-            if pos + label_len > data.len() {
-                return Err(Error::ParseError(
-                    "invalid long string value label".to_string(),
-                ));
-            }
-            let label = decode_string(
-                &data[pos..pos + label_len],
-                header.endian,
-                metadata.encoding,
-            );
-            pos += label_len;
-            if !label.is_empty() {
-                mapping.push((crate::spss::types::ValueLabelKey::Str(value), label));
-            }
-        }
-        let name = format!("labels{}", label_set_index);
-        label_set_index += 1;
-        metadata.value_labels.push(crate::spss::types::ValueLabel {
-            name: name.clone(),
-            mapping,
-        });
-        if let Some(&idx) = key_to_idx.get(&var_name.to_ascii_lowercase()) {
-            if string_len > 0 && metadata.variables[idx].string_len < string_len {
-                metadata.variables[idx].string_len = string_len;
-            }
-            metadata.variables[idx].value_label = Some(name);
-        }
-    }
-    Ok(())
-}
-
-fn parse_long_string_missing_values(
-    data: &[u8],
-    header: &Header,
-    metadata: &mut Metadata,
-) -> Result<()> {
-    let name_to_idx: std::collections::HashMap<String, usize> = metadata
-        .variables
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (v.name.clone(), i))
-        .collect();
-    let mut pos = 0usize;
-    while pos < data.len() {
-        let (name, next) = read_pascal_string(data, pos, header.endian)?;
-        pos = next;
-        if pos >= data.len() {
-            return Err(Error::ParseError(
-                "unexpected end in long string missing values".to_string(),
-            ));
-        }
-        let n_missing = data[pos] as usize;
-        pos += 1;
-        if n_missing == 0 || n_missing > 3 {
-            return Err(Error::ParseError(
-                "invalid long string missing count".to_string(),
-            ));
-        }
-        if pos + 4 > data.len() {
-            return Err(Error::ParseError(
-                "invalid long string missing value length".to_string(),
-            ));
-        }
-        let len = read_u32_from(data, pos, header.endian)? as usize;
-        pos += 4;
-        let mut values = Vec::with_capacity(n_missing);
-        for _ in 0..n_missing {
-            if pos + len > data.len() {
-                return Err(Error::ParseError(
-                    "invalid long string missing value".to_string(),
-                ));
-            }
-            let s = decode_string(&data[pos..pos + len], header.endian, metadata.encoding);
-            values.push(s);
-            pos += len;
-        }
-        if let Some(&idx) = name_to_idx.get(name.as_str()) {
-            metadata.variables[idx].missing_strings = values;
-        }
-    }
-    Ok(())
-}
-
 fn read_pascal_string(data: &[u8], pos: usize, endian: Endian) -> Result<(String, usize)> {
     if pos + 4 > data.len() {
         return Err(Error::ParseError("invalid pascal string".to_string()));
@@ -916,20 +986,4 @@ fn read_pascal_string(data: &[u8], pos: usize, endian: Endian) -> Result<(String
     }
     let s = String::from_utf8_lossy(&data[start..end]).to_string();
     Ok((s, end))
-}
-
-fn read_u32_from(data: &[u8], pos: usize, endian: Endian) -> Result<u32> {
-    let bytes: [u8; 4] = data[pos..pos + 4].try_into().expect("u32 slice");
-    Ok(match endian {
-        Endian::Little => u32::from_le_bytes(bytes),
-        Endian::Big => u32::from_be_bytes(bytes),
-    })
-}
-
-fn read_i32_from(data: &[u8], pos: usize, endian: Endian) -> Result<i32> {
-    let bytes: [u8; 4] = data[pos..pos + 4].try_into().expect("i32 slice");
-    Ok(match endian {
-        Endian::Little => i32::from_le_bytes(bytes),
-        Endian::Big => i32::from_be_bytes(bytes),
-    })
 }

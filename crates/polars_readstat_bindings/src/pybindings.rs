@@ -1,8 +1,6 @@
 use num_cpus;
 use polars::prelude::*;
 use polars_readstat_rs::{
-    build_por_metadata_df, build_sas_metadata_df, build_spss_metadata_df, build_stata_metadata_df,
-    build_xpt_metadata_df,
     read_sas7bcat, readstat_batch_iter, readstat_metadata_json, readstat_scan, readstat_schema,
     sas_metadata_json_from_meta, spss_metadata_json_from_meta, stata_metadata_json_from_meta,
     CatalogKey, InformativeNullColumns, InformativeNullMode, InformativeNullOpts, PorWriteOptions,
@@ -78,23 +76,13 @@ impl MetadataInner {
     }
 
     fn to_df(&self) -> PyResult<DataFrame> {
-        match self {
-            Self::Spss { meta, .. } => {
-                build_spss_metadata_df(meta).map_err(|e| PyRuntimeError::new_err(e.to_string()))
-            }
-            Self::Stata { meta, .. } => {
-                build_stata_metadata_df(meta).map_err(|e| PyRuntimeError::new_err(e.to_string()))
-            }
-            Self::Sas { meta, .. } => {
-                build_sas_metadata_df(meta).map_err(|e| PyRuntimeError::new_err(e.to_string()))
-            }
-            Self::Xpt { meta } => {
-                build_xpt_metadata_df(meta).map_err(|e| PyRuntimeError::new_err(e.to_string()))
-            }
-            Self::Por { meta } => {
-                build_por_metadata_df(meta).map_err(|e| PyRuntimeError::new_err(e.to_string()))
-            }
-        }
+        Ok(match self {
+            Self::Spss { meta, .. } => meta.metadata_df.clone(),
+            Self::Stata { meta, .. } => meta.metadata_df.clone(),
+            Self::Sas { meta, .. } => meta.metadata_df.clone(),
+            Self::Xpt { meta } => meta.metadata_df.clone(),
+            Self::Por { meta } => meta.metadata_df.clone(),
+        })
     }
 }
 

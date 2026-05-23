@@ -74,6 +74,7 @@ impl PorVariable {
 pub struct PorMetadata {
     pub file_label: String,
     pub variables: Vec<PorVariable>,
+    pub metadata_df: polars::prelude::DataFrame,
     pub precision: u32,
     pub row_count: Option<u64>,
 }
@@ -457,9 +458,12 @@ pub fn read_por<P: AsRef<Path>>(path: P) -> Result<(PorMetadata, DataFrame)> {
         }
     }
 
+    let metadata_df = build_por_metadata_df(&variables)?;
+
     let meta = PorMetadata {
         file_label,
         variables: variables.clone(),
+        metadata_df,
         precision,
         row_count: None,
     };
@@ -754,7 +758,24 @@ fn read_por_metadata_only<R: Read>(stream: &mut PorStream<R>) -> Result<PorMetad
         }
     }
 
-    Ok(PorMetadata { file_label, variables, precision, row_count: None })
+    let metadata_df = build_por_metadata_df(&variables)?;
+    Ok(PorMetadata { file_label, variables, metadata_df, precision, row_count: None })
+}
+
+// ─── Metadata helpers ─────────────────────────────────────────────────────────
+
+fn build_por_metadata_df(variables: &[PorVariable]) -> Result<polars::prelude::DataFrame> {
+    let mut acc = crate::metadata_df::MetadataAccumulator::with_capacity(variables.len());
+    for v in variables {
+        let label = v.label.clone().filter(|s| !s.is_empty());
+        acc.push(v.name.clone(), label, None, Some(v.print_format_type as i32),
+            Some(v.print_format_width as i32), Some(v.print_format_decimals as i32));
+    }
+    acc.into_dataframe().map_err(|e| Error::ParseError(e.to_string()))
+}
+
+fn df_col_str<'a>(df: &'a polars::prelude::DataFrame, col: &str, row: usize) -> Option<&'a str> {
+    df.column(col).ok()?.str().ok()?.get(row)
 }
 
 // ─── Metadata JSON ────────────────────────────────────────────────────────────
@@ -765,8 +786,9 @@ pub fn metadata_json_por<P: AsRef<Path>>(path: P) -> Result<String> {
     let reader = BufReader::with_capacity(1 << 16, file);
     let mut stream = PorStream::new(reader);
     let meta = read_por_metadata_only(&mut stream)?;
+    let df = &meta.metadata_df;
 
-    let variables: Vec<Value> = meta.variables.iter().map(|v| {
+    let variables: Vec<Value> = meta.variables.iter().enumerate().map(|(i, v)| {
         let mut obj = Map::new();
         obj.insert("name".into(), json!(v.name));
         obj.insert("type".into(), json!(if v.is_string() { "Str" } else { "Numeric" }));
@@ -774,7 +796,7 @@ pub fn metadata_json_por<P: AsRef<Path>>(path: P) -> Result<String> {
         obj.insert("format_type".into(), json!(v.print_format_type));
         obj.insert("format_width".into(), json!(v.print_format_width));
         obj.insert("format_decimals".into(), json!(v.print_format_decimals));
-        obj.insert("label".into(), json!(v.label));
+        obj.insert("label".into(), json!(df_col_str(df, "label", i)));
         Value::Object(obj)
     }).collect();
 
