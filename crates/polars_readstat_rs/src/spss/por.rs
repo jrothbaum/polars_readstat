@@ -785,6 +785,13 @@ pub fn metadata_json_por<P: AsRef<Path>>(path: P) -> Result<String> {
     }).to_string())
 }
 
+pub fn metadata_por<P: AsRef<Path>>(path: P) -> Result<PorMetadata> {
+    let file = File::open(path.as_ref())?;
+    let reader = BufReader::with_capacity(1 << 16, file);
+    let mut stream = PorStream::new(reader);
+    read_por_metadata_only(&mut stream)
+}
+
 // ─── Writer ───────────────────────────────────────────────────────────────────
 
 struct PorLineWriter<W: Write> {
@@ -909,6 +916,30 @@ pub struct PorWriteOptions {
 
 impl Default for PorWriteOptions { fn default() -> Self { Self { file_label: None, variable_labels: None } } }
 
+enum PorWriteData {
+    String(StringChunked),
+    Float64(Float64Chunked),
+    Float32(Float32Chunked),
+    Date(Int32Chunked),
+    Datetime(Int64Chunked),
+    Time(Int64Chunked),
+    Numeric(Float64Chunked),
+}
+
+struct PorWritePlan {
+    original_name: String,
+    por_name: String,
+    str_width: u32,
+    fmt_type: u32,
+    fmt_width: u32,
+    fmt_dec: u32,
+    data: PorWriteData,
+}
+
+fn polars_err(err: PolarsError) -> Error {
+    Error::ParseError(err.to_string())
+}
+
 pub fn write_por<P: AsRef<Path>>(
     df: &DataFrame,
     path: P,
@@ -965,8 +996,9 @@ pub fn write_por<P: AsRef<Path>>(
     // 8. Variable records.
     let columns = df.columns();
 
-    // Validate names up front: ≤8 chars, no collisions after uppercase mapping.
+    // Validate names and prepare typed/cast column access once up front.
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut plans = Vec::with_capacity(columns.len());
     for col in columns {
         let name_raw = col.name().as_str();
         if name_raw.chars().count() > 8 {
@@ -983,26 +1015,36 @@ pub fn write_por<P: AsRef<Path>>(
                 "POR variable name '{}' collides with another column after uppercase mapping", name_raw
             )));
         }
-    }
-
-    for col in columns {
-        let name_raw = col.name().as_str();
-        let name: String = name_raw
-            .chars()
-            .map(|c: char| if c.is_ascii_alphabetic() { c.to_ascii_uppercase() } else if c.is_ascii_digit() || "_@#$.".contains(c) { c } else { '_' })
-            .collect();
 
         let dtype = col.dtype();
         let is_string = matches!(dtype, DataType::String);
 
-        // Compute string width or 0 for numeric.
-        let str_width: u32 = if is_string {
-            // Max string length in this column
-            let ca = col.str().unwrap();
-            ca.iter().filter_map(|o| o).map(|s| s.len()).max().unwrap_or(8) as u32
-        } else { 0 };
+        let (str_width, data) = match dtype {
+            DataType::String => {
+                let ca = col.str().map_err(polars_err)?.clone();
+                let width = ca.iter().filter_map(|o| o).map(|s| s.len()).max().unwrap_or(8) as u32;
+                (width, PorWriteData::String(ca))
+            }
+            DataType::Float64 => (0, PorWriteData::Float64(col.f64().map_err(polars_err)?.clone())),
+            DataType::Float32 => (0, PorWriteData::Float32(col.f32().map_err(polars_err)?.clone())),
+            DataType::Date => {
+                let s = col.as_materialized_series().cast(&DataType::Int32).map_err(polars_err)?;
+                (0, PorWriteData::Date(s.i32().map_err(polars_err)?.clone()))
+            }
+            DataType::Datetime(_, _) => {
+                let s = col.as_materialized_series().cast(&DataType::Int64).map_err(polars_err)?;
+                (0, PorWriteData::Datetime(s.i64().map_err(polars_err)?.clone()))
+            }
+            DataType::Time => {
+                let s = col.as_materialized_series().cast(&DataType::Int64).map_err(polars_err)?;
+                (0, PorWriteData::Time(s.i64().map_err(polars_err)?.clone()))
+            }
+            _ => {
+                let s = col.as_materialized_series().cast(&DataType::Float64).map_err(polars_err)?;
+                (0, PorWriteData::Numeric(s.f64().map_err(polars_err)?.clone()))
+            }
+        };
 
-        // Format type
         let fmt_type: u32 = match dtype {
             DataType::String => 1,
             DataType::Date => 20,
@@ -1013,18 +1055,31 @@ pub fn write_por<P: AsRef<Path>>(
         let fmt_width: u32 = if is_string { str_width.max(1) } else { 8 };
         let fmt_dec: u32 = if is_string || fmt_type != 5 { 0 } else { 2 };
 
+        plans.push(PorWritePlan {
+            original_name: name_raw.to_string(),
+            por_name: upper,
+            str_width,
+            fmt_type,
+            fmt_width,
+            fmt_dec,
+            data,
+        });
+    }
+
+    for plan in &plans {
+
         w.write_byte(b'7')?;
-        w.write_double(str_width as f64)?;       // width (0=numeric)
-        w.write_string_field(&name)?;            // name
-        w.write_double(fmt_type as f64)?;        // print format type
-        w.write_double(fmt_width as f64)?;       // print format width
-        w.write_double(fmt_dec as f64)?;         // print format decimals
-        w.write_double(fmt_type as f64)?;        // write format type (same)
-        w.write_double(fmt_width as f64)?;
-        w.write_double(fmt_dec as f64)?;
+        w.write_double(plan.str_width as f64)?;       // width (0=numeric)
+        w.write_string_field(&plan.por_name)?;         // name
+        w.write_double(plan.fmt_type as f64)?;         // print format type
+        w.write_double(plan.fmt_width as f64)?;        // print format width
+        w.write_double(plan.fmt_dec as f64)?;          // print format decimals
+        w.write_double(plan.fmt_type as f64)?;         // write format type (same)
+        w.write_double(plan.fmt_width as f64)?;
+        w.write_double(plan.fmt_dec as f64)?;
 
         // Optional variable label (tag 'C').
-        let label = var_labels.get(name_raw).or_else(|| var_labels.get(&name));
+        let label = var_labels.get(&plan.original_name).or_else(|| var_labels.get(&plan.por_name));
         if let Some(lbl) = label {
             w.write_byte(b'C')?;
             w.write_string_field(lbl)?;
@@ -1037,55 +1092,35 @@ pub fn write_por<P: AsRef<Path>>(
     // 10. Data rows.
     let n_rows = df.height();
     for row_idx in 0..n_rows {
-        for col in columns {
-            let dtype = col.dtype();
-            match dtype {
-                DataType::String => {
-                    let ca = col.str().unwrap();
+        for plan in &plans {
+            match &plan.data {
+                PorWriteData::String(ca) => {
                     let s = ca.get(row_idx).unwrap_or("");
                     w.write_string_field(if s.is_empty() { " " } else { s })?;
                 }
-                DataType::Float64 => {
-                    let ca = col.f64().unwrap();
-                    let v = ca.get(row_idx).unwrap_or(f64::NAN);
-                    w.write_double(v)?;
+                PorWriteData::Float64(ca) => w.write_double(ca.get(row_idx).unwrap_or(f64::NAN))?,
+                PorWriteData::Float32(ca) => {
+                    w.write_double(ca.get(row_idx).map(|x| x as f64).unwrap_or(f64::NAN))?
                 }
-                DataType::Float32 => {
-                    let ca = col.f32().unwrap();
-                    let v = ca.get(row_idx).map(|x| x as f64).unwrap_or(f64::NAN);
-                    w.write_double(v)?;
-                }
-                DataType::Date => {
-                    let ca = col.as_materialized_series().cast(&DataType::Int32).unwrap();
-                    let ca = ca.i32().unwrap();
+                PorWriteData::Date(ca) => {
                     let v = ca.get(row_idx)
                         .map(|d| (d as i64 * SEC_PER_DAY + SPSS_SEC_SHIFT) as f64)
                         .unwrap_or(f64::NAN);
                     w.write_double(v)?;
                 }
-                DataType::Datetime(_, _) => {
-                    let ca = col.as_materialized_series().cast(&DataType::Int64).unwrap();
-                    let ca = ca.i64().unwrap();
+                PorWriteData::Datetime(ca) => {
                     let v = ca.get(row_idx)
                         .map(|ms| (ms / 1_000 + SPSS_SEC_SHIFT) as f64)
                         .unwrap_or(f64::NAN);
                     w.write_double(v)?;
                 }
-                DataType::Time => {
-                    let ca = col.as_materialized_series().cast(&DataType::Int64).unwrap();
-                    let ca = ca.i64().unwrap();
+                PorWriteData::Time(ca) => {
                     let v = ca.get(row_idx)
                         .map(|ns| (ns / 1_000_000_000) as f64)
                         .unwrap_or(f64::NAN);
                     w.write_double(v)?;
                 }
-                _ => {
-                    // Cast integers to f64
-                    let ca = col.as_materialized_series().cast(&DataType::Float64).unwrap();
-                    let ca = ca.f64().unwrap();
-                    let v = ca.get(row_idx).unwrap_or(f64::NAN);
-                    w.write_double(v)?;
-                }
+                PorWriteData::Numeric(ca) => w.write_double(ca.get(row_idx).unwrap_or(f64::NAN))?,
             }
         }
     }

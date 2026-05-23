@@ -11,7 +11,7 @@ pub mod writer;
 
 pub use error::{Error, Result};
 pub use polars_output::scan_sav;
-pub use por::{metadata_json_por, read_por, scan_por, write_por, PorMetadata, PorVariable, PorWriteOptions};
+pub use por::{metadata_json_por, metadata_por, read_por, scan_por, write_por, PorMetadata, PorVariable, PorWriteOptions};
 pub use reader::SpssReader;
 pub use types::{Alignment, Endian, Header, Measure, Metadata, VarType};
 pub use writer::{
@@ -279,5 +279,46 @@ pub fn build_metadata_df(meta: &Metadata) -> polars::prelude::PolarsResult<polar
         Series::new("measure".into(), measures).into_column(),
         Series::new("display_width".into(), display_widths).into_column(),
         Series::new("alignment".into(), alignments).into_column(),
+    ])
+}
+
+/// Build a Polars DataFrame from POR metadata.
+///
+/// Schema matches the shared per-variable metadata_df shape.
+pub fn build_por_metadata_df(meta: &PorMetadata) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
+    use polars::prelude::*;
+
+    let n = meta.variables.len();
+    let mut names: Vec<&str> = Vec::with_capacity(n);
+    let mut labels: Vec<Option<&str>> = Vec::with_capacity(n);
+    let mut format_types: Vec<Option<i32>> = Vec::with_capacity(n);
+    let mut format_widths: Vec<Option<i32>> = Vec::with_capacity(n);
+    let mut format_decimalss: Vec<Option<i32>> = Vec::with_capacity(n);
+
+    for var in &meta.variables {
+        names.push(var.name.as_str());
+        labels.push(var.label.as_deref());
+        format_types.push(Some(var.print_format_type as i32));
+        format_widths.push(Some(var.print_format_width as i32));
+        format_decimalss.push(Some(var.print_format_decimals as i32));
+    }
+
+    let list_str_dtype = DataType::List(Box::new(DataType::String));
+    let null_lists: Vec<AnyValue> = vec![AnyValue::Null; n];
+    let null_i32: Vec<Option<i32>> = vec![None; n];
+    let null_str: Vec<Option<&str>> = vec![None; n];
+
+    DataFrame::new_infer_height(vec![
+        Series::new("name".into(), names).into_column(),
+        Series::new("label".into(), labels).into_column(),
+        Series::from_any_values_and_dtype("value_label_codes".into(), &null_lists, &list_str_dtype, true)?.into_column(),
+        Series::from_any_values_and_dtype("value_label_labels".into(), &null_lists, &list_str_dtype, true)?.into_column(),
+        Series::new("format".into(), null_str.clone()).into_column(),
+        Series::new("format_type".into(), format_types).into_column(),
+        Series::new("format_width".into(), format_widths).into_column(),
+        Series::new("format_decimals".into(), format_decimalss).into_column(),
+        Series::new("measure".into(), null_str.clone()).into_column(),
+        Series::new("display_width".into(), null_i32).into_column(),
+        Series::new("alignment".into(), null_str).into_column(),
     ])
 }

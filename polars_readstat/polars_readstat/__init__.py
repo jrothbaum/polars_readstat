@@ -13,7 +13,9 @@ from polars_readstat.polars_readstat_bindings import (
     write_spss_from_df_rs as _write_spss_from_df_rs,
     write_stata_from_df_rs as _write_stata_from_df_rs,
     write_xpt as _write_xpt_rs,
+    write_xpt_from_df_rs as _write_xpt_from_df_rs,
     write_por as _write_por_rs,
+    write_por_from_df_rs as _write_por_from_df_rs,
     scan_por_rs as _scan_por_rs,
     por_metadata_json_rs as _por_metadata_json_rs,
     read_sas7bcat_rs as _read_sas7bcat_rs,
@@ -768,7 +770,7 @@ def write_readstat(
     path: Any,
     *,
     format: str | None = None,
-    metadata: dict | None = None,
+    metadata: dict | pl.DataFrame | None = None,
     **kwargs: Any,
 ) -> None:
     """
@@ -877,9 +879,21 @@ def write_readstat(
             _write_spss_rs(df, path, None, None, None, None, None, None)
         return
     if fmt in ("xpt", "sas_xpt"):
-        base = {}
-        if metadata is not None:
-            base = _xpt_metadata_to_write_kwargs(metadata, df.columns)
+        if isinstance(metadata, pl.DataFrame):
+            variable_labels = kwargs.pop("variable_labels", None)
+            variable_format = kwargs.pop("variable_format", None)
+            storage_widths = kwargs.pop("storage_widths", None)
+            version = kwargs.pop("version", 8)
+            table_name = kwargs.pop("table_name", None)
+            file_label = kwargs.pop("file_label", None)
+            if kwargs:
+                raise TypeError(f"Unsupported kwargs for XPT writer: {sorted(kwargs.keys())}")
+            _write_xpt_from_df_rs(
+                df, path, metadata, version, table_name, file_label,
+                variable_labels, variable_format, storage_widths,
+            )
+            return
+        base = _xpt_metadata_to_write_kwargs(metadata, df.columns) if metadata is not None else {}
         variable_labels = kwargs.pop("variable_labels", base.get("variable_labels"))
         variable_format = kwargs.pop("variable_format", base.get("variable_format"))
         storage_widths = kwargs.pop("storage_widths", base.get("storage_widths"))
@@ -900,16 +914,16 @@ def write_readstat(
         )
         return
     if fmt in ("por", "spss_por"):
-        file_label = kwargs.pop("file_label", None)
-        variable_labels = kwargs.pop("variable_labels", None)
-        if metadata is not None and file_label is None:
-            file_label = metadata.get("file_label")
-        if metadata is not None and variable_labels is None:
-            variable_labels = {
-                v["name"]: v["label"]
-                for v in (metadata.get("variables") or [])
-                if v.get("label") and v.get("name") in df.columns
-            } or None
+        if isinstance(metadata, pl.DataFrame):
+            file_label = kwargs.pop("file_label", None)
+            variable_labels = kwargs.pop("variable_labels", None)
+            if kwargs:
+                raise TypeError(f"Unsupported kwargs for POR writer: {sorted(kwargs.keys())}")
+            _write_por_from_df_rs(df, path, metadata, file_label, variable_labels)
+            return
+        base = _por_metadata_to_write_kwargs(metadata, df.columns) if metadata is not None else {}
+        file_label = kwargs.pop("file_label", base.get("file_label"))
+        variable_labels = kwargs.pop("variable_labels", base.get("variable_labels"))
         if kwargs:
             raise TypeError(f"Unsupported kwargs for POR writer: {sorted(kwargs.keys())}")
         write_por(df, path, file_label=file_label, variable_labels=variable_labels)
@@ -1332,6 +1346,26 @@ def _coalesce_metadata_dfs(
     if exprs:
         merged = merged.with_columns(exprs).drop(kw_cols_to_drop)
     return merged
+
+
+def _por_metadata_to_write_kwargs(
+    metadata: Mapping[str, Any],
+    df_columns: list[str],
+) -> dict[str, Any]:
+    col_set = set(df_columns)
+    variable_labels = {
+        v["name"]: v["label"]
+        for v in (metadata.get("variables") or [])
+        if v.get("label") and v.get("name") in col_set
+    }
+
+    out: dict[str, Any] = {}
+    if variable_labels:
+        out["variable_labels"] = variable_labels
+    file_label = metadata.get("file_label")
+    if file_label:
+        out["file_label"] = str(file_label)
+    return out
 
 
 def _xpt_metadata_to_write_kwargs(

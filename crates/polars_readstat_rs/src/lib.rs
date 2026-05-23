@@ -36,8 +36,9 @@ pub use sas::{Compression, Endian, Format, Platform, Header as SasHeader, Metada
 pub use sas::{Error, Result, Sas7bdatReader};
 pub use sas::metadata_json_from_meta as sas_metadata_json_from_meta;
 pub use sas::build_metadata_df as build_sas_metadata_df;
+pub use sas::build_xpt_metadata_df as build_xpt_metadata_df;
 pub use sas::{SasValueLabelKey, SasValueLabelMap, SasValueLabels, SasVariableLabels, SasWriter};
-pub use sas::{XptVariableFormats, XptVariableLabels, XptStorageWidths, XptWriter};
+pub use sas::{read_xpt_metadata, XptMetadata, XptVariableFormats, XptVariableLabels, XptStorageWidths, XptWriter};
 
 pub use readstat_stream::{readstat_batch_iter, ReadstatBatchIter, ReadstatBatchStream};
 
@@ -52,13 +53,14 @@ pub use spss::{
 pub use spss::metadata_json_from_meta as spss_metadata_json_from_meta;
 pub use spss::configure_writer_from_metadata as configure_spss_writer_from_metadata;
 pub use spss::build_metadata_df as build_spss_metadata_df;
+pub use spss::build_por_metadata_df as build_por_metadata_df;
 pub use spss::{
     SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels, SpssVariableAlignments,
     SpssVariableDisplayWidths, SpssVariableFormat, SpssVariableFormats, SpssVariableLabels,
     SpssVariableMeasures, SpssWriteColumn, SpssWriteSchema, SpssWriter,
 };
 pub use spss::{
-    metadata_json_por, read_por, scan_por, write_por, PorMetadata, PorVariable, PorWriteOptions,
+    metadata_json_por, metadata_por, read_por, scan_por, write_por, PorMetadata, PorVariable, PorWriteOptions,
 };
 pub use stata::{
     compress_df, pandas_make_stata_column_names, pandas_prepare_df_for_stata, pandas_rename_df,

@@ -860,7 +860,6 @@ struct XptScan {
     chunk_size: Option<usize>,
     row_index_name: Option<String>,
     compress_opts: crate::CompressOptionsLite,
-    meta: Arc<XptMetadata>,
     col_plan: Vec<(XptColumn, ColKind)>,
 }
 
@@ -877,7 +876,6 @@ impl XptScan {
             chunk_size: opts.chunk_size,
             row_index_name: opts.row_index_name.clone(),
             compress_opts: opts.compress_opts.clone(),
-            meta: Arc::new(meta),
             col_plan,
         })
     }
@@ -1101,7 +1099,7 @@ pub fn xpt_batch_iter(
         return Ok(Box::new(ParallelXptBatchIter {
             rx,
             handle: Some(handle),
-            preserve_order: true, // XPT has no unordered-read use case
+            preserve_order,
             buffer: BTreeMap::new(),
             next_idx: 0,
             total_chunks,

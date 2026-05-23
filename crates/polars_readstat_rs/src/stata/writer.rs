@@ -541,11 +541,10 @@ fn infer_columns(
     let mut columns = Vec::new();
     if let Some(schema) = schema {
         for col in &schema.columns {
-            let width = if matches!(col.dtype, DataType::String) && col.string_width_bytes.is_none()
-            {
+            let width = if matches!(col.dtype, DataType::String) && col.string_width_bytes.is_none() {
                 if let Some(df) = df {
                     let column = df.column(&col.name).map_err(|e| Error::Polars(e))?;
-                    Some(max_string_width(column)?)
+                    Some(analyze_string_column(column.as_materialized_series())?.max_width)
                 } else {
                     None
                 }
@@ -579,17 +578,15 @@ fn infer_columns(
     for column in df.columns() {
         let series = column.as_materialized_series();
         let dtype = series.dtype().clone();
-        let width = if matches!(dtype, DataType::String) {
-            Some(max_string_width(column)?)
+        let string_analysis = if matches!(dtype, DataType::String) {
+            Some(analyze_string_column(series)?)
         } else {
             None
         };
-        let kind = if matches!(dtype, DataType::String)
-            && (string_has_nul(series)? || string_has_trailing_space(series)?)
-        {
-            ColumnKind::StrL
-        } else {
-            kind_from_dtype(dtype.clone(), width)?
+        let kind = match string_analysis {
+            Some(analysis) if analysis.has_nul || analysis.has_trailing_space => ColumnKind::StrL,
+            Some(analysis) => kind_from_dtype(dtype.clone(), Some(analysis.max_width))?,
+            None => kind_from_dtype(dtype.clone(), None)?,
         };
         let name = series.name().to_string();
         let format = variable_formats
@@ -842,40 +839,31 @@ fn build_value_label_table(mapping: &ValueLabelMap) -> Result<Vec<u8>> {
     Ok(table)
 }
 
-fn max_string_width(column: &Column) -> Result<usize> {
-    let series = column.as_materialized_series();
+#[derive(Debug, Clone, Copy)]
+struct StringColumnAnalysis {
+    max_width: usize,
+    has_nul: bool,
+    has_trailing_space: bool,
+}
+
+fn analyze_string_column(series: &Series) -> Result<StringColumnAnalysis> {
     let utf8 = series.str().map_err(|e| Error::Polars(e))?;
     let mut max_len = 0usize;
+    let mut has_nul = false;
+    let mut has_trailing_space = false;
     for opt in utf8.into_iter() {
         if let Some(s) = opt {
-            max_len = max_len.max(s.as_bytes().len());
+            let bytes = s.as_bytes();
+            max_len = max_len.max(bytes.len());
+            has_nul |= bytes.iter().any(|b| *b == 0);
+            has_trailing_space |= s.ends_with(' ');
         }
     }
-    Ok(max_len.max(1))
-}
-
-fn string_has_nul(series: &Series) -> Result<bool> {
-    let utf8 = series.str().map_err(|e| Error::Polars(e))?;
-    for opt in utf8.into_iter() {
-        if let Some(s) = opt {
-            if s.as_bytes().iter().any(|b| *b == 0) {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
-}
-
-fn string_has_trailing_space(series: &Series) -> Result<bool> {
-    let utf8 = series.str().map_err(|e| Error::Polars(e))?;
-    for opt in utf8.into_iter() {
-        if let Some(s) = opt {
-            if s.ends_with(' ') {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
+    Ok(StringColumnAnalysis {
+        max_width: max_len.max(1),
+        has_nul,
+        has_trailing_space,
+    })
 }
 
 fn type_code_for_column(col: &ColumnSpec) -> Result<u16> {

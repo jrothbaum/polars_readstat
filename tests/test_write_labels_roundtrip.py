@@ -294,6 +294,46 @@ def test_stata_variable_metadata_to_write_kwargs(tmp_path: Path) -> None:
 # metadata_df roundtrip tests
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+def _write_metadata_df_source(tmp_path: Path, fmt: str) -> tuple[Path, str, str]:
+    source = tmp_path / f"source.{fmt}"
+    if fmt == "dta":
+        prs.write_readstat(
+            DF,
+            source,
+            format="dta",
+            value_labels=VALUE_LABELS,
+            variable_labels=VARIABLE_LABELS,
+            variable_format={"score": "%12.2f"},
+        )
+        return source, "sex", "score"
+    if fmt == "sav":
+        prs.write_readstat(
+            DF,
+            source,
+            format="sav",
+            value_labels=VALUE_LABELS,
+            variable_labels=VARIABLE_LABELS,
+            variable_measure={"sex": "nominal"},
+            variable_alignment={"sex": "center"},
+            variable_display_width={"sex": 12},
+            variable_format={"score": "F10.3"},
+        )
+        return source, "sex", "score"
+    if fmt == "xpt":
+        prs.write_xpt(
+            DF,
+            source,
+            variable_labels=VARIABLE_LABELS,
+            variable_format={"score": "F8.0"},
+        )
+        return source, "sex", "score"
+    if fmt == "por":
+        prs.write_por(DF, source, variable_labels={"sex": "Sex of respondent"})
+        return source, "SEX", "SCORE"
+    raise AssertionError(f"unknown format {fmt}")
+
+
 @pytest.mark.parametrize("fmt", ["dta", "sav"])
 def test_metadata_df_roundtrip(tmp_path: Path, fmt: str) -> None:
     """metadata_df survives a write → read → write → read roundtrip."""
@@ -388,6 +428,79 @@ def test_metadata_df_value_label_codes_are_strings(tmp_path: Path) -> None:
     assert set(codes) == {"1", "2"}
     assert set(labels) == {"Male", "Female"}
     assert len(codes) == len(labels) == 2
+
+
+@pytest.mark.parametrize("fmt", ["dta", "sav", "xpt", "por"])
+def test_metadata_df_edits_are_used(tmp_path: Path, fmt: str) -> None:
+    source, sex_name, _ = _write_metadata_df_source(tmp_path, fmt)
+    reader = prs.ScanReadstat(source)
+    mdf = reader.metadata_df.with_columns(
+        pl.when(pl.col("name") == sex_name)
+        .then(pl.lit("Edited sex label"))
+        .otherwise(pl.col("label"))
+        .alias("label")
+    )
+
+    out = tmp_path / f"edited.{fmt}"
+    prs.write_readstat(reader.df.collect(), out, metadata=mdf)
+
+    sex = _col_by_name(prs.ScanReadstat(out).metadata, sex_name)
+    assert sex.get("label") == "Edited sex label"
+
+
+@pytest.mark.parametrize("fmt", ["dta", "sav", "xpt", "por"])
+def test_metadata_df_explicit_label_kwargs_override(tmp_path: Path, fmt: str) -> None:
+    source, sex_name, _ = _write_metadata_df_source(tmp_path, fmt)
+    reader = prs.ScanReadstat(source)
+    mdf = reader.metadata_df.with_columns(
+        pl.when(pl.col("name") == sex_name)
+        .then(pl.lit("Metadata label"))
+        .otherwise(pl.col("label"))
+        .alias("label")
+    )
+
+    out = tmp_path / f"override.{fmt}"
+    prs.write_readstat(
+        reader.df.collect(),
+        out,
+        metadata=mdf,
+        variable_labels={sex_name: "Explicit label"},
+    )
+
+    sex = _col_by_name(prs.ScanReadstat(out).metadata, sex_name)
+    assert sex.get("label") == "Explicit label"
+
+
+def test_write_readstat_por_accepts_metadata_df(tmp_path: Path) -> None:
+    source = tmp_path / "source.por"
+    prs.write_por(DF, source, variable_labels={"sex": "Sex of respondent"})
+
+    out = tmp_path / "out.por"
+    reader = prs.ScanReadstat(source)
+    mdf = reader.metadata_df
+    prs.write_readstat(reader.df.collect(), out, metadata=mdf)
+
+    sex = _col_by_name(prs.ScanReadstat(out).metadata, "SEX")
+    assert sex.get("label") == "Sex of respondent"
+
+
+def test_write_readstat_xpt_accepts_metadata_df(tmp_path: Path) -> None:
+    source = tmp_path / "source.xpt"
+    prs.write_xpt(
+        DF,
+        source,
+        variable_labels={"sex": "Sex of respondent", "score": "Test score"},
+        variable_format={"score": "F8.0"},
+    )
+
+    out = tmp_path / "out.xpt"
+    reader = prs.ScanReadstat(source)
+    mdf = reader.metadata_df
+    prs.write_readstat(reader.df.collect(), out, metadata=mdf)
+
+    metadata = prs.ScanReadstat(out).metadata
+    assert _col_by_name(metadata, "sex").get("label") == "Sex of respondent"
+    assert _col_by_name(metadata, "score").get("format") == "F8"
 
 
 def test_spss_write_string_value_label_keys(tmp_path: Path) -> None:

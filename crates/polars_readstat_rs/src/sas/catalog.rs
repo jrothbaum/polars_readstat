@@ -34,7 +34,6 @@ struct Ctx {
     /// True when file byte order differs from machine byte order
     bswap: bool,
     xlsr_size: usize,
-    xlsr_offset: usize,
     xlsr_o_offset: usize,
     page_count: i64,
     page_size: i64,
@@ -265,7 +264,7 @@ fn parse_block(data: &[u8], ctx: &Ctx) -> Option<(String, Vec<(CatalogKey, Strin
     // Short format name at offset 8 (8 bytes)
     let mut name = decode(&data[8..16.min(data.len())], ctx.encoding_byte);
 
-    let mut payload_off = 106usize + if ctx.u64_mode { 32 } else { 0 };
+    let payload_off = 106usize + if ctx.u64_mode { 32 } else { 0 };
     // Effective block-local pad (adds 16 when the base pad is non-zero)
     let mut eff_pad = if local_pad_base > 0 { local_pad_base + 16 } else { 0 };
 
@@ -352,7 +351,6 @@ pub fn read_sas7bcat(path: &Path) -> Result<CatalogMap> {
         pad1,
         bswap,
         xlsr_size,
-        xlsr_offset,
         xlsr_o_offset,
         page_count,
         page_size,

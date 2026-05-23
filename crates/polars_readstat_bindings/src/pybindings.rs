@@ -1,8 +1,8 @@
 use num_cpus;
 use polars::prelude::*;
 use polars_readstat_rs::{
-    build_sas_metadata_df, build_spss_metadata_df, build_stata_metadata_df,
-    configure_spss_writer_from_metadata, configure_stata_writer_from_metadata,
+    build_por_metadata_df, build_sas_metadata_df, build_spss_metadata_df, build_stata_metadata_df,
+    build_xpt_metadata_df,
     read_sas7bcat, readstat_batch_iter, readstat_metadata_json, readstat_scan, readstat_schema,
     sas_metadata_json_from_meta, spss_metadata_json_from_meta, stata_metadata_json_from_meta,
     CatalogKey, InformativeNullColumns, InformativeNullMode, InformativeNullOpts, PorWriteOptions,
@@ -10,9 +10,9 @@ use polars_readstat_rs::{
     SpssMeasure, SpssMetadata, SpssReader,
     SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels,
     SpssVariableAlignments, SpssVariableDisplayWidths, SpssVariableFormat, SpssVariableFormats,
-    SpssVariableLabels, SpssVariableMeasures, SpssWriter,
+    SpssVariableMeasures, SpssWriter,
     StataHeader, StataMetadata, StataReader, StataWriter,
-    ValueLabels, VariableFormats, VariableLabels,
+    PorMetadata, ValueLabels, XptMetadata,
     XptWriter,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -32,6 +32,7 @@ enum ReadstatFormat {
     SasXpt,
     Stata,
     Spss,
+    Por,
 }
 
 /// Cached parsed metadata — held privately in Rust, never exposed to Python.
@@ -51,6 +52,12 @@ enum MetadataInner {
         meta: Arc<SasMetadata>,
         hdr: Arc<SasHeader>,
     },
+    Xpt {
+        meta: Arc<XptMetadata>,
+    },
+    Por {
+        meta: Arc<PorMetadata>,
+    },
 }
 
 impl MetadataInner {
@@ -65,6 +72,8 @@ impl MetadataInner {
             Self::Sas { meta, hdr } => {
                 sas_metadata_json_from_meta(meta, hdr).map_err(|e| e.to_string())
             }
+            Self::Xpt { meta: _ } => Err("metadata dict cache is not used for XPT".to_string()),
+            Self::Por { meta: _ } => Err("metadata dict cache is not used for POR".to_string()),
         }
     }
 
@@ -78,6 +87,12 @@ impl MetadataInner {
             }
             Self::Sas { meta, .. } => {
                 build_sas_metadata_df(meta).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+            }
+            Self::Xpt { meta } => {
+                build_xpt_metadata_df(meta).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+            }
+            Self::Por { meta } => {
+                build_por_metadata_df(meta).map_err(|e| PyRuntimeError::new_err(e.to_string()))
             }
         }
     }
@@ -109,9 +124,20 @@ fn build_metadata_inner(path: &str, format: ReadstatFormat) -> PyResult<Metadata
                 hdr: Arc::new(reader.header().clone()),
             })
         }
-        ReadstatFormat::SasXpt => Err(PyValueError::new_err(
-            "metadata_df is not supported for XPT format",
-        )),
+        ReadstatFormat::SasXpt => {
+            let meta = polars_readstat_rs::read_xpt_metadata(Path::new(path))
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            Ok(MetadataInner::Xpt {
+                meta: Arc::new(meta),
+            })
+        }
+        ReadstatFormat::Por => {
+            let meta = polars_readstat_rs::metadata_por(path)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            Ok(MetadataInner::Por {
+                meta: Arc::new(meta),
+            })
+        }
     }
 }
 
@@ -127,6 +153,7 @@ fn detect_format(path: &str) -> PyResult<ReadstatFormat> {
         "xpt" | "xpt5" | "xpt8" => Ok(ReadstatFormat::SasXpt),
         "dta" => Ok(ReadstatFormat::Stata),
         "sav" | "zsav" => Ok(ReadstatFormat::Spss),
+        "por" => Ok(ReadstatFormat::Por),
         _ => Err(PyValueError::new_err("unknown file extension")),
     }
 }
@@ -338,6 +365,20 @@ fn read_df_with_options(
                 .finish()
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         }
+        ReadstatFormat::Por => {
+            let (_, df) = polars_readstat_rs::read_por(path)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let mut df = if let Some(cols) = columns {
+                df.select(cols)
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+            } else {
+                df
+            };
+            if let Some(limit) = n_rows {
+                df = df.head(Some(limit));
+            }
+            df
+        }
     };
     Ok(df)
 }
@@ -416,7 +457,7 @@ fn append_row_index_schema(schema: &mut Schema, name: &str) -> PyResult<()> {
 /// outer key is the format name (uppercase, no trailing dot),
 /// inner dict maps each code (float for numeric, str for character) to its label.
 #[pyfunction]
-fn read_sas7bcat_rs(py: Python<'_>, path: String) -> PyResult<PyObject> {
+fn read_sas7bcat_rs(py: Python<'_>, path: String) -> PyResult<Py<PyAny>> {
     let catalog = read_sas7bcat(std::path::Path::new(&path))
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
@@ -424,7 +465,7 @@ fn read_sas7bcat_rs(py: Python<'_>, path: String) -> PyResult<PyObject> {
     for (fmt_name, entries) in catalog {
         let inner = PyDict::new(py);
         for (key, label) in entries {
-            let py_key: PyObject = match key {
+            let py_key: Py<PyAny> = match key {
                 CatalogKey::Numeric(v) => v.into_pyobject(py).map_err(|e| PyRuntimeError::new_err(e.to_string()))?.into(),
                 CatalogKey::Text(s) => s.into_pyobject(py).map_err(|e| PyRuntimeError::new_err(e.to_string()))?.into(),
             };
@@ -447,7 +488,9 @@ pub fn polars_readstat_bindings(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(write_spss_from_df_rs, m)?)?;
     m.add_function(wrap_pyfunction!(write_stata_from_df_rs, m)?)?;
     m.add_function(wrap_pyfunction!(write_xpt, m)?)?;
+    m.add_function(wrap_pyfunction!(write_xpt_from_df_rs, m)?)?;
     m.add_function(wrap_pyfunction!(write_por, m)?)?;
+    m.add_function(wrap_pyfunction!(write_por_from_df_rs, m)?)?;
     m.add_function(wrap_pyfunction!(scan_por_rs, m)?)?;
     m.add_function(wrap_pyfunction!(por_metadata_json_rs, m)?)?;
     m.add_function(wrap_pyfunction!(write_sas_csv_import, m)?)?;
@@ -1112,7 +1155,6 @@ fn write_spss_from_df_rs(
     let mdf = &metadata_df.0;
 
     let name_ca = mdf.column("name").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
-    let label_ca = mdf.column("label").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
     let measure_ca = mdf.column("measure").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
     let align_ca = mdf.column("alignment").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
     let dw_ca = mdf.column("display_width").map_err(|e| PyValueError::new_err(e.to_string()))?.i32().map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -1122,7 +1164,7 @@ fn write_spss_from_df_rs(
     let vl_codes_col = mdf.column("value_label_codes").map_err(|e| PyValueError::new_err(e.to_string()))?.as_materialized_series().clone();
     let vl_labels_col = mdf.column("value_label_labels").map_err(|e| PyValueError::new_err(e.to_string()))?.as_materialized_series().clone();
 
-    let mut variable_labels: SpssVariableLabels = HashMap::new();
+    let (variable_labels, _) = metadata_df_labels_formats(&df.0, mdf)?;
     let mut variable_measures: SpssVariableMeasures = HashMap::new();
     let mut variable_alignments: SpssVariableAlignments = HashMap::new();
     let mut variable_display_widths: SpssVariableDisplayWidths = HashMap::new();
@@ -1136,9 +1178,6 @@ fn write_spss_from_df_rs(
         };
         if !col_names.contains(&name) {
             continue;
-        }
-        if let Some(lbl) = label_ca.get(i) {
-            variable_labels.insert(name.clone(), lbl.to_string());
         }
         if let Some(m) = measure_ca.get(i) {
             let spss_measure = match m {
@@ -1215,13 +1254,10 @@ fn write_stata_from_df_rs(
     let mdf = &metadata_df.0;
 
     let name_ca = mdf.column("name").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
-    let label_ca = mdf.column("label").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
-    let format_ca = mdf.column("format").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
     let vl_codes_col = mdf.column("value_label_codes").map_err(|e| PyValueError::new_err(e.to_string()))?.as_materialized_series().clone();
     let vl_labels_col = mdf.column("value_label_labels").map_err(|e| PyValueError::new_err(e.to_string()))?.as_materialized_series().clone();
 
-    let mut variable_labels: VariableLabels = HashMap::new();
-    let mut variable_formats: VariableFormats = HashMap::new();
+    let (variable_labels, variable_formats) = metadata_df_labels_formats(&df.0, mdf)?;
     let mut value_labels: ValueLabels = HashMap::new();
 
     for i in 0..mdf.height() {
@@ -1231,12 +1267,6 @@ fn write_stata_from_df_rs(
         };
         if !col_names.contains(&name) {
             continue;
-        }
-        if let Some(lbl) = label_ca.get(i) {
-            variable_labels.insert(name.clone(), lbl.to_string());
-        }
-        if let Some(fmt) = format_ca.get(i) {
-            variable_formats.insert(name.clone(), fmt.to_string());
         }
         let codes_av = vl_codes_col.get(i).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let lbls_av = vl_labels_col.get(i).map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -1307,13 +1337,61 @@ fn write_xpt(
         writer = writer.with_variable_formats(parse_variable_labels_dict(formats)?);
     }
     if let Some(widths) = storage_widths {
-        let mut map = HashMap::new();
-        for (k, v) in widths.iter() {
-            let col = k.extract::<String>()?;
-            let w = v.extract::<usize>()?;
-            map.insert(col, w);
-        }
-        writer = writer.with_storage_widths(map);
+        writer = writer.with_storage_widths(parse_storage_widths_dict(widths)?);
+    }
+    writer
+        .write_df(&df.0)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// Write XPT building labels/formats directly from a metadata DataFrame.
+#[pyfunction]
+#[pyo3(signature = (
+    df,
+    path,
+    metadata_df,
+    version=8,
+    table_name=None,
+    file_label=None,
+    variable_labels=None,
+    variable_format=None,
+    storage_widths=None,
+))]
+fn write_xpt_from_df_rs(
+    df: PyDataFrame,
+    path: String,
+    metadata_df: PyDataFrame,
+    version: u8,
+    table_name: Option<String>,
+    file_label: Option<String>,
+    variable_labels: Option<&Bound<PyDict>>,
+    variable_format: Option<&Bound<PyDict>>,
+    storage_widths: Option<&Bound<PyDict>>,
+) -> PyResult<()> {
+    ensure_extension(&path, &["xpt"])?;
+    let (mut labels, mut formats) = metadata_df_labels_formats(&df.0, &metadata_df.0)?;
+    if let Some(explicit_labels) = variable_labels {
+        labels.extend(parse_variable_labels_dict(explicit_labels)?);
+    }
+    if let Some(explicit_formats) = variable_format {
+        formats.extend(parse_variable_labels_dict(explicit_formats)?);
+    }
+
+    let mut writer = XptWriter::new(path).with_version(version);
+    if let Some(name) = table_name {
+        writer = writer.with_table_name(name);
+    }
+    if let Some(label) = file_label {
+        writer = writer.with_file_label(label);
+    }
+    if !labels.is_empty() {
+        writer = writer.with_variable_labels(labels);
+    }
+    if !formats.is_empty() {
+        writer = writer.with_variable_formats(formats);
+    }
+    if let Some(widths) = storage_widths {
+        writer = writer.with_storage_widths(parse_storage_widths_dict(widths)?);
     }
     writer
         .write_df(&df.0)
@@ -1367,6 +1445,31 @@ fn write_por(
     opts.file_label = file_label;
     if let Some(labels) = variable_labels {
         opts.variable_labels = Some(parse_variable_labels_dict(labels)?);
+    }
+    polars_readstat_rs::write_por(&df.0, &path, opts)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// Write POR building labels directly from a metadata DataFrame.
+#[pyfunction]
+#[pyo3(signature = (df, path, metadata_df, file_label=None, variable_labels=None))]
+fn write_por_from_df_rs(
+    df: PyDataFrame,
+    path: String,
+    metadata_df: PyDataFrame,
+    file_label: Option<String>,
+    variable_labels: Option<&Bound<PyDict>>,
+) -> PyResult<()> {
+    ensure_extension(&path, &["por"])?;
+    let (mut labels, _) = metadata_df_labels_formats(&df.0, &metadata_df.0)?;
+    if let Some(explicit_labels) = variable_labels {
+        labels.extend(parse_variable_labels_dict(explicit_labels)?);
+    }
+
+    let mut opts = PorWriteOptions::default();
+    opts.file_label = file_label;
+    if !labels.is_empty() {
+        opts.variable_labels = Some(labels);
     }
     polars_readstat_rs::write_por(&df.0, &path, opts)
         .map_err(|e| PyValueError::new_err(e.to_string()))
@@ -1649,4 +1752,58 @@ fn parse_variable_labels_dict(labels: &Bound<PyDict>) -> PyResult<HashMap<String
         out.insert(col, label);
     }
     Ok(out)
+}
+
+fn parse_storage_widths_dict(widths: &Bound<PyDict>) -> PyResult<HashMap<String, usize>> {
+    let mut out: HashMap<String, usize> = HashMap::with_capacity(widths.len());
+    for (col_obj, width_obj) in widths.iter() {
+        let col = col_obj.extract::<String>()?;
+        let width = width_obj.extract::<usize>()?;
+        out.insert(col, width);
+    }
+    Ok(out)
+}
+
+fn metadata_df_labels_formats(
+    df: &DataFrame,
+    metadata_df: &DataFrame,
+) -> PyResult<(HashMap<String, String>, HashMap<String, String>)> {
+    let col_names: HashSet<String> = df.get_column_names().iter().map(|s| s.to_string()).collect();
+    let name_col = metadata_df
+        .column("name")
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let name_ca = name_col
+        .str()
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    let label_col = metadata_df.column("label").ok();
+    let label_ca = match label_col.as_ref() {
+        Some(col) => Some(col.str().map_err(|e| PyValueError::new_err(e.to_string()))?),
+        None => None,
+    };
+    let format_col = metadata_df.column("format").ok();
+    let format_ca = match format_col.as_ref() {
+        Some(col) => Some(col.str().map_err(|e| PyValueError::new_err(e.to_string()))?),
+        None => None,
+    };
+
+    let mut labels = HashMap::new();
+    let mut formats = HashMap::new();
+    for i in 0..metadata_df.height() {
+        let name = match name_ca.get(i) {
+            Some(name) if col_names.contains(name) => name,
+            _ => continue,
+        };
+        if let Some(ca) = label_ca {
+            if let Some(label) = ca.get(i) {
+                labels.insert(name.to_string(), label.to_string());
+            }
+        }
+        if let Some(ca) = format_ca {
+            if let Some(format) = ca.get(i) {
+                formats.insert(name.to_string(), format.to_string());
+            }
+        }
+    }
+    Ok((labels, formats))
 }
