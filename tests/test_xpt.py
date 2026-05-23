@@ -271,7 +271,7 @@ def test_big_xpt_parallel_matches_serial():
     if not BIG_XPT.exists():
         pytest.skip(f"Missing fixture: {BIG_XPT}")
     df_serial = prs.scan_readstat(str(BIG_XPT), threads=1).collect()
-    df_parallel = prs.scan_readstat(str(BIG_XPT)).collect()
+    df_parallel = prs.scan_readstat(str(BIG_XPT), preserve_order=True).collect()
     assert df_serial.shape == df_parallel.shape
     assert_frame_equal(df_serial, df_parallel, check_dtypes=True)
 
@@ -279,7 +279,7 @@ def test_big_xpt_parallel_matches_serial():
 def test_big_xpt_parallel_matches_pyreadstat():
     if not BIG_XPT.exists():
         pytest.skip(f"Missing fixture: {BIG_XPT}")
-    df = prs.scan_readstat(str(BIG_XPT)).collect()
+    df = prs.scan_readstat(str(BIG_XPT), preserve_order=True).collect()
     ref_pd, _ = pyreadstat.read_xport(str(BIG_XPT))
     ref = pl.from_pandas(ref_pd)
     assert df.shape == (1_000_000, 2)
