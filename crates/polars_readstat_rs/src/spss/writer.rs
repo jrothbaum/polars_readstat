@@ -886,9 +886,6 @@ fn write_long_var_names_record<W: Write>(
 ) -> Result<()> {
     let mut tuples: Vec<Vec<u8>> = Vec::new();
     for col in columns {
-        if col.name == col.short_name {
-            continue;
-        }
         let long = sanitize_long_name_for_record(&col.name);
         if long.is_empty() {
             continue;
@@ -989,16 +986,33 @@ fn write_floating_point_info_record<W: Write>(writer: &mut W) -> Result<()> {
 }
 
 fn write_variable_display_record<W: Write>(writer: &mut W, columns: &[ColumnSpec]) -> Result<()> {
+    let total_segments: usize = columns
+        .iter()
+        .map(|col| {
+            if col.var_type == VarType::Str && col.string_len > 255 {
+                long_string_segment_count(col.string_len)
+            } else {
+                1
+            }
+        })
+        .sum();
     write_u32(writer, SAV_RECORD_HAS_DATA)?;
     write_u32(writer, SUBTYPE_VAR_DISPLAY)?;
     write_u32(writer, 4)?;
-    write_u32(writer, (columns.len() * 3) as u32)?;
+    write_u32(writer, (total_segments * 3) as u32)?;
     for col in columns {
         let measure = encode_measure(col.measure);
         let alignment = encode_alignment(col.alignment);
-        write_i32(writer, measure)?;
-        write_i32(writer, col.display_width)?;
-        write_i32(writer, alignment)?;
+        let n_segs = if col.var_type == VarType::Str && col.string_len > 255 {
+            long_string_segment_count(col.string_len)
+        } else {
+            1
+        };
+        for _ in 0..n_segs {
+            write_i32(writer, measure)?;
+            write_i32(writer, col.display_width)?;
+            write_i32(writer, alignment)?;
+        }
     }
     Ok(())
 }
