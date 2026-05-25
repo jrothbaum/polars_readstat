@@ -85,6 +85,11 @@ pub fn read_metadata<R: Read + Seek>(reader: &mut R, header: &Header) -> Result<
         let label = variable_labels.get(i).cloned().filter(|s| !s.is_empty());
         let value_label_name = value_label_names.get(i).cloned().filter(|s| !s.is_empty());
         acc.push(name.clone(), label, format.clone(), None, None, None);
+        let str_width = match var_type {
+            crate::stata::types::VarType::Str(n) => Some(n as i32),
+            _ => None,
+        };
+        acc.set_string_width_bytes(i, str_width);
         variables.push(Variable {
             name,
             var_type,

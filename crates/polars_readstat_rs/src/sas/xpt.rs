@@ -356,10 +356,16 @@ pub fn read_xpt_metadata(path: &Path) -> PolarsResult<XptMetadata> {
     };
 
     let mut acc = crate::metadata_df::MetadataAccumulator::with_capacity(columns.len());
-    for col in &columns {
+    for (i, col) in columns.iter().enumerate() {
         let label = if col.label.is_empty() { None } else { Some(col.label.clone()) };
         let format = if col.format.is_empty() { None } else { Some(col.format.clone()) };
         acc.push(col.name.clone(), label, format, None, None, None);
+        let str_width = if col.col_type == XptColumnType::Character {
+            Some(col.storage_width as i32)
+        } else {
+            None
+        };
+        acc.set_string_width_bytes(i, str_width);
     }
     let metadata_df = acc
         .into_dataframe()

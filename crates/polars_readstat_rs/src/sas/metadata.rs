@@ -877,21 +877,26 @@ impl MetadataBuilder {
         }
 
         let mut acc = crate::metadata_df::MetadataAccumulator::with_capacity(column_count);
-        let columns = columns
-            .into_iter()
-            .map(|cb| {
-                let label = if cb.label.is_empty() { None } else { Some(cb.label.clone()) };
-                let format = if cb.format.is_empty() { None } else { Some(cb.format.clone()) };
-                acc.push(cb.name.clone(), label, format, None, None, None);
-                Column {
-                    name: cb.name,
-                    format: cb.format,
-                    col_type: cb.col_type,
-                    offset: cb.offset,
-                    length: cb.length,
-                }
-            })
-            .collect();
+        let mut built_columns: Vec<Column> = Vec::with_capacity(column_count);
+        for (i, cb) in columns.into_iter().enumerate() {
+            let label = if cb.label.is_empty() { None } else { Some(cb.label.clone()) };
+            let format = if cb.format.is_empty() { None } else { Some(cb.format.clone()) };
+            acc.push(cb.name.clone(), label, format, None, None, None);
+            let str_width = if cb.col_type == crate::sas::types::ColumnType::Character {
+                Some(cb.length as i32)
+            } else {
+                None
+            };
+            acc.set_string_width_bytes(i, str_width);
+            built_columns.push(Column {
+                name: cb.name,
+                format: cb.format,
+                col_type: cb.col_type,
+                offset: cb.offset,
+                length: cb.length,
+            });
+        }
+        let columns = built_columns;
 
         let metadata_df = acc.into_dataframe().map_err(|e| Error::ParseError(e.to_string()))?;
 

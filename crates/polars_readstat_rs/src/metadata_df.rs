@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 /// Shared accumulator for building per-variable metadata DataFrames during file parsing.
 ///
-/// All five formats (SPSS, Stata, SAS, XPT, POR) produce the same 11-column schema.
+/// All five formats (SPSS, Stata, SAS, XPT, POR) produce the same 12-column schema.
 /// Each parser pushes rows as it reads variable records, updates fields via index-based
 /// setters during extension/secondary passes, then calls `into_dataframe()` once at the
 /// end of parsing — no separate conversion step needed.
@@ -19,6 +19,7 @@ pub struct MetadataAccumulator {
     measures: Vec<Option<&'static str>>,
     display_widths: Vec<Option<i32>>,
     alignments: Vec<Option<&'static str>>,
+    string_width_bytes: Vec<Option<i32>>,
 }
 
 impl MetadataAccumulator {
@@ -35,6 +36,7 @@ impl MetadataAccumulator {
             measures: Vec::with_capacity(n),
             display_widths: Vec::with_capacity(n),
             alignments: Vec::with_capacity(n),
+            string_width_bytes: Vec::with_capacity(n),
         }
     }
 
@@ -58,6 +60,11 @@ impl MetadataAccumulator {
         self.measures.push(None);
         self.display_widths.push(None);
         self.alignments.push(None);
+        self.string_width_bytes.push(None);
+    }
+
+    pub fn set_string_width_bytes(&mut self, idx: usize, width: Option<i32>) {
+        self.string_width_bytes[idx] = width;
     }
 
     pub fn set_label(&mut self, idx: usize, label: Option<String>) {
@@ -101,6 +108,7 @@ impl MetadataAccumulator {
         self.measures.drain(range.clone());
         self.display_widths.drain(range.clone());
         self.alignments.drain(range.clone());
+        self.string_width_bytes.drain(range.clone());
     }
 
     pub fn len(&self) -> usize {
@@ -137,7 +145,7 @@ impl MetadataAccumulator {
             .collect();
     }
 
-    /// Consume the accumulator and produce the canonical 11-column metadata DataFrame.
+    /// Consume the accumulator and produce the canonical 12-column metadata DataFrame.
     pub fn into_dataframe(self) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
         use polars::prelude::*;
 
@@ -185,6 +193,7 @@ impl MetadataAccumulator {
             Series::new("measure".into(), self.measures).into_column(),
             Series::new("display_width".into(), self.display_widths).into_column(),
             Series::new("alignment".into(), self.alignments).into_column(),
+            Series::new("string_width_bytes".into(), self.string_width_bytes).into_column(),
         ])
     }
 }

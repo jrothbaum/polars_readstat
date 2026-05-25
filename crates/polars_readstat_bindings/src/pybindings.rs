@@ -8,8 +8,8 @@ use polars_readstat_rs::{
     SpssMeasure, SpssMetadata, SpssReader,
     SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels,
     SpssVariableAlignments, SpssVariableDisplayWidths, SpssVariableFormat, SpssVariableFormats,
-    SpssVariableMeasures, SpssWriter,
-    StataHeader, StataMetadata, StataReader, StataWriter,
+    SpssVariableMeasures, SpssWriteColumn, SpssWriteSchema, SpssWriter,
+    StataHeader, StataMetadata, StataReader, StataWriteColumn, StataWriteSchema, StataWriter,
     PorMetadata, ValueLabels, XptMetadata,
     XptWriter,
 };
@@ -1149,6 +1149,7 @@ fn write_spss_from_df_rs(
     let ft_ca = mdf.column("format_type").map_err(|e| PyValueError::new_err(e.to_string()))?.i32().map_err(|e| PyValueError::new_err(e.to_string()))?;
     let fw_ca = mdf.column("format_width").map_err(|e| PyValueError::new_err(e.to_string()))?.i32().map_err(|e| PyValueError::new_err(e.to_string()))?;
     let fd_ca = mdf.column("format_decimals").map_err(|e| PyValueError::new_err(e.to_string()))?.i32().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let sw_col_opt = mdf.column("string_width_bytes").ok().and_then(|c| c.i32().ok().map(|ca| ca.clone()));
     let vl_codes_col = mdf.column("value_label_codes").map_err(|e| PyValueError::new_err(e.to_string()))?.as_materialized_series().clone();
     let vl_labels_col = mdf.column("value_label_labels").map_err(|e| PyValueError::new_err(e.to_string()))?.as_materialized_series().clone();
 
@@ -1158,6 +1159,7 @@ fn write_spss_from_df_rs(
     let mut variable_display_widths: SpssVariableDisplayWidths = HashMap::new();
     let mut variable_formats: SpssVariableFormats = HashMap::new();
     let mut value_labels: SpssValueLabels = HashMap::new();
+    let mut schema_columns: Vec<SpssWriteColumn> = Vec::new();
 
     for i in 0..mdf.height() {
         let name = match name_ca.get(i) {
@@ -1167,11 +1169,14 @@ fn write_spss_from_df_rs(
         if !col_names.contains(&name) {
             continue;
         }
+        let dtype = df.0.column(&name).map(|s| s.dtype().clone()).unwrap_or(DataType::Null);
+        let string_width_bytes = sw_col_opt.as_ref().and_then(|ca| ca.get(i)).map(|w| w as usize);
+        schema_columns.push(SpssWriteColumn { name: name.clone(), dtype, string_width_bytes });
         if let Some(m) = measure_ca.get(i) {
             let spss_measure = match m {
-                "nominal" => Some(SpssMeasure::Nominal),
-                "ordinal" => Some(SpssMeasure::Ordinal),
-                "scale" => Some(SpssMeasure::Scale),
+                "nominal" | "Nominal" => Some(SpssMeasure::Nominal),
+                "ordinal" | "Ordinal" => Some(SpssMeasure::Ordinal),
+                "scale" | "Scale" => Some(SpssMeasure::Scale),
                 _ => None,
             };
             if let Some(measure) = spss_measure {
@@ -1180,9 +1185,9 @@ fn write_spss_from_df_rs(
         }
         if let Some(a) = align_ca.get(i) {
             let align = match a {
-                "left" => Some(SpssAlignment::Left),
-                "right" => Some(SpssAlignment::Right),
-                "center" => Some(SpssAlignment::Center),
+                "left" | "Left" => Some(SpssAlignment::Left),
+                "right" | "Right" => Some(SpssAlignment::Right),
+                "center" | "Center" => Some(SpssAlignment::Center),
                 _ => None,
             };
             if let Some(alignment) = align {
@@ -1219,6 +1224,14 @@ fn write_spss_from_df_rs(
     }
 
     let mut writer = SpssWriter::new(&path);
+    if !schema_columns.is_empty() {
+        writer = writer.with_schema(SpssWriteSchema {
+            columns: schema_columns,
+            row_count: None,
+            value_labels: None,
+            variable_labels: None,
+        });
+    }
     if !variable_labels.is_empty() { writer = writer.with_variable_labels(variable_labels); }
     if !variable_measures.is_empty() { writer = writer.with_variable_measures(variable_measures); }
     if !variable_alignments.is_empty() { writer = writer.with_variable_alignments(variable_alignments); }
@@ -1242,11 +1255,13 @@ fn write_stata_from_df_rs(
     let mdf = &metadata_df.0;
 
     let name_ca = mdf.column("name").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let sw_col_opt = mdf.column("string_width_bytes").ok().and_then(|c| c.i32().ok().map(|ca| ca.clone()));
     let vl_codes_col = mdf.column("value_label_codes").map_err(|e| PyValueError::new_err(e.to_string()))?.as_materialized_series().clone();
     let vl_labels_col = mdf.column("value_label_labels").map_err(|e| PyValueError::new_err(e.to_string()))?.as_materialized_series().clone();
 
     let (variable_labels, variable_formats) = metadata_df_labels_formats(&df.0, mdf)?;
     let mut value_labels: ValueLabels = HashMap::new();
+    let mut schema_columns: Vec<StataWriteColumn> = Vec::new();
 
     for i in 0..mdf.height() {
         let name = match name_ca.get(i) {
@@ -1256,6 +1271,9 @@ fn write_stata_from_df_rs(
         if !col_names.contains(&name) {
             continue;
         }
+        let dtype = df.0.column(&name).map(|s| s.dtype().clone()).unwrap_or(DataType::Null);
+        let string_width_bytes = sw_col_opt.as_ref().and_then(|ca| ca.get(i)).map(|w| w as usize);
+        schema_columns.push(StataWriteColumn { name: name.clone(), dtype, string_width_bytes });
         let codes_av = vl_codes_col.get(i).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let lbls_av = vl_labels_col.get(i).map_err(|e| PyValueError::new_err(e.to_string()))?;
         if let (AnyValue::List(codes_s), AnyValue::List(lbls_s)) = (codes_av, lbls_av) {
@@ -1283,6 +1301,15 @@ fn write_stata_from_df_rs(
     let mut writer = StataWriter::new(&path);
     if let Some(enable) = compress { writer = writer.with_compress(enable); }
     if let Some(n) = threads { writer = writer.with_n_threads(n); }
+    if !schema_columns.is_empty() {
+        writer = writer.with_schema(StataWriteSchema {
+            columns: schema_columns,
+            row_count: None,
+            value_labels: None,
+            variable_labels: None,
+            variable_formats: None,
+        });
+    }
     if !variable_labels.is_empty() { writer = writer.with_variable_labels(variable_labels); }
     if !variable_formats.is_empty() { writer = writer.with_variable_formats(variable_formats); }
     if !value_labels.is_empty() { writer = writer.with_value_labels(value_labels); }
@@ -1357,12 +1384,28 @@ fn write_xpt_from_df_rs(
     storage_widths: Option<&Bound<PyDict>>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["xpt"])?;
-    let (mut labels, mut formats) = metadata_df_labels_formats(&df.0, &metadata_df.0)?;
+    let mdf = &metadata_df.0;
+    let (mut labels, mut formats) = metadata_df_labels_formats(&df.0, mdf)?;
     if let Some(explicit_labels) = variable_labels {
         labels.extend(parse_variable_labels_dict(explicit_labels)?);
     }
     if let Some(explicit_formats) = variable_format {
         formats.extend(parse_variable_labels_dict(explicit_formats)?);
+    }
+
+    // Build storage_widths from metadata_df's string_width_bytes, then merge explicit overrides.
+    let mut metadata_widths: HashMap<String, usize> = HashMap::new();
+    if let (Ok(name_col), Ok(sw_col)) = (mdf.column("name"), mdf.column("string_width_bytes")) {
+        if let (Ok(name_ca), Ok(sw_ca)) = (name_col.str(), sw_col.i32()) {
+            for i in 0..mdf.height() {
+                if let (Some(name), Some(w)) = (name_ca.get(i), sw_ca.get(i)) {
+                    metadata_widths.insert(name.to_string(), w as usize);
+                }
+            }
+        }
+    }
+    if let Some(explicit_widths) = storage_widths {
+        metadata_widths.extend(parse_storage_widths_dict(explicit_widths)?);
     }
 
     let mut writer = XptWriter::new(path).with_version(version);
@@ -1378,8 +1421,8 @@ fn write_xpt_from_df_rs(
     if !formats.is_empty() {
         writer = writer.with_variable_formats(formats);
     }
-    if let Some(widths) = storage_widths {
-        writer = writer.with_storage_widths(parse_storage_widths_dict(widths)?);
+    if !metadata_widths.is_empty() {
+        writer = writer.with_storage_widths(metadata_widths);
     }
     writer
         .write_df(&df.0)

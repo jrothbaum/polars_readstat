@@ -467,17 +467,15 @@ impl XptWriter {
             let kind = write_kind_for_dtype(dtype);
             let is_numeric = !matches!(kind, WriteKind::Character);
 
-            let storage_width = if let Some(&w) = self.storage_widths.get(&name) {
-                if is_numeric {
+            let storage_width = if is_numeric {
+                if let Some(&w) = self.storage_widths.get(&name) {
                     w.clamp(3, 8)
                 } else {
-                    w.max(1)
+                    8usize
                 }
-            } else if is_numeric {
-                8usize
             } else {
-                // Auto-compute max string byte length; minimum 1.
-                series
+                // Character: scan for actual max, then take max(declared, scan).
+                let scan_width = series
                     .str()
                     .map(|ca| {
                         ca.iter()
@@ -487,7 +485,18 @@ impl XptWriter {
                             .unwrap_or(1)
                     })
                     .unwrap_or(1)
-                    .max(1)
+                    .max(1);
+                if let Some(&w) = self.storage_widths.get(&name) {
+                    if scan_width > w {
+                        eprintln!(
+                            "warning: column '{}' declared storage_width={} but data contains strings up to {} bytes; using {}",
+                            name, w, scan_width, scan_width
+                        );
+                    }
+                    w.max(scan_width)
+                } else {
+                    scan_width
+                }
             };
 
             let full_label = self

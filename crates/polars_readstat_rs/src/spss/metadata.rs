@@ -301,6 +301,7 @@ fn coalesce_very_long_strings(
         variables[i].width = total_width;
         variables.drain(i + 1..end);
         acc.drain(i + 1..end);
+        acc.set_string_width_bytes(i, Some(string_len as i32));
         i += 1;
     }
     Ok(())
@@ -391,6 +392,8 @@ fn read_variable_record<R: Read + Seek>(
         Some(format_width as i32),
         Some(format_decimals as i32),
     );
+    let acc_idx = acc.len() - 1;
+    acc.set_string_width_bytes(acc_idx, if string_len > 0 { Some(string_len as i32) } else { None });
 
     Ok(Some(ColumnPlan {
         name: name.clone(),

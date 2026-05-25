@@ -541,12 +541,21 @@ fn infer_columns(
     let mut columns = Vec::new();
     if let Some(schema) = schema {
         for col in &schema.columns {
-            let width = if matches!(col.dtype, DataType::String) && col.string_width_bytes.is_none() {
+            let width = if matches!(col.dtype, DataType::String) {
                 if let Some(df) = df {
                     let column = df.column(&col.name).map_err(|e| Error::Polars(e))?;
-                    Some(analyze_string_column(column.as_materialized_series())?.max_width)
+                    let scan = analyze_string_column(column.as_materialized_series())?.max_width;
+                    Some(col.string_width_bytes.map_or(scan, |declared| {
+                        if scan > declared {
+                            eprintln!(
+                                "warning: column '{}' declared string_width_bytes={} but data contains strings up to {} bytes; using {}",
+                                col.name, declared, scan, scan
+                            );
+                        }
+                        declared.max(scan)
+                    }))
                 } else {
-                    None
+                    col.string_width_bytes
                 }
             } else {
                 col.string_width_bytes

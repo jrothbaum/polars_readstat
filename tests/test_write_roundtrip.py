@@ -368,3 +368,37 @@ def test_por_sample_roundtrip(package_module, rs_tests_root: Path, tmp_path: Pat
         abs_tol=1e-6,
         rel_tol=1e-6,
     )
+
+
+# ── String width: declared < actual max ──────────────────────────────────────
+
+@pytest.mark.parametrize("fmt", ["sav", "dta", "xpt"])
+def test_write_string_width_undersized_metadata(tmp_path: Path, fmt: str) -> None:
+    """When metadata declares a narrower string width than the data contains,
+    the writer should use max(declared, actual) so no strings are truncated."""
+    short = "hi"            # 2 bytes
+    long_ = "hello_world_x" # 13 bytes — longer than the "declared" width below
+
+    df_short = pl.DataFrame({"id": [1.0], "label": [short]})
+    df_long  = pl.DataFrame({"id": [1.0, 2.0], "label": [short, long_]})
+
+    # Write the short-string version to establish a "metadata" baseline.
+    src = tmp_path / f"short.{fmt}"
+    prs.write_readstat(df_short, str(src))
+
+    # Read it back so we have metadata that declares a narrow string width.
+    reader = prs.ScanReadstat(str(src))
+    metadata = reader.metadata_df
+
+    # Now write the long-string version using that narrow metadata.
+    # For all formats, pass the metadata_df from the narrow-width file so the
+    # string_width_bytes path (not a hardcoded kwarg) is exercised.
+    out = tmp_path / f"long.{fmt}"
+    prs.write_readstat(df_long, str(out), metadata=metadata)
+
+    result = prs.scan_readstat(str(out)).collect()
+
+    assert result["label"].to_list() == [short, long_], (
+        f"{fmt}: string was truncated — expected {[short, long_]!r}, "
+        f"got {result['label'].to_list()!r}"
+    )

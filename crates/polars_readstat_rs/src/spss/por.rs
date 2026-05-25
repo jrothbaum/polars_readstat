@@ -766,10 +766,11 @@ fn read_por_metadata_only<R: Read>(stream: &mut PorStream<R>) -> Result<PorMetad
 
 fn build_por_metadata_df(variables: &[PorVariable]) -> Result<polars::prelude::DataFrame> {
     let mut acc = crate::metadata_df::MetadataAccumulator::with_capacity(variables.len());
-    for v in variables {
+    for (i, v) in variables.iter().enumerate() {
         let label = v.label.clone().filter(|s| !s.is_empty());
         acc.push(v.name.clone(), label, None, Some(v.print_format_type as i32),
             Some(v.print_format_width as i32), Some(v.print_format_decimals as i32));
+        acc.set_string_width_bytes(i, if v.width > 0 { Some(v.width as i32) } else { None });
     }
     acc.into_dataframe().map_err(|e| Error::ParseError(e.to_string()))
 }

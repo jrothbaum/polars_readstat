@@ -388,15 +388,20 @@ fn dtype_to_spss(
 ) -> Result<(VarType, usize, usize, u8, u8, u8)> {
     match col.dtype {
         DataType::String => {
-            let width = if let Some(w) = col.string_width_bytes {
-                w
-            } else {
-                let series = df
-                    .column(&col.name)
-                    .map_err(|e| Error::ParseError(e.to_string()))?
-                    .as_materialized_series();
-                max_string_width(series)?
-            };
+            let series = df
+                .column(&col.name)
+                .map_err(|e| Error::ParseError(e.to_string()))?
+                .as_materialized_series();
+            let scan_width = max_string_width(series)?;
+            let width = col.string_width_bytes.map_or(scan_width, |declared| {
+                if scan_width > declared {
+                    eprintln!(
+                        "warning: column '{}' declared string_width_bytes={} but data contains strings up to {} bytes; using {}",
+                        col.name, declared, scan_width, scan_width
+                    );
+                }
+                declared.max(scan_width)
+            });
             let (var_type, string_len, width) = string_layout(width)?;
             Ok((
                 var_type,
