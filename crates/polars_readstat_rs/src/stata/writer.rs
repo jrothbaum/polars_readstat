@@ -545,15 +545,17 @@ fn infer_columns(
                 if let Some(df) = df {
                     let column = df.column(&col.name).map_err(|e| Error::Polars(e))?;
                     let scan = analyze_string_column(column.as_materialized_series())?.max_width;
-                    Some(col.string_width_bytes.map_or(scan, |declared| {
-                        if scan > declared {
-                            eprintln!(
-                                "warning: column '{}' declared string_width_bytes={} but data contains strings up to {} bytes; using {}",
-                                col.name, declared, scan, scan
-                            );
+                    {
+                        if let Some(declared) = col.string_width_bytes {
+                            if scan > declared {
+                                eprintln!(
+                                    "warning: column '{}' declared string_width_bytes={} but data contains strings up to {} bytes; using {}",
+                                    col.name, declared, scan, scan
+                                );
+                            }
                         }
-                        declared.max(scan)
-                    }))
+                        Some(scan)
+                    }
                 } else {
                     col.string_width_bytes
                 }

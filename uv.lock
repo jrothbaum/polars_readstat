@@ -1022,7 +1022,7 @@ wheels = [
 
 [[package]]
 name = "polars-readstat"
-version = "0.19.3"
+version = "0.19.4"
 source = { editable = "." }
 dependencies = [
     { name = "polars", version = "1.36.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },

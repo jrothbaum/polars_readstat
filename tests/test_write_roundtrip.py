@@ -402,3 +402,46 @@ def test_write_string_width_undersized_metadata(tmp_path: Path, fmt: str) -> Non
         f"{fmt}: string was truncated — expected {[short, long_]!r}, "
         f"got {result['label'].to_list()!r}"
     )
+
+
+# ── String width: declared > actual max (compact output) ─────────────────────
+
+@pytest.mark.parametrize("fmt", ["sav", "dta", "xpt"])
+def test_write_string_width_oversized_metadata_stays_compact(tmp_path: Path, fmt: str) -> None:
+    """When metadata declares a wider string width than the data needs,
+    the writer should use the actual data width so the output stays compact."""
+    wide_value = "x" * 500   # 500 bytes — establishes a wide declared width
+    short_value = "hello"    # 5 bytes — the actual data we want to write compactly
+
+    df_wide  = pl.DataFrame({"id": [1.0], "label": [wide_value]})
+    df_short = pl.DataFrame({"id": [1.0, 2.0], "label": [short_value, short_value]})
+
+    # Write the wide version to get metadata declaring a large string width.
+    src = tmp_path / f"wide.{fmt}"
+    prs.write_readstat(df_wide, str(src))
+    wide_size = src.stat().st_size
+
+    metadata = prs.ScanReadstat(str(src)).metadata_df
+
+    # Write the short data with the oversized metadata.
+    out = tmp_path / f"short.{fmt}"
+    prs.write_readstat(df_short, str(out), metadata=metadata)
+    out_size = out.stat().st_size
+
+    # Write without metadata for the baseline compact size.
+    baseline = tmp_path / f"baseline.{fmt}"
+    prs.write_readstat(df_short, str(baseline))
+    baseline_size = baseline.stat().st_size
+
+    # Data must round-trip correctly.
+    result = prs.scan_readstat(str(out)).collect()
+    assert result["label"].to_list() == [short_value, short_value], (
+        f"{fmt}: data corrupted after compact write"
+    )
+
+    # Output with oversized metadata must not be significantly larger than the
+    # baseline (no metadata). Allow a small tolerance for format-specific overhead.
+    assert out_size <= baseline_size * 1.1 + 64, (
+        f"{fmt}: oversized metadata caused file bloat — "
+        f"baseline={baseline_size}, with_metadata={out_size}, wide_src={wide_size}"
+    )
