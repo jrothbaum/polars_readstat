@@ -1140,7 +1140,8 @@ fn write_spss_from_df_rs(
 ) -> PyResult<()> {
     ensure_extension(&path, &["sav", "zsav"])?;
     let col_names: HashSet<String> = df.0.get_column_names().iter().map(|s| s.to_string()).collect();
-    let mdf = &metadata_df.0;
+    let mdf_owned = filter_metadata_to_df_columns(&metadata_df.0, &df.0)?;
+    let mdf = &mdf_owned;
 
     let name_ca = mdf.column("name").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
     let measure_ca = mdf.column("measure").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -1252,7 +1253,8 @@ fn write_stata_from_df_rs(
 ) -> PyResult<()> {
     ensure_extension(&path, &["dta"])?;
     let col_names: HashSet<String> = df.0.get_column_names().iter().map(|s| s.to_string()).collect();
-    let mdf = &metadata_df.0;
+    let mdf_owned = filter_metadata_to_df_columns(&metadata_df.0, &df.0)?;
+    let mdf = &mdf_owned;
 
     let name_ca = mdf.column("name").map_err(|e| PyValueError::new_err(e.to_string()))?.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
     let sw_col_opt = mdf.column("string_width_bytes").ok().and_then(|c| c.i32().ok().map(|ca| ca.clone()));
@@ -1384,7 +1386,8 @@ fn write_xpt_from_df_rs(
     storage_widths: Option<&Bound<PyDict>>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["xpt"])?;
-    let mdf = &metadata_df.0;
+    let mdf_owned = filter_metadata_to_df_columns(&metadata_df.0, &df.0)?;
+    let mdf = &mdf_owned;
     let (mut labels, mut formats) = metadata_df_labels_formats(&df.0, mdf)?;
     if let Some(explicit_labels) = variable_labels {
         labels.extend(parse_variable_labels_dict(explicit_labels)?);
@@ -1793,6 +1796,15 @@ fn parse_storage_widths_dict(widths: &Bound<PyDict>) -> PyResult<HashMap<String,
         out.insert(col, width);
     }
     Ok(out)
+}
+
+fn filter_metadata_to_df_columns(mdf: &DataFrame, df: &DataFrame) -> PyResult<DataFrame> {
+    let keep = DataFrame::new(vec![
+        Series::new("name".into(), df.get_column_names_str()).into(),
+    ])
+    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    mdf.join(&keep, ["name"], ["name"], JoinArgs::new(JoinType::Semi), None)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 fn metadata_df_labels_formats(
