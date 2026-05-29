@@ -25,28 +25,10 @@ import warnings
 CatalogInput = Union[str, Path, Dict[str, Dict[Any, str]], None]
 
 
-def _warn_engine_deprecated() -> None:
-    warnings.warn(
-        "Engine is deprecated as all calls use the new polars_readstat_rs rust engine.",
-        UserWarning,
-        stacklevel=3,
-    )
-
-
-def _warn_use_mmap_deprecated() -> None:
-    warnings.warn(
-        "use_mmap is deprecated as it has not been implemented in the polars_readstat_rs rust engine.",
-        UserWarning,
-        stacklevel=3,
-    )
-
-
 class ScanReadstat:
     def __init__(
         self,
         path: str,
-        engine: str = "",
-        use_mmap: bool = False,
         threads: int | None = None,
         missing_string_as_null: bool = False,
         value_labels_as_strings: bool = False,
@@ -58,14 +40,6 @@ class ScanReadstat:
         catalog: "CatalogInput" = None,
     ):
         self.path = str(path)
-        if engine != "":
-            _warn_engine_deprecated()
-
-        if use_mmap:
-            _warn_use_mmap_deprecated()
-
-        self.engine = engine
-        self.use_mmap = use_mmap
         self._validation_check(self.path)
 
         self.threads = threads
@@ -73,6 +47,7 @@ class ScanReadstat:
         self._metadata = None
         self._schema = None
         self._metadata_df: pl.DataFrame | None = None
+        self._df: pl.LazyFrame | None = None
         self.missing_string_as_null = missing_string_as_null
         self.value_labels_as_strings = value_labels_as_strings
         self.preserve_order = preserve_order
@@ -123,10 +98,10 @@ class ScanReadstat:
 
     @property
     def df(self) -> pl.LazyFrame:
+        if self._df is not None:
+            return self._df
         return scan_readstat(
             self.path,
-            engine=self.engine,
-            use_mmap=self.use_mmap,
             missing_string_as_null=self.missing_string_as_null,
             value_labels_as_strings=self.value_labels_as_strings,
             preserve_order=self.preserve_order,
@@ -137,33 +112,10 @@ class ScanReadstat:
             catalog=self.catalog,
         )
 
-    # def iter_batches(
-    #     self,
-    #     batch_size: int | None = None,
-    #     columns: list[str] | None = None,
-    #     n_rows: int | None = None,
-    #     predicate: pl.Expr | None = None,
-    # ) -> Iterator[pl.DataFrame]:
-    #     warnings.warn(
-    #         "ScanReadstat.iter_batches is deprecated; use scan_readstat(..., batch_size=...) and collect on the LazyFrame.",
-    #         DeprecationWarning,
-    #         stacklevel=2,
-    #     )
-    #     return scan_readstat(
-    #         path=self.path,
-    #         threads=self.threads,
-    #         engine=self.engine,
-    #         use_mmap=self.use_mmap,
-    #         missing_string_as_null=self.missing_string_as_null,
-    #         value_labels_as_strings=self.value_labels_as_strings,
-    #         columns=columns,
-    #         preserve_order=self.preserve_order,
-    #         compress=self.compress,
-    #         reader=self,
-    #         schema_overrides=self.schema_overrides,
-    #         batch_size=batch_size,
-    #         return_batches=True,
-    #     )
+    @df.setter
+    def df(self, value: pl.LazyFrame | pl.DataFrame) -> None:
+        self._df = value
+
         
     def _make_src(self) -> PyPolarsReadstat:
         preserve_order, row_index_name, _ = _resolve_preserve_order_opts(self._preserve_order_opts)
@@ -546,8 +498,6 @@ def _apply_catalog_labels(
 def scan_readstat(
     path: Any,
     threads: int | None = None,
-    engine: str = "",
-    use_mmap: bool = False,
     missing_string_as_null: bool = False,
     value_labels_as_strings: bool = False,
     preserve_order: bool | PreserveOrderOpts | Dict[str, Any] = False,
@@ -557,21 +507,16 @@ def scan_readstat(
     batch_size: int | None = None,
     informative_nulls: "InformativeNullOpts | dict | None" = None,
     catalog: "CatalogInput" = None,
-    # return_batches: bool = False,
 ) -> pl.LazyFrame:
     """
     Scans a ReadStat file (SAS, SPSS, Stata) into a Polars LazyFrame.
-    
+
     Parameters
     ----------
     path : str
         Path to the file.
-    engine : str, optional
-        DEPRECATED.
     threads : int, optional
         Number of threads to use.
-    use_mmap : bool, optional
-        DEPRECATED.
     missing_string_as_null : bool, optional
         Convert empty strings to nulls.
     value_labels_as_strings : bool, optional
@@ -599,11 +544,6 @@ def scan_readstat(
     informative_nulls = _normalize_informative_null_opts(informative_nulls)
     preserve_order_opts = _normalize_preserve_order_opts(preserve_order)
     catalog = _normalize_catalog(catalog)
-
-    if engine != "":
-        _warn_engine_deprecated()
-    if use_mmap:
-        _warn_use_mmap_deprecated()
 
     if path.lower().endswith(".por"):
         return _scan_por_rs(path).lazy()
@@ -860,7 +800,8 @@ def write_readstat(
             kw = _spss_variable_metadata_to_write_kwargs(vars_list)
             base_df = _spss_kwargs_to_metadata_df(
                 kw.get("value_labels"), kw.get("variable_labels"), kw.get("variable_measure"),
-                kw.get("variable_display_width"), kw.get("variable_alignment"), kw.get("variable_format")
+                kw.get("variable_display_width"), kw.get("variable_alignment"), kw.get("variable_format"),
+                kw.get("string_width_bytes"),
             )
         elif metadata is not None:
             raise TypeError(f"metadata must be a dict or pl.DataFrame, got {type(metadata)}")
@@ -937,64 +878,11 @@ def write_readstat(
     raise ValueError(f"Unsupported output format: {fmt}")
 
 
-def write_stata(
-    df: pl.DataFrame | pl.LazyFrame,
-    path: Any,
-    compress: bool | None = None,
-    threads: int | None = None,
-    value_labels: dict[str, dict[int, str]] | None = None,
-    variable_labels: dict[str, str] | None = None,
-    variable_format: dict[str, str] | None = None,
-) -> None:
-    """Write a Stata `.dta` file."""
-    df = _prepare_write_df(df)
-    _write_stata_rs(
-        df,
-        str(path),
-        compress=compress,
-        threads=threads,
-        value_labels=value_labels,
-        variable_labels=variable_labels,
-        variable_format=variable_format,
-    )
-
-
-def write_spss(
-    df: pl.DataFrame | pl.LazyFrame,
-    path: Any,
-    value_labels: dict[str, dict[float | int | str, str]] | None = None,
-    variable_labels: dict[str, str] | None = None,
-    *,
-    variable_measure: dict[str, str] | None = None,
-    variable_display_width: dict[str, int] | None = None,
-    variable_alignment: dict[str, str] | None = None,
-    variable_format: dict[str, str | dict[str, int]] | None = None,
-) -> None:
-    """
-    Write an SPSS `.sav`/`.zsav` file.
-
-    `variable_format` string values currently support simple SPSS `F` and `A`
-    formats such as `"F8.2"` and `"A20"`. Dict values may contain
-    `format_type`, `width`, and `decimals`/`decimal_places`.
-    """
-    df = _prepare_write_df(df)
-    _write_spss_rs(
-        df,
-        str(path),
-        value_labels=value_labels,
-        variable_labels=variable_labels,
-        variable_measure=variable_measure,
-        variable_display_width=variable_display_width,
-        variable_alignment=variable_alignment,
-        variable_format=variable_format,
-    )
-
-
 def _spss_variable_metadata_to_write_kwargs(
     variables: Mapping[str, Mapping[str, Any]] | list[Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     """
-    Convert SPSS per-variable metadata into kwargs accepted by `write_spss`.
+    Convert SPSS per-variable metadata into kwargs accepted by `write_readstat`.
 
     Accepts either `{name: variable_metadata}` or the `metadata["variables"]`
     list returned by `ScanReadstat(...).metadata`.
@@ -1035,6 +923,12 @@ def _spss_variable_metadata_to_write_kwargs(
         if fmt is not None:
             variable_format[name] = fmt
 
+    string_width_bytes: dict[str, int] = {}
+    for name, meta in variable_items:
+        sl = meta.get("string_len")
+        if sl is not None:
+            string_width_bytes[name] = int(sl)
+
     out: dict[str, dict[str, Any]] = {}
     if value_labels:
         out["value_labels"] = value_labels
@@ -1048,6 +942,8 @@ def _spss_variable_metadata_to_write_kwargs(
         out["variable_alignment"] = variable_alignment
     if variable_format:
         out["variable_format"] = variable_format
+    if string_width_bytes:
+        out["string_width_bytes"] = string_width_bytes
     return out
 
 
@@ -1253,10 +1149,11 @@ def _spss_kwargs_to_metadata_df(
     variable_display_width: "dict | None",
     variable_alignment: "dict | None",
     variable_format: "dict | None",
+    string_width_bytes: "dict | None" = None,
 ) -> "pl.DataFrame | None":
     all_names: set[str] = set()
     for d in (variable_labels, variable_measure, variable_display_width,
-              variable_alignment, variable_format, value_labels):
+              variable_alignment, variable_format, value_labels, string_width_bytes):
         if d:
             all_names.update(d.keys())
     if not all_names:
@@ -1306,13 +1203,15 @@ def _spss_kwargs_to_metadata_df(
             vl_codes_list.append(None)
             vl_labels_list.append(None)
 
-    return _make_metadata_df(
+    sw_vals = [string_width_bytes.get(nm) if string_width_bytes else None for nm in names]
+    df = _make_metadata_df(
         names=names, labels=labels,
         vl_codes=vl_codes_list, vl_labels=vl_labels_list,
         formats=[None] * n,
         format_types=format_types, format_widths=format_widths, format_decimalss=format_decimalss,
         measures=measures, display_widths=display_widths, alignments=alignments,
     )
+    return df.with_columns(pl.Series("string_width_bytes", sw_vals, dtype=pl.Int32))
 
 
 def _coalesce_metadata_dfs(
@@ -1504,30 +1403,77 @@ def write_sas_csv_import(
     dataset_name: str | None = None,
     value_labels: dict[str, dict[float | int | str, str]] | None = None,
     variable_labels: dict[str, str] | None = None,
+    library: str | None = None,
+    delete_csv_on_import: bool = False,
 ) -> tuple[str, str]:
     """
-    Write a SAS-import bundle as `CSV + .sas` script.
+    Write a SAS-import bundle: a CSV data file plus a companion ``.sas`` script
+    that recreates the dataset with types, formats, and labels.
 
-    This does not create a binary `.sas7bdat` file.
+    This does not produce a binary ``.sas7bdat`` file. Run the generated ``.sas``
+    script in SAS to load the data.
 
     Parameters
     ----------
     df : polars.DataFrame or polars.LazyFrame
         Data to write.
-    path : str
-        Output directory or file stem for the generated bundle.
+    path : str or Path
+        Output directory or file path for the generated bundle. If a directory,
+        files are written as ``<dataset_name>.csv`` and ``<dataset_name>.sas``.
+        If a file path, the stem is used for both output files regardless of
+        the extension provided.
     dataset_name : str, optional
-        SAS dataset name used in the generated script.
+        SAS dataset name used in the ``DATA`` step. If omitted, derived from
+        the output file or directory stem. The name is sanitized to SAS rules:
+        alphanumeric and underscores only, starts with a letter, max 32 chars.
+        Column names are sanitized the same way; duplicates are disambiguated
+        with a numeric suffix.
     value_labels : dict, optional
-        Mapping of column name to `{coded_value: label}`.
-        Keys may be numeric or string.
+        ``{column_name: {code: label}}`` mapping used to build a ``PROC FORMAT``
+        block. Numeric and string codes are both supported.
     variable_labels : dict, optional
-        Mapping of column name to variable label text.
+        ``{column_name: label_text}`` written as a ``LABEL`` statement.
+    library : str, optional
+        SAS library name for permanent storage. When provided, the script
+        emits ``libname <library> "<output_dir>";`` and uses
+        ``data <library>.<dataset>`` so the dataset is saved permanently
+        alongside the files. When ``None`` (default) the dataset goes to WORK.
+    delete_csv_on_import : bool, optional
+        If ``True``, the generated SAS script deletes the CSV after importing
+        it using ``%sysfunc(fdelete(...))``. Defaults to ``False``.
 
     Returns
     -------
     tuple[str, str]
-        `(csv_path, sas_script_path)`
+        ``(csv_path, sas_script_path)``
+
+    Type handling
+    -------------
+    Types are converted to values SAS can read from a plain CSV:
+
+    - **Boolean** → written as ``0``/``1`` (Int8); gets ``length <col> 3`` in
+      the script.
+    - **Date** → integer days since the SAS epoch (1960-01-01). The script
+      applies ``format <col> yymmdd10.`` so SAS displays the correct date.
+    - **Datetime** → integer seconds since the SAS epoch (1960-01-01 00:00:00).
+      Sub-second precision is lost. Format: ``datetime19.``
+    - **Time** → integer seconds since midnight. Sub-second precision is lost.
+      Format: ``time8.``
+    - **String** → written as-is; ``length <col> $<max_bytes>`` is set from the
+      longest observed value.
+    - **Numeric** → written as-is with ``best32.`` informat. Narrower integer
+      types get a ``length`` statement to preserve storage precision in SAS:
+
+      ============  ===========
+      Polars type   SAS length
+      ============  ===========
+      Int8 / UInt8  3
+      Int16 / UInt16 4
+      Int32         5
+      UInt32        6
+      Float32       4
+      Int64 / UInt64 / Float64  (8, SAS default — omitted)
+      ============  ===========
     """
     df = _prepare_write_df(df)
 
@@ -1537,6 +1483,8 @@ def write_sas_csv_import(
         dataset_name=dataset_name,
         value_labels=value_labels,
         variable_labels=variable_labels,
+        library=library,
+        delete_csv_on_import=delete_csv_on_import,
     )
 
 

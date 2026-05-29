@@ -30,31 +30,73 @@ pub type SasVariableLabels = HashMap<String, String>;
 /// Writes a CSV + SAS program pair that reconstructs a dataset with types and labels.
 ///
 /// This does not produce a SAS7BDAT file. The output is a `.csv` data file and a
-/// companion `.sas` script that defines lengths, formats, labels, and input rules.
+/// companion `.sas` script containing `PROC FORMAT`, a `DATA` step with `LENGTH`,
+/// `FORMAT`, `LABEL`, and `INPUT` statements. Running the script in SAS loads the
+/// data with the correct types and metadata.
+///
+/// # Type mapping
+///
+/// | Polars type | CSV value | SAS treatment |
+/// |---|---|---|
+/// | `Boolean` | `0` / `1` | `length 3` |
+/// | `Date` | days since 1960-01-01 | `format yymmdd10.` |
+/// | `Datetime` | seconds since 1960-01-01 (sub-second precision lost) | `format datetime19.` |
+/// | `Time` | seconds since midnight (sub-second precision lost) | `format time8.` |
+/// | `Int8` / `UInt8` | raw integer | `length 3` |
+/// | `Int16` / `UInt16` | raw integer | `length 4` |
+/// | `Int32` | raw integer | `length 5` |
+/// | `UInt32` | raw integer | `length 6` |
+/// | `Float32` | raw float | `length 4` |
+/// | `Int64` / `UInt64` / `Float64` | raw value | SAS default (8 bytes) |
+/// | `String` | as-is | `length $<max_bytes>` |
+///
+/// Column names are sanitized to SAS rules (alphanumeric + underscore, starts with
+/// a letter, max 32 chars). Duplicates are disambiguated with a numeric suffix.
 pub struct SasWriter {
     base_path: PathBuf,
-    dataset_name: String,
+    dataset_name: Option<String>,
+    library: Option<String>,
+    delete_csv_on_import: bool,
     value_labels: Option<SasValueLabels>,
     variable_labels: Option<SasVariableLabels>,
 }
 
 impl SasWriter {
-    /// Create a new writer. The path may be a directory or a file stem.
+    /// Create a new writer.
     ///
-    /// If `path` is a directory, files are written as `<dataset>.csv` and `<dataset>.sas`.
-    /// If `path` is a file (with or without extension), the stem is used.
+    /// `path` may be a directory or a file path (the extension is ignored).
+    /// Files are written as `<dataset>.csv` and `<dataset>.sas` in that location.
     pub fn new(path: impl AsRef<Path>) -> Self {
         Self {
             base_path: path.as_ref().to_path_buf(),
-            dataset_name: "data".to_string(),
+            dataset_name: None,
+            library: None,
+            delete_csv_on_import: false,
             value_labels: None,
             variable_labels: None,
         }
     }
 
     /// Set the SAS dataset name used in the generated script.
+    /// If not called, the name is derived from the output file stem.
     pub fn with_dataset_name(mut self, name: impl AsRef<str>) -> Self {
-        self.dataset_name = name.as_ref().to_string();
+        self.dataset_name = Some(name.as_ref().to_string());
+        self
+    }
+
+    /// Set the SAS library for the DATA step.
+    ///
+    /// When set, the script emits `libname <library> "<output_dir>";` and writes
+    /// `data <library>.<dataset>` so the dataset is saved permanently alongside the files.
+    /// When None (default), the dataset is written to WORK.
+    pub fn with_library(mut self, library: impl AsRef<str>) -> Self {
+        self.library = Some(library.as_ref().to_string());
+        self
+    }
+
+    /// When true, the generated SAS script deletes the CSV file after importing it.
+    pub fn with_delete_csv_on_import(mut self, enabled: bool) -> Self {
+        self.delete_csv_on_import = enabled;
         self
     }
 
@@ -72,7 +114,14 @@ impl SasWriter {
 
     /// Write the CSV and SAS script, returning their paths.
     pub fn write_df(&self, df: &DataFrame) -> Result<(PathBuf, PathBuf)> {
-        let dataset = sanitize_sas_name(&self.dataset_name);
+        // Resolve dataset name: explicit > derived from path stem
+        let raw_name = self
+            .dataset_name
+            .as_deref()
+            .or_else(|| self.base_path.file_stem().and_then(|s| s.to_str()))
+            .unwrap_or("data");
+        let dataset = sanitize_sas_name(raw_name);
+
         let (csv_path, sas_path) = resolve_paths(&self.base_path, &dataset)?;
 
         let (df_renamed, name_map) = sas_rename_df(df)?;
@@ -93,12 +142,16 @@ impl SasWriter {
             .finish(&mut df_out)
             .map_err(|e| Error::ParseError(e.to_string()))?;
 
+        let output_dir = csv_path.parent();
         let script = build_sas_script(
             &dataset,
             &csv_path,
             &df_renamed,
             value_labels.as_ref(),
             variable_labels.as_ref(),
+            self.library.as_deref(),
+            output_dir,
+            self.delete_csv_on_import,
         )?;
         let mut sas_file = BufWriter::new(File::create(&sas_path)?);
         sas_file.write_all(script.as_bytes())?;
@@ -208,6 +261,9 @@ fn prepare_df_for_csv(df: &DataFrame) -> Result<DataFrame> {
     for col in df.columns() {
         let series = col.as_materialized_series();
         let out = match series.dtype() {
+            DataType::Boolean => series
+                .cast(&DataType::Int8)
+                .map_err(|e| Error::ParseError(e.to_string()))?,
             DataType::Date => {
                 let casted = series
                     .cast(&DataType::Int32)
@@ -252,14 +308,43 @@ fn prepare_df_for_csv(df: &DataFrame) -> Result<DataFrame> {
     DataFrame::new_infer_height(cols).map_err(|e| Error::ParseError(e.to_string()))
 }
 
+/// Returns the SAS numeric LENGTH (in bytes) to declare for a given Polars dtype,
+/// or None if the type should use the SAS default (8 bytes).
+fn sas_numeric_length(dtype: &DataType) -> Option<u8> {
+    match dtype {
+        // Boolean is cast to Int8 before CSV write; treat same as Int8 for LENGTH
+        DataType::Boolean | DataType::Int8 | DataType::UInt8 => Some(3),
+        DataType::Int16 | DataType::UInt16 => Some(4),
+        DataType::Int32 => Some(5),
+        DataType::UInt32 => Some(6),
+        DataType::Float32 => Some(4),
+        // Int64, UInt64, Float64 → SAS default 8 bytes, no statement needed
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_sas_script(
     dataset: &str,
     csv_path: &Path,
     df: &DataFrame,
     value_labels: Option<&SasValueLabels>,
     variable_labels: Option<&SasVariableLabels>,
+    library: Option<&str>,
+    output_dir: Option<&Path>,
+    delete_csv_on_import: bool,
 ) -> Result<String> {
     let mut script = String::new();
+
+    // Optional permanent libname statement
+    if let (Some(lib), Some(dir)) = (library, output_dir) {
+        script.push_str(&format!(
+            "libname {} \"{}\";\n\n",
+            lib,
+            dir.display()
+        ));
+    }
+
     script.push_str("proc format;\n");
     if let Some(vlabels) = value_labels {
         for (col, mapping) in vlabels {
@@ -284,17 +369,30 @@ fn build_sas_script(
     }
     script.push_str("run;\n\n");
 
-    script.push_str(&format!("data {};\n", dataset));
+    let data_target = match library {
+        Some(lib) => format!("{}.{}", lib, dataset),
+        None => dataset.to_string(),
+    };
+    script.push_str(&format!("data {};\n", data_target));
     script.push_str(&format!(
         "  infile \"{}\" dsd dlm=',' firstobs=2 truncover encoding='utf-8';\n",
         csv_path.display()
     ));
 
+    // Length for string columns
     for col in df.columns() {
         let series = col.as_materialized_series();
         if matches!(series.dtype(), DataType::String) {
             let width = max_string_width(series)?;
             script.push_str(&format!("  length {} ${};\n", series.name(), width));
+        }
+    }
+
+    // Length for typed numeric columns (preserves storage precision in SAS)
+    for col in df.columns() {
+        let series = col.as_materialized_series();
+        if let Some(len) = sas_numeric_length(series.dtype()) {
+            script.push_str(&format!("  length {} {};\n", series.name(), len));
         }
     }
 
@@ -356,6 +454,13 @@ fn build_sas_script(
         script.push_str(&format!("    {} : {}\n", series.name(), informat));
     }
     script.push_str("  ;\nrun;\n");
+
+    if delete_csv_on_import {
+        script.push_str(&format!(
+            "\nfilename _prscsv \"{}\";\n%let _prsrc = %sysfunc(fdelete(_prscsv));\nfilename _prscsv clear;\n",
+            csv_path.display()
+        ));
+    }
 
     Ok(script)
 }

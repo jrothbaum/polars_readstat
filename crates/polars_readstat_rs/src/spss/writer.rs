@@ -401,8 +401,7 @@ fn dtype_to_spss(
                     );
                 }
             }
-            let width = scan_width;
-            let (var_type, string_len, width) = string_layout(width)?;
+            let (var_type, string_len, width) = string_layout(scan_width)?;
             Ok((
                 var_type,
                 string_len,
@@ -1080,48 +1079,53 @@ fn write_data<W: Write>(
 ) -> Result<()> {
     let mut cols: Vec<&Series> = Vec::with_capacity(columns.len());
     let mut str_cols: Vec<Option<&StringChunked>> = Vec::with_capacity(columns.len());
-    let mut str_bufs: Vec<Option<Vec<u8>>> = Vec::with_capacity(columns.len());
+    let mut col_offsets: Vec<usize> = Vec::with_capacity(columns.len());
+    let mut col_byte_widths: Vec<usize> = Vec::with_capacity(columns.len());
+
+    let mut offset = 0usize;
     for col in columns {
         let series = df
             .column(&col.name)
             .map_err(|e| Error::ParseError(e.to_string()))?;
         let series = series.as_materialized_series();
         cols.push(series);
+        col_offsets.push(offset);
+        let byte_width = col.width * 8;
+        col_byte_widths.push(byte_width);
+        offset += byte_width;
         if col.var_type == VarType::Str {
             let ca = series.str().map_err(|e| Error::ParseError(e.to_string()))?;
             str_cols.push(Some(ca));
-            str_bufs.push(Some(vec![b' '; col.width * 8]));
         } else {
             str_cols.push(None);
-            str_bufs.push(None);
         }
     }
+
+    let record_len = offset;
+    let mut row_buf = vec![0u8; record_len];
 
     for row_idx in 0..df.height() {
         for (col_idx, col) in columns.iter().enumerate() {
             let series = cols[col_idx];
+            let cell = &mut row_buf[col_offsets[col_idx]..col_offsets[col_idx] + col_byte_widths[col_idx]];
             match col.var_type {
                 VarType::Numeric => {
                     let value = series
                         .get(row_idx)
                         .map_err(|e| Error::ParseError(e.to_string()))?;
                     if value.is_null() {
-                        let bytes = SAV_MISSING_DOUBLE.to_le_bytes();
-                        writer.write_all(&bytes)?;
+                        cell[..8].copy_from_slice(&SAV_MISSING_DOUBLE.to_le_bytes());
                     } else {
                         let v = anyvalue_to_f64(value)
                             .ok_or(Error::ParseError("unsupported numeric type".to_string()))?;
-                        writer.write_all(&v.to_le_bytes())?;
+                        cell[..8].copy_from_slice(&v.to_le_bytes());
                     }
                 }
                 VarType::Str => {
                     let ca = str_cols[col_idx].ok_or_else(|| {
                         Error::ParseError("missing utf8 accessor for string column".to_string())
                     })?;
-                    let buf = str_bufs[col_idx].as_mut().ok_or_else(|| {
-                        Error::ParseError("missing scratch buffer for string column".to_string())
-                    })?;
-                    buf.fill(b' ');
+                    cell.fill(b' ');
                     if let Some(s) = ca.get(row_idx) {
                         let (bytes, _, had_errors) = encoding.encode(s);
                         if had_errors {
@@ -1129,12 +1133,12 @@ fn write_data<W: Write>(
                                 "string not representable in target encoding".to_string(),
                             ));
                         }
-                        write_spss_string_value(buf, bytes.as_ref(), col.string_len);
+                        write_spss_string_value(cell, bytes.as_ref(), col.string_len);
                     }
-                    writer.write_all(&buf)?;
                 }
             }
         }
+        writer.write_all(&row_buf)?;
     }
     Ok(())
 }

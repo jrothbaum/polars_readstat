@@ -504,7 +504,7 @@ def test_write_readstat_xpt_accepts_metadata_df(tmp_path: Path) -> None:
 
 
 def test_spss_write_string_value_label_keys(tmp_path: Path) -> None:
-    """write_spss and write_readstat accept string keys matching reader.metadata output."""
+    """write_readstat accepts string keys matching reader.metadata output."""
     source = tmp_path / "source.sav"
     out1 = tmp_path / "out1.sav"
     out2 = tmp_path / "out2.sav"
@@ -514,7 +514,7 @@ def test_spss_write_string_value_label_keys(tmp_path: Path) -> None:
     string_key_vl = reader.metadata["variables"][0]["value_labels"]  # {"1": "Male", "2": "Female"}
     df = reader.df.collect()
 
-    prs.write_spss(df, str(out1), value_labels={"sex": string_key_vl})
+    prs.write_readstat(df, str(out1), value_labels={"sex": string_key_vl})
     prs.write_readstat(df, str(out2), value_labels={"sex": string_key_vl})
 
     for path in (out1, out2):

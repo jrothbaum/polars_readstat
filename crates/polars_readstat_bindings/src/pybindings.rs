@@ -1438,7 +1438,9 @@ fn write_xpt_from_df_rs(
     path,
     dataset_name=None,
     value_labels=None,
-    variable_labels=None
+    variable_labels=None,
+    library=None,
+    delete_csv_on_import=false
 ))]
 fn write_sas_csv_import(
     df: PyDataFrame,
@@ -1446,10 +1448,18 @@ fn write_sas_csv_import(
     dataset_name: Option<String>,
     value_labels: Option<&Bound<PyDict>>,
     variable_labels: Option<&Bound<PyDict>>,
+    library: Option<String>,
+    delete_csv_on_import: bool,
 ) -> PyResult<(String, String)> {
     let mut writer = SasWriter::new(path);
     if let Some(name) = dataset_name {
         writer = writer.with_dataset_name(name);
+    }
+    if let Some(lib) = library {
+        writer = writer.with_library(lib);
+    }
+    if delete_csv_on_import {
+        writer = writer.with_delete_csv_on_import(true);
     }
     if let Some(labels) = value_labels {
         writer = writer.with_value_labels(parse_sas_value_labels(labels)?);
@@ -1799,12 +1809,18 @@ fn parse_storage_widths_dict(widths: &Bound<PyDict>) -> PyResult<HashMap<String,
 }
 
 fn filter_metadata_to_df_columns(mdf: &DataFrame, df: &DataFrame) -> PyResult<DataFrame> {
-    let keep = DataFrame::new(vec![
-        Series::new("name".into(), df.get_column_names_str()).into(),
+    let col_names: Vec<String> = df.get_column_names().iter().map(|s| s.to_string()).collect();
+    let n = col_names.len();
+    let keep = DataFrame::new(n, vec![
+        Series::new("name".into(), col_names).into(),
     ])
     .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    mdf.join(&keep, ["name"], ["name"], JoinArgs::new(JoinType::Semi), None)
-        .map_err(|e| PyValueError::new_err(e.to_string()))
+    let joined = mdf
+        .join(&keep, ["name"], ["name"], JoinArgs::new(JoinType::Inner), None)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    // Inner join may reorder rows; select only original mdf columns to drop any right-side additions
+    let orig_cols: Vec<&str> = mdf.get_column_names().iter().map(|s| s.as_str()).collect();
+    joined.select(orig_cols).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 fn metadata_df_labels_formats(

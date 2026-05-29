@@ -25,8 +25,17 @@ pip install polars-readstat
 import polars as pl
 from polars_readstat import scan_readstat
 
-lf = scan_readstat("/path/file.sas7bdat", preserve_order=True)
-df = lf.select(["SERIALNO", "AGEP"]).filter(pl.col("AGEP") >= 18).collect()
+lf = scan_readstat("/path/file.sas7bdat")
+#   do something
+df = lf.collect()
+
+df = (
+    scan_readstat("/path/file.sas7bdat")
+    .select(["SERIALNO", "AGEP"])  # column pushdown — only these columns are read
+    .head(1_000)                   # row limit is pushed down too
+    .filter(pl.col("AGEP") >= 18)
+    .collect()
+)
 ```
 
 ### 2) Getting metadata

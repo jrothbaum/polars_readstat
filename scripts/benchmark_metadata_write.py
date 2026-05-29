@@ -90,8 +90,8 @@ def main() -> None:
 
     print("  --- baseline: no metadata ---", flush=True)
     (_, t_write_none) = timed(
-        "write_spss(df)  [no metadata]",
-        lambda: prs.write_spss(df, str(OUTPUT)),
+        "write_readstat(df)  [no metadata]",
+        lambda: prs.write_readstat(df, str(OUTPUT)),
     )
 
     print("  --- metadata_df (fast path) ---", flush=True)
