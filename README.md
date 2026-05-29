@@ -31,9 +31,9 @@ df = lf.collect()
 
 df = (
     scan_readstat("/path/file.sas7bdat")
-    .select(["SERIALNO", "AGEP"])  # column pushdown — only these columns are read
-    .head(1_000)                   # row limit is pushed down too
-    .filter(pl.col("AGEP") >= 18)
+    .select(["SERIALNO", "AGEP"])   # column pushdown — only these columns are read
+    .head(1_000)                    # row limit is pushed down too
+    .filter(pl.col("AGEP") >= 18)   # filters applied to streamed batches to avoid loading full file into memory
     .collect()
 )
 ```
