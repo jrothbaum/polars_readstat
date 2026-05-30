@@ -1201,7 +1201,7 @@ fn write_spss_from_df_rs(
         if let (Some(ft), Some(fw), Some(fd)) = (ft_ca.get(i), fw_ca.get(i), fd_ca.get(i)) {
             variable_formats.insert(name.clone(), SpssVariableFormat {
                 format_type: Some(ft as u8),
-                width: Some(fw as u8),
+                width: Some(fw.clamp(1, 255) as u8),
                 decimals: Some(fd as u8),
             });
         }
@@ -1739,11 +1739,12 @@ fn parse_spss_format_string(col: &str, spec: &str) -> PyResult<SpssVariableForma
         }
     };
     let (width_str, decimals_str) = rest.split_once('.').unwrap_or((rest, "0"));
-    let width = width_str.parse::<u8>().map_err(|_| {
+    let width_full = width_str.parse::<u32>().map_err(|_| {
         PyValueError::new_err(format!(
             "SPSS variable_format for {col} has invalid width: {spec}"
         ))
     })?;
+    let width = width_full.clamp(1, 255) as u8;
     let decimals = decimals_str.parse::<u8>().map_err(|_| {
         PyValueError::new_err(format!(
             "SPSS variable_format for {col} has invalid decimals: {spec}"
