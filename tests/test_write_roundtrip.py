@@ -404,44 +404,149 @@ def test_write_string_width_undersized_metadata(tmp_path: Path, fmt: str) -> Non
     )
 
 
-# ── String width: declared > actual max (compact output) ─────────────────────
+# ── String width: declared > actual max ──────────────────────────────────────
 
-@pytest.mark.parametrize("fmt", ["sav", "dta", "xpt"])
+@pytest.mark.parametrize("fmt", ["dta"])
 def test_write_string_width_oversized_metadata_stays_compact(tmp_path: Path, fmt: str) -> None:
-    """When metadata declares a wider string width than the data needs,
-    the writer should use the actual data width so the output stays compact."""
+    """For Stata, metadata with a wider declared string width than the data
+    needs should not cause file bloat — the actual data width is used."""
     wide_value = "x" * 500   # 500 bytes — establishes a wide declared width
     short_value = "hello"    # 5 bytes — the actual data we want to write compactly
 
     df_wide  = pl.DataFrame({"id": [1.0], "label": [wide_value]})
     df_short = pl.DataFrame({"id": [1.0, 2.0], "label": [short_value, short_value]})
 
-    # Write the wide version to get metadata declaring a large string width.
     src = tmp_path / f"wide.{fmt}"
     prs.write_readstat(df_wide, str(src))
     wide_size = src.stat().st_size
 
     metadata = prs.ScanReadstat(str(src)).metadata_df
 
-    # Write the short data with the oversized metadata.
     out = tmp_path / f"short.{fmt}"
     prs.write_readstat(df_short, str(out), metadata=metadata)
     out_size = out.stat().st_size
 
-    # Write without metadata for the baseline compact size.
     baseline = tmp_path / f"baseline.{fmt}"
     prs.write_readstat(df_short, str(baseline))
     baseline_size = baseline.stat().st_size
 
-    # Data must round-trip correctly.
     result = prs.scan_readstat(str(out)).collect()
     assert result["label"].to_list() == [short_value, short_value], (
         f"{fmt}: data corrupted after compact write"
     )
 
-    # Output with oversized metadata must not be significantly larger than the
-    # baseline (no metadata). Allow a small tolerance for format-specific overhead.
     assert out_size <= baseline_size * 1.1 + 64, (
         f"{fmt}: oversized metadata caused file bloat — "
         f"baseline={baseline_size}, with_metadata={out_size}, wide_src={wide_size}"
     )
+
+
+def test_write_spss_metadata_roundtrip_compact_by_default(tmp_path: Path) -> None:
+    """By default, passing metadata does not inflate string widths — data width is used."""
+    wide_value = "x" * 500
+    short_value = "hello"
+
+    df_wide  = pl.DataFrame({"id": [1.0], "label": [wide_value]})
+    df_short = pl.DataFrame({"id": [1.0, 2.0], "label": [short_value, short_value]})
+
+    src = tmp_path / "wide.sav"
+    prs.write_readstat(df_wide, str(src))
+    metadata = prs.ScanReadstat(str(src)).metadata_df
+
+    out = tmp_path / "short.sav"
+    prs.write_readstat(df_short, str(out), metadata=metadata)
+
+    result = prs.scan_readstat(str(out)).collect()
+    assert result["label"].to_list() == [short_value, short_value]
+
+    out_meta = prs.ScanReadstat(str(out)).metadata_df
+    roundtrip_width = out_meta.filter(pl.col("name") == "label")["string_width_bytes"][0]
+    assert roundtrip_width == len(short_value), (
+        f"expected compact width {len(short_value)}, got {roundtrip_width}"
+    )
+
+
+def test_write_spss_string_widths_preserved_on_roundtrip(tmp_path: Path) -> None:
+    """With preserve_string_widths=True, declared widths from metadata survive roundtrip."""
+    wide_value = "x" * 500
+    short_value = "hello"
+
+    df_wide  = pl.DataFrame({"id": [1.0], "label": [wide_value]})
+    df_short = pl.DataFrame({"id": [1.0, 2.0], "label": [short_value, short_value]})
+
+    src = tmp_path / "wide.sav"
+    prs.write_readstat(df_wide, str(src))
+
+    metadata = prs.ScanReadstat(str(src)).metadata_df
+    declared_width = metadata.filter(pl.col("name") == "label")["string_width_bytes"][0]
+    assert declared_width == 500, f"expected declared width 500, got {declared_width}"
+
+    out = tmp_path / "short.sav"
+    prs.write_readstat(df_short, str(out), metadata=metadata, preserve_string_widths=True)
+
+    result = prs.scan_readstat(str(out)).collect()
+    assert result["label"].to_list() == [short_value, short_value]
+
+    out_meta = prs.ScanReadstat(str(out)).metadata_df
+    roundtrip_width = out_meta.filter(pl.col("name") == "label")["string_width_bytes"][0]
+    assert roundtrip_width == declared_width, (
+        f"declared string width was not preserved: expected {declared_width}, got {roundtrip_width}"
+    )
+
+
+def test_write_spss_string_widths_explicit_dict(tmp_path: Path) -> None:
+    """Explicit string_widths dict sets the declared minimum width independently of metadata."""
+    df = pl.DataFrame({"id": [1.0], "comments": ["hello"]})
+
+    out = tmp_path / "out.sav"
+    prs.write_readstat(df, str(out), string_widths={"comments": 1024})
+
+    meta = prs.ScanReadstat(str(out)).metadata_df
+    declared = meta.filter(pl.col("name") == "comments")["string_width_bytes"][0]
+    assert declared == 1024, f"expected declared width 1024, got {declared}"
+
+    result = prs.scan_readstat(str(out)).collect()
+    assert result["comments"].to_list() == ["hello"]
+
+
+def test_write_spss_string_widths_data_wins_if_larger(tmp_path: Path) -> None:
+    """When actual data exceeds string_widths, the data width wins (no truncation)."""
+    long_value = "x" * 200
+    df = pl.DataFrame({"text": [long_value]})
+
+    out = tmp_path / "out.sav"
+    prs.write_readstat(df, str(out), string_widths={"text": 10})
+
+    result = prs.scan_readstat(str(out)).collect()
+    assert result["text"][0] == long_value
+
+    meta = prs.ScanReadstat(str(out)).metadata_df
+    declared = meta.filter(pl.col("name") == "text")["string_width_bytes"][0]
+    assert declared == 200
+
+
+def test_write_xpt_storage_widths_character_honored(tmp_path: Path) -> None:
+    """XPT storage_widths is honored as a minimum for character columns."""
+    df = pl.DataFrame({"label": ["hello"]})
+
+    out = tmp_path / "out.xpt"
+    prs.write_readstat(df, str(out), storage_widths={"label": 200})
+
+    meta = prs.ScanReadstat(str(out)).metadata_df
+    declared = meta.filter(pl.col("name") == "label")["string_width_bytes"][0]
+    assert declared == 200
+
+    result = prs.scan_readstat(str(out)).collect()
+    assert result["label"][0] == "hello"
+
+
+def test_write_xpt_storage_widths_data_wins_if_larger(tmp_path: Path) -> None:
+    """XPT: when actual data exceeds storage_widths, the data width wins."""
+    long_value = "x" * 100
+    df = pl.DataFrame({"text": [long_value]})
+
+    out = tmp_path / "out.xpt"
+    prs.write_readstat(df, str(out), storage_widths={"text": 10})
+
+    result = prs.scan_readstat(str(out)).collect()
+    assert result["text"][0] == long_value

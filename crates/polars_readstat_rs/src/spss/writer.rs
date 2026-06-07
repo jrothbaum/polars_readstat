@@ -90,6 +90,8 @@ pub struct SpssWriteColumn {
     pub string_width_bytes: Option<usize>,
 }
 
+pub type SpssStringWidths = HashMap<String, usize>;
+
 pub struct SpssWriter {
     path: PathBuf,
     schema: Option<SpssWriteSchema>,
@@ -99,6 +101,7 @@ pub struct SpssWriter {
     variable_alignments: Option<SpssVariableAlignments>,
     variable_display_widths: Option<SpssVariableDisplayWidths>,
     variable_formats: Option<SpssVariableFormats>,
+    string_widths: Option<SpssStringWidths>,
 }
 
 impl SpssWriter {
@@ -112,6 +115,7 @@ impl SpssWriter {
             variable_alignments: None,
             variable_display_widths: None,
             variable_formats: None,
+            string_widths: None,
         }
     }
 
@@ -150,6 +154,11 @@ impl SpssWriter {
         self
     }
 
+    pub fn with_string_widths(mut self, widths: SpssStringWidths) -> Self {
+        self.string_widths = Some(widths);
+        self
+    }
+
     pub fn write_df(&self, df: &DataFrame) -> Result<()> {
         let schema = self.schema.as_ref();
         let value_labels = merge_value_labels(
@@ -168,6 +177,7 @@ impl SpssWriter {
             self.variable_alignments.as_ref(),
             self.variable_display_widths.as_ref(),
             self.variable_formats.as_ref(),
+            self.string_widths.as_ref(),
         )?;
         let encoding = choose_encoding(
             df,
@@ -225,6 +235,7 @@ fn infer_columns(
     variable_alignments: Option<&SpssVariableAlignments>,
     variable_display_widths: Option<&SpssVariableDisplayWidths>,
     variable_formats: Option<&SpssVariableFormats>,
+    string_widths: Option<&SpssStringWidths>,
 ) -> Result<Vec<ColumnSpec>> {
     if let Some(schema) = schema {
         let mut cols = Vec::with_capacity(schema.columns.len());
@@ -281,8 +292,18 @@ fn infer_columns(
         let series = column.as_materialized_series();
         let name = series.name().to_string();
         validate_long_name(&name)?;
-        let (var_type, string_len, width, format_type, format_width, format_decimals) =
+        let (var_type, mut string_len, mut width, format_type, mut format_width, format_decimals) =
             infer_series(series)?;
+        if var_type == VarType::Str {
+            if let Some(&declared) = string_widths.and_then(|sw| sw.get(&name)) {
+                if declared > string_len {
+                    let (_, new_len, new_width) = string_layout(declared)?;
+                    string_len = new_len;
+                    width = new_width;
+                    format_width = string_len.min(255) as u8;
+                }
+            }
+        }
         let label = variable_labels.and_then(|labels| labels.get(&name).cloned());
         let (format_type, format_width, format_decimals) = apply_format_override(
             &name,
@@ -393,15 +414,18 @@ fn dtype_to_spss(
                 .map_err(|e| Error::ParseError(e.to_string()))?
                 .as_materialized_series();
             let scan_width = max_string_width(series)?;
-            if let Some(declared) = col.string_width_bytes {
+            let effective = if let Some(declared) = col.string_width_bytes {
                 if scan_width > declared {
                     eprintln!(
                         "warning: column '{}' declared string_width_bytes={} but data contains strings up to {} bytes; using {}",
                         col.name, declared, scan_width, scan_width
                     );
                 }
-            }
-            let (var_type, string_len, width) = string_layout(scan_width)?;
+                scan_width.max(declared)
+            } else {
+                scan_width
+            };
+            let (var_type, string_len, width) = string_layout(effective)?;
             Ok((
                 var_type,
                 string_len,

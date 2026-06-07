@@ -736,7 +736,12 @@ def write_readstat(
         and `variable_format` (dict[str, str]).
         SPSS supports `value_labels` (dict[str, dict[float|int, str]]),
         `variable_labels` (dict[str, str]), `variable_measure`,
-        `variable_display_width`, `variable_alignment`, and `variable_format`.
+        `variable_display_width`, `variable_alignment`, `variable_format`,
+        `string_widths` (dict[str, int]) to set minimum declared string widths
+        (e.g. ``{"COMMENTS": 1024}``; always honoured regardless of other flags),
+        and `preserve_string_widths` (bool, default False) to honour declared
+        string widths from the metadata DataFrame on roundtrip — at the cost of
+        larger files when the declared width exceeds the actual data.
         SAS binary writing is not supported; use `write_sas_csv_import`.
     """
     path = str(path)
@@ -789,6 +794,8 @@ def write_readstat(
         variable_display_width = kwargs.pop("variable_display_width", None)
         variable_alignment = kwargs.pop("variable_alignment", None)
         variable_format = kwargs.pop("variable_format", None)
+        string_widths = kwargs.pop("string_widths", None)
+        preserve_string_widths = kwargs.pop("preserve_string_widths", False)
         if kwargs:
             raise TypeError(f"Unsupported kwargs for SPSS writer: {sorted(kwargs.keys())}")
 
@@ -801,16 +808,20 @@ def write_readstat(
             base_df = _spss_kwargs_to_metadata_df(
                 kw.get("value_labels"), kw.get("variable_labels"), kw.get("variable_measure"),
                 kw.get("variable_display_width"), kw.get("variable_alignment"), kw.get("variable_format"),
-                kw.get("string_width_bytes"),
+                kw.get("string_width_bytes") if preserve_string_widths else None,
             )
         elif metadata is not None:
             raise TypeError(f"metadata must be a dict or pl.DataFrame, got {type(metadata)}")
         else:
             base_df = None
 
+        if not preserve_string_widths and base_df is not None and "string_width_bytes" in base_df.columns:
+            base_df = base_df.with_columns(pl.lit(None, dtype=pl.Int32).alias("string_width_bytes"))
+
         kwargs_df = _spss_kwargs_to_metadata_df(
             value_labels, variable_labels, variable_measure,
-            variable_display_width, variable_alignment, variable_format
+            variable_display_width, variable_alignment, variable_format,
+            string_widths,
         )
         merged_df = _coalesce_metadata_dfs(kwargs_df, base_df)
 

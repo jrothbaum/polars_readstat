@@ -8,7 +8,7 @@ use polars_readstat_rs::{
     SpssMeasure, SpssMetadata, SpssReader,
     SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels,
     SpssVariableAlignments, SpssVariableDisplayWidths, SpssVariableFormat, SpssVariableFormats,
-    SpssVariableMeasures, SpssWriteColumn, SpssWriteSchema, SpssWriter,
+    SpssStringWidths, SpssVariableMeasures, SpssWriteColumn, SpssWriteSchema, SpssWriter,
     StataHeader, StataMetadata, StataReader, StataWriteColumn, StataWriteSchema, StataWriter,
     PorMetadata, ValueLabels, XptMetadata,
     XptWriter,
@@ -1096,6 +1096,7 @@ fn sink_stata(
 }
 
 #[pyfunction]
+#[pyo3(signature = (df, path, value_labels=None, variable_labels=None, variable_measure=None, variable_display_width=None, variable_alignment=None, variable_format=None, string_widths=None))]
 fn write_spss(
     df: PyDataFrame,
     path: String,
@@ -1105,6 +1106,7 @@ fn write_spss(
     variable_display_width: Option<&Bound<PyDict>>,
     variable_alignment: Option<&Bound<PyDict>>,
     variable_format: Option<&Bound<PyDict>>,
+    string_widths: Option<&Bound<PyDict>>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["sav", "zsav"])?;
     let mut writer = SpssWriter::new(path);
@@ -1125,6 +1127,9 @@ fn write_spss(
     }
     if let Some(format) = variable_format {
         writer = writer.with_variable_formats(parse_spss_variable_format(format)?);
+    }
+    if let Some(widths) = string_widths {
+        writer = writer.with_string_widths(parse_storage_widths_dict(widths)?);
     }
     writer
         .write_df(&df.0)

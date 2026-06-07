@@ -57,6 +57,8 @@ write_readstat(
 | `variable_measure` | Dict mapping column names to measurement level: `"nominal"`, `"ordinal"`, or `"scale"`. |
 | `variable_display_width` | Dict mapping column names to display width (int). |
 | `variable_alignment` | Dict mapping column names to alignment: `"left"`, `"right"`, or `"center"`. |
+| `string_widths` | Dict mapping column names to a minimum declared string width in bytes (e.g. `{"COMMENTS": 1024}`). The actual data width is used if larger, so no truncation is possible. Results in a larger file when the declared width exceeds the data. Always honoured regardless of `preserve_string_widths`. |
+| `preserve_string_widths` | `True` to honour declared string widths from `metadata=` on roundtrip. Default `False` (compact — string columns are sized to the actual data). Has no effect without `metadata=`. See [String width and roundtrip fidelity](#string-width-and-roundtrip-fidelity). |
 
 ```python
 write_readstat(
@@ -81,6 +83,8 @@ write_xpt(df, "/path/out.xpt", version=8, table_name="MYDATA", file_label="My da
 ```
 
 Parameters: `version` (5 or 8, default 5), `table_name`, `file_label`, `variable_labels`, `metadata`. Variable names are uppercased and truncated to 8 characters.
+
+`storage_widths` accepts a dict mapping column names to a minimum storage width. For numeric columns the value is clamped to 3–8 bytes (controls precision). For character columns it sets a minimum declared width, with the actual data width used if larger — same tradeoff as `string_widths` for SPSS.
 
 ## SPSS Portable (`write_por`)
 
@@ -126,6 +130,25 @@ write_readstat(
 )
 ```
 
+### String width and roundtrip fidelity
+
+By default, SPSS string columns are written at the width of the widest value in the data, keeping files compact. Declared widths from `metadata=` are ignored for storage.
+
+If you need to preserve the original declared widths (e.g. a survey file where open-ended fields are specified as A1024 regardless of the current wave's data), pass `preserve_string_widths=True`. This results in larger files when the declared width exceeds the actual data, but the variable specification survives the roundtrip intact:
+
+```python
+# Compact (default) — labels/formats preserved, string widths shrunk to data
+write_readstat(df, "out.sav", metadata=reader.metadata_df)
+
+# Full fidelity — declared string widths preserved, file may be larger
+write_readstat(df, "out.sav", metadata=reader.metadata_df, preserve_string_widths=True)
+
+# Selective — compact roundtrip but specific columns explicitly widened
+write_readstat(df, "out.sav", metadata=reader.metadata_df, string_widths={"COMMENTS": 1024})
+```
+
+`string_widths` is always honoured regardless of `preserve_string_widths`, and the actual data width always wins if it is larger than the declared width — no truncation is possible.
+
 ### `metadata_df` schema
 
 `reader.metadata_df` is a standard Polars DataFrame with one row per variable:
@@ -143,6 +166,7 @@ write_readstat(
 | `measure` | `String` (nullable) | SPSS measurement level (`"nominal"`, `"ordinal"`, `"scale"`) |
 | `display_width` | `Int32` (nullable) | SPSS display width |
 | `alignment` | `String` (nullable) | SPSS alignment (`"left"`, `"right"`, `"center"`) |
+| `string_width_bytes` | `Int32` (nullable) | Declared string storage width in bytes; used when `preserve_string_widths=True` or via `string_widths=` |
 
 Because it is an ordinary DataFrame, you can inspect, filter, or edit it before passing it to `write_readstat`:
 

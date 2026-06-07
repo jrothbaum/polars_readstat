@@ -474,7 +474,6 @@ impl XptWriter {
                     8usize
                 }
             } else {
-                // Character: scan actual data for max byte length; declared width is only used for the warning.
                 let scan_width = series
                     .str()
                     .map(|ca| {
@@ -493,8 +492,10 @@ impl XptWriter {
                             name, w, scan_width, scan_width
                         );
                     }
+                    scan_width.max(w)
+                } else {
+                    scan_width
                 }
-                scan_width
             };
 
             let full_label = self
