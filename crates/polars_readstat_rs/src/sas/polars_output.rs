@@ -658,26 +658,63 @@ struct OrderedParallelIter {
     handles: Vec<JoinHandle<()>>,
     row_index_name: Option<String>,
     row_cursor: usize,
+    /// Rows successfully yielded so far (used for the deferred-error check).
+    rows_yielded: usize,
+    /// When Some(n), worker errors are deferred instead of propagated immediately.
+    /// After all channels drain, if rows_yielded < expected_rows the stored error
+    /// is returned; otherwise it is suppressed (phantom subheader past the last
+    /// real data row — ReadStat never reaches those pages because it stops at
+    /// row_limit, but our parallel workers cover the full page range).
+    expected_rows: Option<usize>,
+    deferred_error: Option<PolarsError>,
 }
 
 impl Iterator for OrderedParallelIter {
     type Item = PolarsResult<DataFrame>;
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let front = self.channels.front()?;
-            match front.recv() {
-                Ok(df_result) => {
-                    return Some(df_result.and_then(|df| {
-                        if let Some(ref name) = self.row_index_name {
-                            let n = df.height();
-                            let result =
-                                crate::append_row_index(df, name.as_str(), self.row_cursor);
-                            self.row_cursor += n;
-                            result
-                        } else {
-                            Ok(df)
+            if self.channels.is_empty() {
+                // All channels exhausted — decide whether to surface a deferred error.
+                if let Some(err) = self.deferred_error.take() {
+                    if let Some(expected) = self.expected_rows {
+                        if self.rows_yielded < expected {
+                            // Missing rows: the error was real corruption, not a phantom.
+                            return Some(Err(err));
                         }
-                    }));
+                        // All expected rows were already yielded; the error came from a
+                        // tail page (AMD page or similar) with no actual row data.
+                        // Suppress it and signal clean completion.
+                    } else {
+                        return Some(Err(err));
+                    }
+                }
+                return None;
+            }
+
+            let recv_result = self.channels.front().unwrap().recv();
+            match recv_result {
+                Ok(Ok(df)) => {
+                    let n = df.height();
+                    self.rows_yielded += n;
+                    let result = if let Some(ref name) = self.row_index_name {
+                        let r = crate::append_row_index(df, name.as_str(), self.row_cursor);
+                        self.row_cursor += n;
+                        r
+                    } else {
+                        Ok(df)
+                    };
+                    return Some(result);
+                }
+                Ok(Err(e)) => {
+                    if self.expected_rows.is_some() {
+                        // Soft-error mode: store first error, continue to next channel.
+                        if self.deferred_error.is_none() {
+                            self.deferred_error = Some(e);
+                        }
+                    } else {
+                        return Some(Err(e));
+                    }
+                    self.channels.pop_front();
                 }
                 Err(_) => {
                     self.channels.pop_front();
@@ -873,6 +910,9 @@ fn ordered_parallel_page_iter(
         handles,
         row_index_name: None,
         row_cursor: 0,
+        rows_yielded: 0,
+        expected_rows: None,
+        deferred_error: None,
     })
 }
 
@@ -1588,6 +1628,16 @@ pub(crate) fn sas_batch_iter_with_reader(
             handles,
             row_index_name: row_index_name.clone(),
             row_cursor: row_index_start,
+            rows_yielded: 0,
+            // For compressed files, defer worker errors and check after all channels
+            // finish whether we actually got all expected rows (if yes, the error
+            // came from a phantom subheader on a tail page, not real corruption).
+            expected_rows: if is_compressed {
+                Some(total.saturating_sub(mix_data_rows))
+            } else {
+                None
+            },
+            deferred_error: None,
         };
         match mix_iter {
             Some(mix) => Box::new(mix.chain(parallel)) as SasBatchIter,
