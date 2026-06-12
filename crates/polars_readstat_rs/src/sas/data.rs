@@ -524,7 +524,7 @@ impl<R: Read + Seek> DataReader<R> {
         };
 
         match page_header.page_type {
-            PageType::Meta | PageType::Mix1 | PageType::Mix2 | PageType::Amd => {
+            PageType::Meta | PageType::Mix1 | PageType::Mix2 => {
                 // Extract data subheaders from META/MIX pages
                 let subheaders = self.page_reader.get_subheaders(page_header)?;
                 let data_subheaders = self.extract_data_subheaders(&subheaders)?;
