@@ -881,32 +881,6 @@ fn ordered_parallel_page_iter(
     })
 }
 
-// For serial SAS paths (compressed files or single-thread): wraps SerialSasBatchIter
-// in a background thread so IO can overlap with the consumer's processing.
-struct SasBackgroundIter {
-    rx: Option<mpsc::Receiver<PolarsResult<DataFrame>>>,
-    handle: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Iterator for SasBackgroundIter {
-    type Item = PolarsResult<DataFrame>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.rx.as_ref()?.recv().ok()
-    }
-}
-
-impl Drop for SasBackgroundIter {
-    fn drop(&mut self) {
-        // Drop rx first: this disconnects the channel so the background thread's
-        // tx.send() fails immediately rather than blocking on a full channel.
-        drop(self.rx.take());
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
 pub(crate) struct SerialSasBatchIter {
     data_reader: DataReader<BufReader<File>>,
     metadata: Metadata,
@@ -1294,18 +1268,7 @@ pub(crate) fn sas_batch_iter_with_reader(
             offset,
             row_index_name,
         )?;
-        let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(2);
-        let handle = std::thread::spawn(move || {
-            for batch in serial {
-                if tx.send(batch).is_err() {
-                    return;
-                }
-            }
-        });
-        return Ok(Box::new(SasBackgroundIter {
-            rx: Some(rx),
-            handle: Some(handle),
-        }));
+        return Ok(Box::new(serial) as SasBatchIter);
     }
 
     let n_cpus = std::thread::available_parallelism()
@@ -1350,18 +1313,7 @@ pub(crate) fn sas_batch_iter_with_reader(
             offset,
             row_index_name,
         )?;
-        let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(2);
-        let handle = std::thread::spawn(move || {
-            for batch in serial {
-                if tx.send(batch).is_err() {
-                    return;
-                }
-            }
-        });
-        return Ok(Box::new(SasBackgroundIter {
-            rx: Some(rx),
-            handle: Some(handle),
-        }));
+        return Ok(Box::new(serial) as SasBatchIter);
     }
     // N independent readers, each owning a non-overlapping range of pages.
     // Page byte offsets are always exact (header_length + page_num * page_length),
@@ -1441,18 +1393,7 @@ pub(crate) fn sas_batch_iter_with_reader(
                 offset,
                 row_index_name,
             )?;
-            let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(2);
-            let handle = std::thread::spawn(move || {
-                for batch in serial {
-                    if tx.send(batch).is_err() {
-                        return;
-                    }
-                }
-            });
-            return Ok(Box::new(SasBackgroundIter {
-                rx: Some(rx),
-                handle: Some(handle),
-            }));
+            return Ok(Box::new(serial) as SasBatchIter);
         }
 
         let requested_mix_rows = if offset < mix_data_rows {

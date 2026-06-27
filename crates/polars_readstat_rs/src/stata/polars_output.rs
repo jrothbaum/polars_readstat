@@ -1,9 +1,9 @@
 use crate::stata::data::{
     build_shared_decode, read_data_frame_range, read_data_frame_range_with_indicators,
-    read_data_frame_streaming,
+    read_data_frame_streaming, SharedDecode,
 };
 use crate::stata::reader::StataReader;
-use crate::stata::types::{NumericType, VarType};
+use crate::stata::types::{Endian, Metadata, NumericType, VarType};
 use polars::prelude::*;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
@@ -195,27 +195,93 @@ impl Drop for ParallelStataBatchIter {
     }
 }
 
-// For serial Stata paths: background thread builds SharedDecode once (avoids
-// re-reading the StrL table per batch) and calls read_data_frame_range with
-// O(1) byte seeks for each batch (fixed-width records).
-struct StataBackgroundIter {
-    rx: Receiver<PolarsResult<DataFrame>>,
-    handle: Option<JoinHandle<()>>,
+struct SerialStataBatchIter {
+    path: Arc<PathBuf>,
+    metadata: Arc<Metadata>,
+    endian: Endian,
+    version: u16,
+    col_indices: Option<Vec<usize>>,
+    formats: Arc<Vec<(String, StataTimeFormatKind)>>,
+    missing_null: bool,
+    labels: bool,
+    shared: SharedDecode,
+    cur_offset: usize,
+    remaining: usize,
+    batch_size: usize,
+    row_index_name: Option<String>,
+    null_opts: Option<crate::InformativeNullOpts>,
+    pairs: Vec<(String, String)>,
+    indicator_set: HashSet<String>,
+    suffix: String,
 }
 
-impl Iterator for StataBackgroundIter {
+impl Iterator for SerialStataBatchIter {
     type Item = PolarsResult<DataFrame>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.rx.recv().ok()
-    }
-}
-
-impl Drop for StataBackgroundIter {
-    fn drop(&mut self) {
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+        if self.remaining == 0 {
+            return None;
         }
+        let take = self.batch_size.min(self.remaining);
+        let row_start = self.cur_offset;
+        let result = if let Some(ref null_opts) = self.null_opts {
+            read_data_frame_range_with_indicators(
+                &self.path,
+                &self.metadata,
+                self.endian,
+                self.version,
+                self.col_indices.as_deref(),
+                self.cur_offset,
+                take,
+                self.missing_null,
+                self.labels,
+                &self.shared,
+                &self.indicator_set,
+                null_opts.use_value_labels,
+                &self.suffix,
+            )
+            .map_err(|e| PolarsError::ComputeError(e.to_string().into()))
+            .and_then(|mut df| {
+                apply_stata_time_formats(&mut df, &self.formats)?;
+                Ok(df)
+            })
+            .and_then(|df| crate::apply_informative_null_mode(df, &null_opts.mode, &self.pairs))
+            .and_then(|df| {
+                if let Some(ref name) = self.row_index_name {
+                    crate::append_row_index(df, name.as_str(), row_start)
+                } else {
+                    Ok(df)
+                }
+            })
+        } else {
+            read_data_frame_range(
+                &self.path,
+                &self.metadata,
+                self.endian,
+                self.version,
+                self.col_indices.as_deref(),
+                self.cur_offset,
+                take,
+                self.missing_null,
+                self.labels,
+                &self.shared,
+            )
+            .map_err(|e| PolarsError::ComputeError(e.to_string().into()))
+            .and_then(|mut df| {
+                apply_stata_time_formats(&mut df, &self.formats)?;
+                Ok(df)
+            })
+            .and_then(|df| {
+                if let Some(ref name) = self.row_index_name {
+                    crate::append_row_index(df, name.as_str(), row_start)
+                } else {
+                    Ok(df)
+                }
+            })
+        };
+        self.cur_offset += take;
+        self.remaining -= take;
+        Some(result)
     }
 }
 
@@ -432,8 +498,6 @@ pub(crate) fn stata_batch_iter_with_reader(
 
     let _ = preserve_order;
 
-    // Serial path: background thread builds SharedDecode once (avoids re-loading
-    // StrL tables per batch) and reads with O(1) byte seeks (fixed-width records).
     let path = Arc::new(path);
     let metadata = Arc::new(reader.metadata().clone());
     let endian = reader.header().endian;
@@ -441,10 +505,8 @@ pub(crate) fn stata_batch_iter_with_reader(
     let formats = Arc::new(time_formats);
     let missing_null = missing_string_as_null;
     let labels = value_labels_as_strings;
-    let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(2);
 
     if let Some(null_opts) = informative_nulls {
-        // Compute pairs/indicator_set before spawning so errors surface immediately.
         let var_names: Vec<String> = metadata.variables.iter().map(|v| v.name.clone()).collect();
         let var_name_refs: Vec<&str> = var_names.iter().map(|s| s.as_str()).collect();
         let eligible: Vec<&str> = metadata
@@ -462,119 +524,54 @@ pub(crate) fn stata_batch_iter_with_reader(
                 ));
             }
         }
-        let indicator_set: std::collections::HashSet<String> =
-            pairs.iter().map(|(m, _)| m.clone()).collect();
+        let indicator_set: HashSet<String> = pairs.iter().map(|(m, _)| m.clone()).collect();
         let suffix = match &null_opts.mode {
             crate::InformativeNullMode::SeparateColumn { suffix } => suffix.clone(),
             _ => "_null".to_string(),
         };
-        let col_indices_clone = col_indices;
-        let path_clone = path.clone();
-        let metadata_clone = metadata.clone();
-        let formats_clone = formats.clone();
-        let handle = std::thread::spawn(move || {
-            let shared =
-                match build_shared_decode(&path_clone, &metadata_clone, endian, version, labels) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
-                        return;
-                    }
-                };
-            let mut cur_offset = offset;
-            let mut remaining = total;
-            while remaining > 0 {
-                let take = batch_size.min(remaining);
-                let row_start = cur_offset;
-                let result = read_data_frame_range_with_indicators(
-                    &path_clone,
-                    &metadata_clone,
-                    endian,
-                    version,
-                    col_indices_clone.as_deref(),
-                    cur_offset,
-                    take,
-                    missing_null,
-                    labels,
-                    &shared,
-                    &indicator_set,
-                    null_opts.use_value_labels,
-                    &suffix,
-                )
-                .map_err(|e| PolarsError::ComputeError(e.to_string().into()))
-                .and_then(|mut df| {
-                    apply_stata_time_formats(&mut df, &formats_clone)?;
-                    Ok(df)
-                })
-                .and_then(|df| crate::apply_informative_null_mode(df, &null_opts.mode, &pairs))
-                .and_then(|df| {
-                    if let Some(ref name) = row_index_name {
-                        crate::append_row_index(df, name.as_str(), row_start)
-                    } else {
-                        Ok(df)
-                    }
-                });
-                if tx.send(result).is_err() {
-                    return;
-                }
-                cur_offset += take;
-                remaining -= take;
-            }
-        });
-        return Ok(Box::new(StataBackgroundIter {
-            rx,
-            handle: Some(handle),
+        let shared = build_shared_decode(&path, &metadata, endian, version, labels)
+            .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+        return Ok(Box::new(SerialStataBatchIter {
+            path,
+            metadata,
+            endian,
+            version,
+            col_indices,
+            formats,
+            missing_null,
+            labels,
+            shared,
+            cur_offset: offset,
+            remaining: total,
+            batch_size,
+            row_index_name,
+            null_opts: Some(null_opts),
+            pairs,
+            indicator_set,
+            suffix,
         }));
     }
 
-    // Normal serial: build SharedDecode once, then read one batch at a time.
-    let handle = std::thread::spawn(move || {
-        let shared = match build_shared_decode(&path, &metadata, endian, version, labels) {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
-                return;
-            }
-        };
-        let mut cur_offset = offset;
-        let mut remaining = total;
-        while remaining > 0 {
-            let take = batch_size.min(remaining);
-            let row_start = cur_offset;
-            let result = read_data_frame_range(
-                &path,
-                &metadata,
-                endian,
-                version,
-                col_indices.as_deref(),
-                cur_offset,
-                take,
-                missing_null,
-                labels,
-                &shared,
-            )
-            .map_err(|e| PolarsError::ComputeError(e.to_string().into()))
-            .and_then(|mut df| {
-                apply_stata_time_formats(&mut df, &formats)?;
-                Ok(df)
-            })
-            .and_then(|df| {
-                if let Some(ref name) = row_index_name {
-                    crate::append_row_index(df, name.as_str(), row_start)
-                } else {
-                    Ok(df)
-                }
-            });
-            if tx.send(result).is_err() {
-                return;
-            }
-            cur_offset += take;
-            remaining -= take;
-        }
-    });
-    Ok(Box::new(StataBackgroundIter {
-        rx,
-        handle: Some(handle),
+    let shared = build_shared_decode(&path, &metadata, endian, version, labels)
+        .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+    Ok(Box::new(SerialStataBatchIter {
+        path,
+        metadata,
+        endian,
+        version,
+        col_indices,
+        formats,
+        missing_null,
+        labels,
+        shared,
+        cur_offset: offset,
+        remaining: total,
+        batch_size,
+        row_index_name,
+        null_opts: None,
+        pairs: Vec::new(),
+        indicator_set: HashSet::new(),
+        suffix: String::new(),
     }))
 }
 
