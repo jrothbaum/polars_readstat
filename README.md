@@ -73,7 +73,7 @@ df = scan_readstat("file.sas7bdat").head(1000).collect()
 df = scan_readstat("file.dta").select(["id", "age"]).filter(pl.col("age") >= 18).collect()
 ```
 
-The benchmark numbers above reflect these optimizations — the large "Subset: True" speedups come from column pushdown.
+The benchmark numbers below reflect these optimizations — the large "Subset: True" speedups come from column pushdown.
 
 ### 3) Write (Experimental)
 Writing support is experimental and compatibility varies across tools. Stata roundtrip tests are included; SPSS roundtrip coverage is limited. Please report issues.
