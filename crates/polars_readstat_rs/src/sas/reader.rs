@@ -285,11 +285,13 @@ pub(crate) fn data_reader_at_page_range(
     let page_reader = PageReader::new(file, header.clone(), endian, format);
     let mut data_reader =
         DataReader::new(page_reader, metadata.clone(), endian, format, Vec::new())?;
-    // DataReader::new() already consumed one page; set the budget for remaining pages.
-    // Compressed files use a physical-page budget so non-data META pages count against
-    // the worker's range limit, preventing overlap with adjacent workers.
+    // DataReader::new() consumes at least one physical page, but may consume more if the
+    // first page(s) of this worker's range are non-data-bearing (e.g. AMD pages, pure-metadata
+    // META pages).  Using the actual count prevents the worker from reading into the next
+    // worker's range when construction skipped over one or more non-data pages.
     if metadata.compression != Compression::None {
-        data_reader.set_max_physical_pages(page_count.saturating_sub(1));
+        let consumed = data_reader.physical_pages_consumed();
+        data_reader.set_max_physical_pages(page_count.saturating_sub(consumed));
     } else {
         data_reader.set_max_pages(page_count.saturating_sub(1));
     }

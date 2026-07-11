@@ -24,6 +24,9 @@ pub struct DataReader<R: Read + Seek> {
     /// Used for compressed parallel reads where non-data META pages must still count
     /// against the worker's page-range budget to prevent overlap with adjacent workers.
     max_physical_pages: Option<usize>,
+    /// Total physical pages read so far (including during construction before the budget is set).
+    /// Used by data_reader_at_page_range to correctly compute the remaining page budget.
+    physical_pages_consumed: usize,
 }
 
 /// State for tracking position within a page
@@ -89,6 +92,7 @@ impl<R: Read + Seek> DataReader<R> {
             decompress_buf,
             remaining_pages: None,
             max_physical_pages: None,
+            physical_pages_consumed: 0,
         };
 
         // Try to read the first page if we don't have initial data subheaders
@@ -117,6 +121,13 @@ impl<R: Read + Seek> DataReader<R> {
     /// so that the row counter correctly reflects the logical position.
     pub fn set_current_row(&mut self, row: usize) {
         self.current_row = row;
+    }
+
+    /// Total physical pages read, including any consumed during construction before the
+    /// page budget was set. Used to correctly compute the remaining budget in
+    /// data_reader_at_page_range.
+    pub fn physical_pages_consumed(&self) -> usize {
+        self.physical_pages_consumed
     }
 
     /// Read the next row (allocating). Used by streaming paths that need owned data.
@@ -497,6 +508,8 @@ impl<R: Read + Seek> DataReader<R> {
             if !self.page_reader.read_page()? {
                 return Ok(());
             }
+
+            self.physical_pages_consumed += 1;
 
             if let Some(ref mut rem) = self.max_physical_pages {
                 *rem = rem.saturating_sub(1);
