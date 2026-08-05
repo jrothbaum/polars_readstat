@@ -1,17 +1,35 @@
 use crate::error::{Error, Result};
 use crate::types::{Endian, Format};
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
+use std::borrow::Cow;
 use std::io::Cursor;
 
-/// Buffer for reading bytes with endian-awareness
-pub struct Buffer {
-    data: Vec<u8>,
+/// Buffer for reading bytes with endian-awareness.
+///
+/// Holds either an owned `Vec<u8>` or a borrowed `&[u8]`. Use `from_vec` when
+/// the caller has (or wants) sole ownership of the bytes; use `from_slice`
+/// when reading from a buffer someone else already owns (e.g. a page buffer
+/// the caller is only scanning transiently) to avoid a redundant copy.
+pub struct Buffer<'a> {
+    data: Cow<'a, [u8]>,
     endian: Endian,
 }
 
-impl Buffer {
+impl Buffer<'static> {
     pub fn from_vec(data: Vec<u8>, endian: Endian) -> Self {
-        Self { data, endian }
+        Self {
+            data: Cow::Owned(data),
+            endian,
+        }
+    }
+}
+
+impl<'a> Buffer<'a> {
+    pub fn from_slice(data: &'a [u8], endian: Endian) -> Self {
+        Self {
+            data: Cow::Borrowed(data),
+            endian,
+        }
     }
 
     pub fn data(&self) -> &[u8] {
@@ -83,7 +101,10 @@ impl Buffer {
     pub fn get_string(&self, offset: usize, length: usize) -> Result<String> {
         let bytes = self.get_bytes(offset, length)?;
         let trimmed = trim_sas_string(bytes);
-        String::from_utf8(trimmed.to_vec())
+        // Validate on the borrowed slice first so the (rare) invalid-UTF-8
+        // case never pays for a copy that just gets thrown away.
+        std::str::from_utf8(trimmed)
+            .map(str::to_string)
             .map_err(|_| Error::Encoding("Invalid UTF-8".to_string()))
     }
 }

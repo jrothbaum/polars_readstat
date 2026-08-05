@@ -203,18 +203,8 @@ impl DataFrameBuilder {
                 ColumnKind::Character => {
                     if let ColumnBuffer::Character(b) = &mut self.buffers[pos] {
                         let bytes = &row_bytes[start..end];
-                        // Trim trailing spaces and nulls
-                        let mut trimmed_end = bytes.len();
-                        while trimmed_end > 0
-                            && (bytes[trimmed_end - 1] == b' ' || bytes[trimmed_end - 1] == 0)
-                        {
-                            trimmed_end -= 1;
-                        }
-                        // Stop at the first NUL to match ReadStat's C-string behavior
-                        if let Some(pos) = bytes[..trimmed_end].iter().position(|&b| b == 0) {
-                            trimmed_end = pos;
-                        }
-                        if trimmed_end == 0 {
+                        let trimmed = crate::text_utils::trim_padded_c_string(bytes);
+                        if trimmed.is_empty() {
                             if plan.missing_string_as_null {
                                 b.append_null();
                             } else {
@@ -222,7 +212,7 @@ impl DataFrameBuilder {
                             }
                         } else {
                             let s = crate::encoding::decode_string(
-                                &bytes[..trimmed_end],
+                                trimmed,
                                 plan.encoding_byte,
                                 plan.encoding,
                             );

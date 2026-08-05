@@ -10,6 +10,7 @@ pub mod sas;
 pub(crate) mod scan_prefetch;
 pub mod spss;
 pub mod stata;
+pub(crate) mod text_utils;
 
 pub use sas::catalog::{read_sas7bcat, CatalogKey, CatalogMap};
 pub use sas::arrow_output as sas_arrow_output;

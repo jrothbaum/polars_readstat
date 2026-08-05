@@ -1,6 +1,6 @@
 use crate::buffer::Buffer;
 use crate::constants::*;
-use crate::data::DataSubheader;
+use crate::data::{is_known_metadata_signature, mix_page_data_start, DataSubheader};
 use crate::encoding;
 use crate::error::{Error, Result};
 use crate::page::{PageHeader, PageReader, PageSubheader};
@@ -110,7 +110,7 @@ fn read_metadata_inner<R: Read + Seek>(
 
         let subheaders = page_reader.get_subheaders(&page_header)?;
         let page_buffer = page_reader.page_buffer();
-        let buf = Buffer::from_vec(page_buffer.to_vec(), endian);
+        let buf = Buffer::from_slice(page_buffer, endian);
 
         for subheader in subheaders.iter() {
             metadata_builder.process_subheader(&buf, &subheader, format)?;
@@ -126,6 +126,7 @@ fn read_metadata_inner<R: Read + Seek>(
                 metadata_builder.row_length,
                 page_bit_offset,
                 header.page_length,
+                header.sas_release.as_str(),
             )
         {
             if first_data_page.is_none() {
@@ -143,12 +144,13 @@ fn read_metadata_inner<R: Read + Seek>(
                 metadata_builder.mix_page_row_count,
             ) {
                 if row_length > 0 {
-                    let subheader_size = 3 * integer_size;
-                    let mut data_start =
-                        page_bit_offset + 8 + page_header.subheader_count as usize * subheader_size;
-                    if data_start % 8 == 4 {
-                        data_start += 4;
-                    }
+                    let data_start = mix_page_data_start(
+                        page_buffer,
+                        header.sas_release.as_str(),
+                        page_bit_offset,
+                        page_header.subheader_count as usize,
+                        integer_size,
+                    );
                     let available = header.page_length.saturating_sub(data_start);
                     let max_fit = available / row_length;
                     let added = max_fit.min(mix_row_count);
@@ -199,6 +201,7 @@ fn is_fast_stop_on_mix_page(
     row_length: Option<usize>,
     page_bit_offset: usize,
     page_length: usize,
+    sas_release: &str,
 ) -> bool {
     use crate::types::PageType;
 
@@ -229,11 +232,13 @@ fn is_fast_stop_on_mix_page(
         Format::Bit64 => 8,
         Format::Bit32 => 4,
     };
-    let mut data_start =
-        page_bit_offset + 8 + page_header.subheader_count as usize * (3 * integer_size);
-    if data_start % 8 == 4 {
-        data_start += 4;
-    }
+    let data_start = mix_page_data_start(
+        page_buffer,
+        sas_release,
+        page_bit_offset,
+        page_header.subheader_count as usize,
+        integer_size,
+    );
     page_length >= data_start.saturating_add(row_length)
 }
 
@@ -282,44 +287,6 @@ fn is_metadata_signature_or_pad(sig: &[u8]) -> bool {
     }
 
     is_known_metadata_signature(sig)
-}
-
-fn is_known_metadata_signature(sig: &[u8]) -> bool {
-    if sig.len() < 4 {
-        return false;
-    }
-    let sig4 = &sig[..4];
-    if matches!(
-        sig4,
-        [0xF7, 0xF7, 0xF7, 0xF7]
-            | [0xF6, 0xF6, 0xF6, 0xF6]
-            | [0xFD, 0xFF, 0xFF, 0xFF]
-            | [0xFF, 0xFF, 0xFF, 0xFD]
-            | [0xFF, 0xFF, 0xFF, 0xFF]
-            | [0xFC, 0xFF, 0xFF, 0xFF]
-            | [0xFF, 0xFF, 0xFF, 0xFC]
-            | [0xFE, 0xFB, 0xFF, 0xFF]
-            | [0xFF, 0xFF, 0xFB, 0xFE]
-            | [0xFE, 0xFF, 0xFF, 0xFF]
-            | [0xFF, 0xFF, 0xFF, 0xFE]
-    ) {
-        return true;
-    }
-
-    if sig4 == &[0x00, 0x00, 0x00, 0x00] && sig.len() >= 8 {
-        let sig4_hi = &sig[4..8];
-        return matches!(
-            sig4_hi,
-            [0xF7, 0xF7, 0xF7, 0xF7]
-                | [0xF6, 0xF6, 0xF6, 0xF6]
-                | [0xFD, 0xFF, 0xFF, 0xFF]
-                | [0xFC, 0xFF, 0xFF, 0xFF]
-                | [0xFE, 0xFB, 0xFF, 0xFF]
-                | [0xFE, 0xFF, 0xFF, 0xFF]
-        );
-    }
-
-    false
 }
 
 fn page_has_data_subheaders(

@@ -17,11 +17,17 @@ pub const CATALOG_MAGIC_NUMBER: &[u8; 32] = &[
 const CATALOG_FIRST_INDEX_PAGE: i64 = 1;
 const CATALOG_USELESS_PAGES: i64 = 3;
 
-/// A SAS value-label key: either a numeric code or a character string.
+/// A SAS value-label key: a numeric code, a character string, or the
+/// catch-all label a format assigns to missing/tagged-missing values
+/// (`.`, `.A`-`.Z`, `._`). Catalog blocks encode missing values with a
+/// distinct sentinel bit pattern that doesn't carry which specific tag it
+/// was (readstat's own catalog reader collapses these to a single "NaN"
+/// entry too), so `Missing` isn't tag-specific.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CatalogKey {
     Numeric(f64),
     Text(String),
+    Missing,
 }
 
 /// Parsed SAS format catalog: format_name → [(code, label)]
@@ -46,28 +52,52 @@ struct Ctx {
 // Low-level readers
 // ---------------------------------------------------------------------------
 
+// These readers never panic on truncated/corrupt input: an out-of-bounds read
+// returns 0 rather than unwrapping. Catalog blocks are already parsed
+// best-effort (a malformed block is skipped, not treated as a hard file
+// error — see `read_sas7bcat`'s `if let Ok(..)`/`if let Some(..)` guards), so
+// silently degrading to 0 here — which the existing `> 0` / length sanity
+// checks throughout this file already treat as "stop" — is consistent with
+// that design and far less invasive than threading `Result` through every
+// call site in this module.
+
 #[inline]
 fn r2(data: &[u8], offset: usize, bswap: bool) -> u16 {
-    let v = u16::from_ne_bytes(data[offset..offset + 2].try_into().unwrap());
+    let v = data
+        .get(offset..offset + 2)
+        .and_then(|s| s.try_into().ok())
+        .map(u16::from_ne_bytes)
+        .unwrap_or(0);
     if bswap { v.swap_bytes() } else { v }
 }
 
 #[inline]
 fn r4(data: &[u8], offset: usize, bswap: bool) -> u32 {
-    let v = u32::from_ne_bytes(data[offset..offset + 4].try_into().unwrap());
+    let v = data
+        .get(offset..offset + 4)
+        .and_then(|s| s.try_into().ok())
+        .map(u32::from_ne_bytes)
+        .unwrap_or(0);
     if bswap { v.swap_bytes() } else { v }
 }
 
 #[inline]
 fn r8(data: &[u8], offset: usize, bswap: bool) -> u64 {
-    let v = u64::from_ne_bytes(data[offset..offset + 8].try_into().unwrap());
+    let v = data
+        .get(offset..offset + 8)
+        .and_then(|s| s.try_into().ok())
+        .map(u64::from_ne_bytes)
+        .unwrap_or(0);
     if bswap { v.swap_bytes() } else { v }
 }
 
 /// Doubles in SAS catalogs are always stored big-endian.
 #[inline]
 fn r_double_be(data: &[u8], offset: usize) -> f64 {
-    f64::from_be_bytes(data[offset..offset + 8].try_into().unwrap())
+    data.get(offset..offset + 8)
+        .and_then(|s| s.try_into().ok())
+        .map(f64::from_be_bytes)
+        .unwrap_or(0.0)
 }
 
 fn decode(bytes: &[u8], encoding_byte: u8) -> String {
@@ -224,12 +254,10 @@ fn parse_value_labels(
             let bits = raw_val.to_bits();
             // SAS missing/tag values: lower 40 bits are all 1, upper 24 bits 0
             if (bits | 0xFF_0000_0000_00) == 0xFF_FFFF_FFFF_FF {
-                // Skip: advance label pointer and continue
-                let lbl_len = r2(payload, lpos + 8, bswap) as usize;
-                lpos += 10 + lbl_len + 1;
-                continue;
+                CatalogKey::Missing
+            } else {
+                CatalogKey::Numeric(raw_val * -1.0)
             }
-            CatalogKey::Numeric(raw_val * -1.0)
         };
 
         let lbl_len = r2(payload, lpos + 8, bswap) as usize;

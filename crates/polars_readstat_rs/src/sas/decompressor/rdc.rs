@@ -17,17 +17,24 @@ impl RdcDecompressor {
         Self {}
     }
 
-    /// Decompress into a pre-allocated buffer, avoiding allocation.
+    /// Decompress into a pre-allocated buffer, without allocating.
     pub fn decompress_into(&mut self, input: &[u8], output: &mut [u8]) -> Result<()> {
-        let result = self.decompress(input, output.len())?;
-        output.copy_from_slice(&result);
-        Ok(())
+        // Zero-fill first: required for RDC pattern copying to work correctly.
+        output.fill(C_NULL);
+        self.decompress_to_slice(input, output)
     }
 
     pub fn decompress(&mut self, input: &[u8], expected_output_size: usize) -> Result<Vec<u8>> {
         // Pre-allocate and zero-fill the output buffer
         // This is required for RDC pattern copying to work correctly
         let mut output = vec![C_NULL; expected_output_size];
+        self.decompress_to_slice(input, &mut output)?;
+        Ok(output)
+    }
+
+    /// Core RDC decode, writing into an already zero-filled `output` slice.
+    fn decompress_to_slice(&mut self, input: &[u8], output: &mut [u8]) -> Result<()> {
+        let expected_output_size = output.len();
         let mut output_pos = 0;
         let mut src_pos = 0;
 
@@ -117,7 +124,7 @@ impl RdcDecompressor {
                         let count = count_byte + 16;
 
                         output_pos = self.copy_pattern(
-                            &mut output,
+                            output,
                             output_pos,
                             offset,
                             count,
@@ -136,7 +143,7 @@ impl RdcDecompressor {
                         let count = cmd as usize;
 
                         output_pos = self.copy_pattern(
-                            &mut output,
+                            output,
                             output_pos,
                             offset,
                             count,
@@ -153,7 +160,7 @@ impl RdcDecompressor {
         }
 
         // Buffer is already the right size and zero-filled
-        Ok(output)
+        Ok(())
     }
 
     fn copy_pattern(

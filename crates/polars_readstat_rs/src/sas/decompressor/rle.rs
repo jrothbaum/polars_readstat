@@ -30,18 +30,29 @@ impl RleDecompressor {
         Self {}
     }
 
-    /// Decompress into a pre-allocated buffer, avoiding allocation.
+    /// Decompress into a pre-allocated buffer, without allocating.
     pub fn decompress_into(&mut self, input: &[u8], output: &mut [u8]) -> Result<()> {
-        let result = self.decompress(input, output.len())?;
-        output.copy_from_slice(&result);
-        Ok(())
+        // Zero-fill first: unwritten tail bytes (and any stale content from a
+        // previously reused buffer) must read back as zero, matching the
+        // zero-padding behavior of the allocating `decompress` path.
+        output.fill(C_NULL);
+        self.decompress_to_slice(input, output)
     }
 
     pub fn decompress(&mut self, input: &[u8], expected_output_size: usize) -> Result<Vec<u8>> {
-        let mut output = Vec::with_capacity(expected_output_size);
+        let mut output = vec![C_NULL; expected_output_size];
+        self.decompress_to_slice(input, &mut output)?;
+        Ok(output)
+    }
+
+    /// Core RLE decode, writing into an already zero-filled `output` slice via
+    /// a write cursor `pos` (rather than growing a `Vec`).
+    fn decompress_to_slice(&mut self, input: &[u8], output: &mut [u8]) -> Result<()> {
+        let expected_output_size = output.len();
+        let mut pos = 0usize;
         let mut src_pos = 0;
 
-        while src_pos < input.len() && output.len() < expected_output_size {
+        while src_pos < input.len() && pos < expected_output_size {
             if src_pos >= input.len() {
                 break;
             }
@@ -65,7 +76,8 @@ impl RleDecompressor {
                     self.copy_bytes(
                         input,
                         &mut src_pos,
-                        &mut output,
+                        output,
+                        &mut pos,
                         count,
                         expected_output_size,
                     )?;
@@ -76,7 +88,8 @@ impl RleDecompressor {
                     self.copy_bytes(
                         input,
                         &mut src_pos,
-                        &mut output,
+                        output,
+                        &mut pos,
                         count,
                         expected_output_size,
                     )?;
@@ -93,7 +106,8 @@ impl RleDecompressor {
                     self.copy_bytes(
                         input,
                         &mut src_pos,
-                        &mut output,
+                        output,
+                        &mut pos,
                         count,
                         expected_output_size,
                     )?;
@@ -104,8 +118,7 @@ impl RleDecompressor {
                     let byte_to_insert = input[src_pos];
                     src_pos += 1;
                     let count = ((end_of_first_byte as usize) << 8) + next_byte + 18; // was << 4
-                    let new_len = output.len() + count;
-                    Self::safe_resize(&mut output, new_len, byte_to_insert, expected_output_size);
+                    Self::safe_fill(output, &mut pos, count, byte_to_insert, expected_output_size);
                 }
                 INSERT_AT17 => {
                     // Insert (end_of_first_byte << 8) + next_byte + 17 '@' characters
@@ -116,8 +129,7 @@ impl RleDecompressor {
                     src_pos += 1;
 
                     let count = ((end_of_first_byte as usize) << 8) + next_byte + 17;
-                    let new_len = output.len() + count;
-                    Self::safe_resize(&mut output, new_len, C_AT, expected_output_size);
+                    Self::safe_fill(output, &mut pos, count, C_AT, expected_output_size);
                 }
                 INSERT_BLANK17 => {
                     // Insert (end_of_first_byte << 8) + next_byte + 17 spaces
@@ -128,8 +140,7 @@ impl RleDecompressor {
                     src_pos += 1;
 
                     let count = ((end_of_first_byte as usize) << 8) + next_byte + 17;
-                    let new_len = output.len() + count;
-                    Self::safe_resize(&mut output, new_len, C_SPACE, expected_output_size);
+                    Self::safe_fill(output, &mut pos, count, C_SPACE, expected_output_size);
                 }
                 INSERT_ZERO17 => {
                     // Insert (end_of_first_byte << 8) + next_byte + 17 nulls
@@ -140,8 +151,7 @@ impl RleDecompressor {
                     src_pos += 1;
 
                     let count = ((end_of_first_byte as usize) << 8) + next_byte + 17;
-                    let new_len = output.len() + count;
-                    Self::safe_resize(&mut output, new_len, C_NULL, expected_output_size);
+                    Self::safe_fill(output, &mut pos, count, C_NULL, expected_output_size);
                 }
                 COPY1 => {
                     // Copy end_of_first_byte + 1 bytes
@@ -149,7 +159,8 @@ impl RleDecompressor {
                     self.copy_bytes(
                         input,
                         &mut src_pos,
-                        &mut output,
+                        output,
+                        &mut pos,
                         count,
                         expected_output_size,
                     )?;
@@ -160,7 +171,8 @@ impl RleDecompressor {
                     self.copy_bytes(
                         input,
                         &mut src_pos,
-                        &mut output,
+                        output,
+                        &mut pos,
                         count,
                         expected_output_size,
                     )?;
@@ -171,7 +183,8 @@ impl RleDecompressor {
                     self.copy_bytes(
                         input,
                         &mut src_pos,
-                        &mut output,
+                        output,
+                        &mut pos,
                         count,
                         expected_output_size,
                     )?;
@@ -182,7 +195,8 @@ impl RleDecompressor {
                     self.copy_bytes(
                         input,
                         &mut src_pos,
-                        &mut output,
+                        output,
+                        &mut pos,
                         count,
                         expected_output_size,
                     )?;
@@ -196,26 +210,22 @@ impl RleDecompressor {
                     src_pos += 1;
 
                     let count = end_of_first_byte as usize + 3;
-                    let new_len = output.len() + count;
-                    Self::safe_resize(&mut output, new_len, byte_to_insert, expected_output_size);
+                    Self::safe_fill(output, &mut pos, count, byte_to_insert, expected_output_size);
                 }
                 INSERT_AT2 => {
                     // Insert end_of_first_byte + 2 '@' characters
                     let count = end_of_first_byte as usize + 2;
-                    let new_len = output.len() + count;
-                    Self::safe_resize(&mut output, new_len, C_AT, expected_output_size);
+                    Self::safe_fill(output, &mut pos, count, C_AT, expected_output_size);
                 }
                 INSERT_BLANK2 => {
                     // Insert end_of_first_byte + 2 spaces
                     let count = end_of_first_byte as usize + 2;
-                    let new_len = output.len() + count;
-                    Self::safe_resize(&mut output, new_len, C_SPACE, expected_output_size);
+                    Self::safe_fill(output, &mut pos, count, C_SPACE, expected_output_size);
                 }
                 INSERT_ZERO2 => {
                     // Insert end_of_first_byte + 2 nulls
                     let count = end_of_first_byte as usize + 2;
-                    let new_len = output.len() + count;
-                    Self::safe_resize(&mut output, new_len, C_NULL, expected_output_size);
+                    Self::safe_fill(output, &mut pos, count, C_NULL, expected_output_size);
                 }
                 _ => {
                     return Err(Error::InvalidRleCommand(command));
@@ -223,43 +233,38 @@ impl RleDecompressor {
             }
         }
 
-        // Pad with zeros if we didn't reach the expected size
-        if output.len() < expected_output_size {
-            output.resize(expected_output_size, C_NULL);
-        }
-
-        // Truncate if we exceeded the expected size (shouldn't happen normally)
-        if output.len() > expected_output_size {
-            output.truncate(expected_output_size);
-        }
-
-        Ok(output)
+        // `output` was pre-zeroed and copy_bytes/safe_fill already clamp to
+        // expected_output_size, so no end-padding or truncation is needed.
+        Ok(())
     }
 
     fn copy_bytes(
         &self,
         input: &[u8],
         src_pos: &mut usize,
-        output: &mut Vec<u8>,
+        output: &mut [u8],
+        pos: &mut usize,
         count: usize,
         max_output_size: usize,
     ) -> Result<()> {
         let remaining = input.len() - *src_pos;
-        let space_left = max_output_size.saturating_sub(output.len());
+        let space_left = max_output_size.saturating_sub(*pos);
         let to_copy = count.min(remaining).min(space_left);
 
         if to_copy > 0 {
-            output.extend_from_slice(&input[*src_pos..*src_pos + to_copy]);
+            output[*pos..*pos + to_copy].copy_from_slice(&input[*src_pos..*src_pos + to_copy]);
+            *pos += to_copy;
             *src_pos += to_copy;
         }
 
         Ok(())
     }
 
-    /// Safe resize that doesn't exceed max_output_size
-    fn safe_resize(output: &mut Vec<u8>, new_len: usize, value: u8, max_output_size: usize) {
-        let actual_len = new_len.min(max_output_size);
-        output.resize(actual_len, value);
+    /// Fill `count` bytes at the write cursor with `value`, clamped to max_output_size.
+    fn safe_fill(output: &mut [u8], pos: &mut usize, count: usize, value: u8, max_output_size: usize) {
+        let actual_count = count.min(max_output_size.saturating_sub(*pos));
+        output[*pos..*pos + actual_count].fill(value);
+        *pos += actual_count;
     }
 }
 

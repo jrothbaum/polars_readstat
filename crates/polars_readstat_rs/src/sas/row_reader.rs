@@ -13,6 +13,7 @@ use crate::data::{DataReader, DataSubheader};
 use crate::error::Result;
 use crate::page::PageReader;
 use crate::reader::{data_reader_at_page_range, Sas7bdatReader};
+use crate::text_utils::trim_padded_c_string;
 use crate::types::{Endian, Format, Header, Metadata};
 use crate::value::decode_numeric_bytes_mask;
 
@@ -229,14 +230,7 @@ impl SasRowReader {
         for i in 0..n {
             let base = (self.buf_offset + i) * rl;
             let raw = &self.current_buf[base + plan.start..base + plan.end];
-            let mut end = raw.len();
-            while end > 0 && (raw[end - 1] == b' ' || raw[end - 1] == 0) {
-                end -= 1;
-            }
-            if let Some(nul) = raw[..end].iter().position(|&b| b == 0) {
-                end = nul;
-            }
-            let trimmed = &raw[..end];
+            let trimmed = trim_padded_c_string(raw);
             let is_null = trimmed.is_empty() && plan.missing_string_as_null;
             nulls.push(is_null);
             if !trimmed.is_empty() {
@@ -297,14 +291,7 @@ impl SasRowReader {
     pub fn decode_str_row_into(&self, col: usize, row_bytes: &[u8], out: &mut Vec<u8>) -> bool {
         let plan = &self.plans[col];
         let raw = &row_bytes[plan.start..plan.end];
-        let mut end = raw.len();
-        while end > 0 && (raw[end - 1] == b' ' || raw[end - 1] == 0) {
-            end -= 1;
-        }
-        if let Some(nul) = raw[..end].iter().position(|&b| b == 0) {
-            end = nul;
-        }
-        let trimmed = &raw[..end];
+        let trimmed = trim_padded_c_string(raw);
         let is_null = trimmed.is_empty() && plan.missing_string_as_null;
         out.clear();
         if !is_null && !trimmed.is_empty() {
@@ -322,14 +309,8 @@ impl SasRowReader {
         for i in 0..n {
             let base = (self.buf_offset + i) * rl;
             let bytes = &self.current_buf[base + plan.start..base + plan.end];
-            let mut end = bytes.len();
-            while end > 0 && (bytes[end - 1] == b' ' || bytes[end - 1] == 0) {
-                end -= 1;
-            }
-            if let Some(nul) = bytes[..end].iter().position(|&b| b == 0) {
-                end = nul;
-            }
-            vals.push(if end == 0 {
+            let trimmed = trim_padded_c_string(bytes);
+            vals.push(if trimmed.is_empty() {
                 if plan.missing_string_as_null {
                     None
                 } else {
@@ -337,7 +318,7 @@ impl SasRowReader {
                 }
             } else {
                 Some(crate::encoding::decode_string(
-                    &bytes[..end],
+                    trimmed,
                     plan.encoding_byte,
                     plan.encoding,
                 ))

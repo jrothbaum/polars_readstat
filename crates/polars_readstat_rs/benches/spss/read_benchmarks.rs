@@ -26,6 +26,15 @@ fn bench_read_large_file(c: &mut Criterion) {
     });
 }
 
+fn bench_read_long_strings(c: &mut Criterion) {
+    let file = test_file("tests/spss/data/bench_long_strings.sav");
+    c.bench_function("read_long_strings", |b| {
+        b.iter(|| {
+            readstat_scan(black_box(&file), None, None).unwrap().collect().unwrap()
+        });
+    });
+}
+
 fn criterion_config() -> Criterion {
     Criterion::default()
         .sample_size(10)
@@ -39,6 +48,7 @@ criterion_group! {
     targets =
         bench_read_small_file,
         bench_read_large_file,
+        bench_read_long_strings,
 }
 
 criterion_main!(benches);

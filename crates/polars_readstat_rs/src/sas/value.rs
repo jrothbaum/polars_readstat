@@ -1,123 +1,17 @@
-use crate::encoding;
-use crate::error::{Error, Result};
-use crate::types::{Column, ColumnType, Endian};
+use crate::types::Endian;
 
-/// Represents a parsed value from a SAS file
+/// Represents a parsed column value from a SAS file.
+///
+/// Consumed by the public `add_row_ref`/`push_value_ref` API in
+/// `polars_output.rs`. The internal hot path (`add_row_raw`) bypasses this
+/// type entirely and decodes straight from row bytes using
+/// `decode_numeric_bytes_mask` and `text_utils::trim_padded_c_string` +
+/// `encoding::decode_string` — the same primitives a caller building `Value`s
+/// by hand should use for equivalent behavior.
 #[derive(Debug, Clone)]
 pub enum Value {
     Numeric(Option<f64>),
     Character(Option<String>),
-}
-
-/// Value parser for extracting column values from row bytes.
-/// Retained for unit tests; the hot path uses `add_row_raw` instead.
-#[allow(dead_code)]
-pub struct ValueParser {
-    endian: Endian,
-    encoding: &'static encoding_rs::Encoding,
-    encoding_byte: u8,
-    missing_string_as_null: bool,
-}
-
-#[allow(dead_code)]
-impl ValueParser {
-    pub fn new(endian: Endian, encoding_byte: u8, missing_string_as_null: bool) -> Self {
-        let encoding = encoding::get_encoding(encoding_byte);
-        Self {
-            endian,
-            encoding,
-            encoding_byte,
-            missing_string_as_null,
-        }
-    }
-
-    /// Parse a single column value from row bytes
-    pub fn parse_value(&self, row_bytes: &[u8], column: &Column) -> Result<Value> {
-        // Check bounds
-        if column.offset + column.length > row_bytes.len() {
-            eprintln!("DEBUG: parse_value BufferOutOfBounds - column '{}' offset={}, length={}, row_bytes.len()={}",
-                      column.name, column.offset, column.length, row_bytes.len());
-            return Err(Error::BufferOutOfBounds {
-                offset: column.offset,
-                length: column.length,
-            });
-        }
-
-        let value_bytes = &row_bytes[column.offset..column.offset + column.length];
-
-        match column.col_type {
-            ColumnType::Numeric => self.parse_numeric(value_bytes),
-            ColumnType::Character => self.parse_character(value_bytes),
-        }
-    }
-
-    /// Parse numeric value (f64)
-    /// SAS stores truncated IEEE 754 doubles (3-7 bytes) for narrow numeric columns.
-    /// The stored bytes are the most significant bytes; we pad with zeros to reconstruct
-    /// the full 8-byte double.
-    fn parse_numeric(&self, bytes: &[u8]) -> Result<Value> {
-        if bytes.is_empty() {
-            return Ok(Value::Numeric(None));
-        }
-
-        let buf = if bytes.len() >= 8 {
-            // SAFETY: we checked len >= 8
-            <[u8; 8]>::try_from(&bytes[..8]).unwrap()
-        } else {
-            // Short numeric: pad to 8 bytes following C++ get_incomplete_double pattern.
-            let mut buf = [0u8; 8];
-            match self.endian {
-                Endian::Little => {
-                    let start = 8 - bytes.len();
-                    buf[start..].copy_from_slice(bytes);
-                }
-                Endian::Big => {
-                    buf[..bytes.len()].copy_from_slice(bytes);
-                }
-            }
-            buf
-        };
-
-        let value = match self.endian {
-            Endian::Little => f64::from_le_bytes(buf),
-            Endian::Big => f64::from_be_bytes(buf),
-        };
-
-        if value.is_nan() || value.is_infinite() {
-            Ok(Value::Numeric(None))
-        } else {
-            Ok(Value::Numeric(Some(value)))
-        }
-    }
-
-    /// Parse character value (String)
-    fn parse_character(&self, bytes: &[u8]) -> Result<Value> {
-        // SAS strings are space-padded and may contain null bytes
-        // Trim trailing spaces and null bytes
-        let mut end = bytes.len();
-        while end > 0 && (bytes[end - 1] == b' ' || bytes[end - 1] == b'\x00') {
-            end -= 1;
-        }
-
-        // Stop at the first NUL to match ReadStat's C-string behavior
-        if let Some(pos) = bytes[..end].iter().position(|&b| b == 0) {
-            end = pos;
-        }
-
-        // Check for empty or all-space/null string
-        if end == 0 {
-            return if self.missing_string_as_null {
-                Ok(Value::Character(None))
-            } else {
-                Ok(Value::Character(Some(String::new())))
-            };
-        }
-
-        // Decode using the file's encoding
-        let s = encoding::decode_string(&bytes[..end], self.encoding_byte, self.encoding);
-
-        Ok(Value::Character(Some(s)))
-    }
 }
 
 const SAS_MISSING_MIN: u64 = 0x7ff0_0000_0000_0000;
@@ -208,79 +102,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_numeric() {
-        // Use UTF-8 encoding (byte 20)
-        let parser = ValueParser::new(Endian::Little, 20, true);
-
+    fn test_decode_numeric_bytes_mask_normal() {
         // Test normal value
         let bytes = 42.5f64.to_le_bytes();
-        let value = parser.parse_numeric(&bytes).unwrap();
-        match value {
-            Value::Numeric(Some(v)) => assert!((v - 42.5).abs() < 0.001),
-            _ => panic!("Expected numeric value"),
-        }
+        let (v, is_missing) = decode_numeric_bytes_mask(Endian::Little, &bytes);
+        assert!(!is_missing);
+        assert!((v - 42.5).abs() < 0.001);
 
         // Test missing value (NaN)
         let bytes = f64::NAN.to_le_bytes();
-        let value = parser.parse_numeric(&bytes).unwrap();
-        match value {
-            Value::Numeric(None) => {}
-            _ => panic!("Expected missing numeric value"),
-        }
+        let (_, is_missing) = decode_numeric_bytes_mask(Endian::Little, &bytes);
+        assert!(is_missing, "Expected NaN to decode as missing");
     }
 
     #[test]
-    fn test_parse_short_numeric_little_endian() {
-        let parser = ValueParser::new(Endian::Little, 20, true);
-
+    fn test_decode_numeric_bytes_mask_short_little_endian() {
         // Value 1.0 as f64 LE bytes: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F]
-        // SAS stores the 3 most significant bytes: [0xF0, 0x3F] would be 2 bytes,
-        // but for 3 bytes it stores [0x00, 0xF0, 0x3F] (bytes[5..8] of the full LE double)
+        // SAS stores the 3 most significant bytes: for 3 bytes that's
+        // [0x00, 0xF0, 0x3F] (bytes[5..8] of the full LE representation).
         let full_bytes = 1.0f64.to_le_bytes();
-        // 3-byte truncated: last 3 bytes of the LE representation
         let short = &full_bytes[5..8]; // [0x00, 0xF0, 0x3F]
-        let value = parser.parse_numeric(short).unwrap();
-        match value {
-            Value::Numeric(Some(v)) => assert!((v - 1.0).abs() < 0.001, "Expected ~1.0, got {}", v),
-            _ => panic!(
-                "Expected numeric value for short 3-byte LE, got {:?}",
-                value
-            ),
-        }
+        let (v, is_missing) = decode_numeric_bytes_mask(Endian::Little, short);
+        assert!(!is_missing);
+        assert!((v - 1.0).abs() < 0.001, "Expected ~1.0, got {}", v);
 
         // Value 2.0 as f64 LE bytes: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40]
         let full_bytes = 2.0f64.to_le_bytes();
         let short = &full_bytes[5..8];
-        let value = parser.parse_numeric(short).unwrap();
-        match value {
-            Value::Numeric(Some(v)) => assert!((v - 2.0).abs() < 0.001, "Expected ~2.0, got {}", v),
-            _ => panic!("Expected numeric value for short 3-byte LE"),
-        }
+        let (v, is_missing) = decode_numeric_bytes_mask(Endian::Little, short);
+        assert!(!is_missing);
+        assert!((v - 2.0).abs() < 0.001, "Expected ~2.0, got {}", v);
 
-        // Empty bytes → None
-        let value = parser.parse_numeric(&[]).unwrap();
-        match value {
-            Value::Numeric(None) => {}
-            _ => panic!("Expected None for empty bytes"),
-        }
+        // Empty bytes → missing
+        let (_, is_missing) = decode_numeric_bytes_mask(Endian::Little, &[]);
+        assert!(is_missing, "Expected empty bytes to decode as missing");
     }
 
     #[test]
-    fn test_parse_short_numeric_big_endian() {
-        let parser = ValueParser::new(Endian::Big, 20, true);
-
+    fn test_decode_numeric_bytes_mask_short_big_endian() {
         // Value 1.0 as f64 BE bytes: [0x3F, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
         // 3-byte truncated: first 3 bytes [0x3F, 0xF0, 0x00]
         let full_bytes = 1.0f64.to_be_bytes();
         let short = &full_bytes[0..3];
-        let value = parser.parse_numeric(short).unwrap();
-        match value {
-            Value::Numeric(Some(v)) => assert!((v - 1.0).abs() < 0.001, "Expected ~1.0, got {}", v),
-            _ => panic!(
-                "Expected numeric value for short 3-byte BE, got {:?}",
-                value
-            ),
-        }
+        let (v, is_missing) = decode_numeric_bytes_mask(Endian::Big, short);
+        assert!(!is_missing);
+        assert!((v - 1.0).abs() < 0.001, "Expected ~1.0, got {}", v);
     }
 
     fn make_tagged_missing_bits(tag: u8) -> u64 {
@@ -330,33 +196,21 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_character() {
-        // Use UTF-8 encoding (byte 20)
-        let parser = ValueParser::new(Endian::Little, 20, true);
-        let parser_keep_empty = ValueParser::new(Endian::Little, 20, false);
+    fn test_trim_padded_c_string_and_decode() {
+        // Use UTF-8 encoding (byte 20) — same primitives `add_row_raw` and
+        // `decode_str_row_into` use to turn raw row bytes into a string.
+        let encoding = crate::encoding::get_encoding(20);
 
         // Test normal string
-        let bytes = b"hello   ";
-        let value = parser.parse_character(bytes).unwrap();
-        match value {
-            Value::Character(Some(s)) => assert_eq!(s, "hello"),
-            _ => panic!("Expected character value"),
-        }
+        let trimmed = crate::text_utils::trim_padded_c_string(b"hello   ");
+        assert_eq!(crate::encoding::decode_string(trimmed, 20, encoding), "hello");
 
-        // Test empty string (all spaces)
-        let bytes = b"        ";
-        let value = parser.parse_character(bytes).unwrap();
-        match value {
-            Value::Character(None) => {}
-            _ => panic!("Expected missing character value"),
-        }
+        // Test empty string (all spaces) → trims to empty
+        let trimmed = crate::text_utils::trim_padded_c_string(b"        ");
+        assert!(trimmed.is_empty());
 
         // Leading NUL should truncate to empty (ReadStat C-string behavior)
-        let bytes = b"\0@f";
-        let value = parser_keep_empty.parse_character(bytes).unwrap();
-        match value {
-            Value::Character(Some(s)) => assert_eq!(s, ""),
-            _ => panic!("Expected empty character value"),
-        }
+        let trimmed = crate::text_utils::trim_padded_c_string(b"\0@f");
+        assert!(trimmed.is_empty(), "Expected leading NUL to truncate to empty");
     }
 }

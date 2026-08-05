@@ -37,6 +37,11 @@ fn compare_sas_to_python() {
 }
 
 #[test]
+fn compare_sas_catalog_to_python() {
+    run_compare("sas_catalog", "tests/sas/compare_catalog_to_python.py");
+}
+
+#[test]
 fn compare_spss_to_python() {
     run_compare("spss", "tests/spss/compare_to_python.py");
 }

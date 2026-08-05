@@ -555,30 +555,14 @@ impl<R: Read + Seek> DataReader<R> {
                         Format::Bit64 => 8,
                         Format::Bit32 => 4,
                     };
-                    let subheader_size = 3 * integer_size;
                     // MIX pages: rows start immediately after the subheader table.
-                    let mut offset =
-                        page_bit_offset + 8 + page_header.subheader_count as usize * subheader_size;
-
-                    // Match ReadStat MIX-page alignment behavior:
-                    // - For non-Stat/Transfer files, always skip 4 bytes when
-                    //   the data pointer is 4-byte misaligned.
-                    // - For Stat/Transfer files, skip only if the next 4 bytes
-                    //   are all zeros or spaces.
-                    if offset % 8 == 4 {
-                        let page_buffer = self.page_reader.page_buffer();
-                        if offset + 4 <= page_buffer.len() {
-                            let pad = &page_buffer[offset..offset + 4];
-                            let vendor_is_stat_transfer = is_stat_transfer_release(
-                                self.page_reader.header().sas_release.as_str(),
-                            );
-                            let pad_is_zero_or_space =
-                                pad == [0, 0, 0, 0] || pad == [b' ', b' ', b' ', b' '];
-                            if !vendor_is_stat_transfer || pad_is_zero_or_space {
-                                offset += 4;
-                            }
-                        }
-                    }
+                    let offset = mix_page_data_start(
+                        self.page_reader.page_buffer(),
+                        self.page_reader.header().sas_release.as_str(),
+                        page_bit_offset,
+                        page_header.subheader_count as usize,
+                        integer_size,
+                    );
 
                     let row_count = self
                         .metadata
@@ -727,7 +711,7 @@ impl<R: Read + Seek> DataReader<R> {
     }
 }
 
-fn is_stat_transfer_release(release: &str) -> bool {
+pub(crate) fn is_stat_transfer_release(release: &str) -> bool {
     let bytes = release.as_bytes();
     if bytes.len() < 8 {
         return false;
@@ -751,9 +735,52 @@ fn is_stat_transfer_release(release: &str) -> bool {
     matches!((minor, revision), (Some(0), Some(0)))
 }
 
+/// Compute the byte offset where row data begins on a MIX page.
+///
+/// MIX pages store rows immediately after the subheader pointer table, but
+/// that table isn't always 8-byte aligned. Matches ReadStat's alignment
+/// behavior:
+/// - For non-Stat/Transfer files, always skip a 4-byte pad when the computed
+///   offset is 4-byte misaligned.
+/// - For Stat/Transfer-produced files, skip the pad only if it's actually
+///   zero- or space-filled (Stat/Transfer sometimes packs real data there).
+///
+/// Shared by `data.rs` (actual row extraction) and `metadata.rs` (row
+/// counting / fast-stop detection during metadata scanning) — previously
+/// these computed this offset independently and had drifted out of sync for
+/// the Stat/Transfer case.
+pub(crate) fn mix_page_data_start(
+    page_buffer: &[u8],
+    sas_release: &str,
+    page_bit_offset: usize,
+    subheader_count: usize,
+    integer_size: usize,
+) -> usize {
+    let subheader_size = 3 * integer_size;
+    let mut offset = page_bit_offset + 8 + subheader_count * subheader_size;
+
+    if offset % 8 == 4 {
+        if let Some(pad) = page_buffer.get(offset..offset + 4) {
+            let vendor_is_stat_transfer = is_stat_transfer_release(sas_release);
+            let pad_is_zero_or_space = pad == [0, 0, 0, 0] || pad == [b' ', b' ', b' ', b' '];
+            if !vendor_is_stat_transfer || pad_is_zero_or_space {
+                offset += 4;
+            }
+        }
+    }
+
+    offset
+}
+
 /// Check if an 8-byte signature matches any known metadata subheader type.
 /// This covers all known 64-bit and 32-bit signature patterns.
-fn is_known_metadata_signature(sig: &[u8]) -> bool {
+///
+/// Shared between `data.rs` (distinguishing compressed data-row subheaders
+/// from metadata subheaders while reading) and `metadata.rs` (the same
+/// distinction while fast-scanning for the first data page) — keep a single
+/// copy so the two passes can't drift out of sync on which subheaders count
+/// as data.
+pub(crate) fn is_known_metadata_signature(sig: &[u8]) -> bool {
     if sig.len() < 4 {
         return false;
     }

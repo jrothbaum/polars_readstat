@@ -1,5 +1,6 @@
 use crate::spss::error::{Error, Result};
 use crate::spss::types::{ColumnPlan as SpssColumnPlan, Endian, FormatClass, Metadata, VarType};
+use crate::text_utils::trim_trailing_pad;
 use flate2::read::ZlibDecoder;
 use polars::prelude::*;
 use std::collections::HashSet;
@@ -169,7 +170,9 @@ pub fn read_data_frame_streaming(
                     match (var.var_type, has_label && value_labels_as_strings) {
                         (VarType::Numeric, true) => ColumnBuilder::Utf8 {
                             builder: StringChunkedBuilder::new(name.into(), cap),
-                            num_cache: Some(NumericStringCache::new()),
+                            num_cache: Some(Box::new(NumericStringCache::new())),
+                            scratch: Vec::new(),
+                            decode_buf: Vec::new(),
                         },
                         (VarType::Numeric, false) => match var.format_class {
                             Some(FormatClass::Date) => ColumnBuilder::Date(
@@ -188,6 +191,8 @@ pub fn read_data_frame_streaming(
                         (VarType::Str, _) => ColumnBuilder::Utf8 {
                             builder: StringChunkedBuilder::new(name.into(), cap),
                             num_cache: None,
+                            scratch: Vec::new(),
+                            decode_buf: Vec::new(),
                         },
                     }
                 })
@@ -446,7 +451,9 @@ pub fn read_data_frame_with_reader(
         let builder = match (var.var_type, label_map.is_some() && value_labels_as_strings) {
             (VarType::Numeric, true) => ColumnBuilder::Utf8 {
                 builder: StringChunkedBuilder::new(name.into(), limit),
-                num_cache: Some(NumericStringCache::new()),
+                num_cache: Some(Box::new(NumericStringCache::new())),
+                scratch: Vec::new(),
+                decode_buf: Vec::new(),
             },
             (VarType::Numeric, false) => match var.format_class {
                 Some(FormatClass::Date) => ColumnBuilder::Date(
@@ -468,6 +475,8 @@ pub fn read_data_frame_with_reader(
             (VarType::Str, _) => ColumnBuilder::Utf8 {
                 builder: StringChunkedBuilder::new(name.into(), limit),
                 num_cache: None,
+                scratch: Vec::new(),
+                decode_buf: Vec::new(),
             },
         };
         let missing_set = if var.missing_strings.is_empty() {
@@ -615,7 +624,9 @@ pub fn read_data_columns_uncompressed(
         let builder = match (var.var_type, label_map.is_some() && value_labels_as_strings) {
             (VarType::Numeric, true) => ColumnBuilder::Utf8 {
                 builder: StringChunkedBuilder::new(name.into(), limit),
-                num_cache: Some(NumericStringCache::new()),
+                num_cache: Some(Box::new(NumericStringCache::new())),
+                scratch: Vec::new(),
+                decode_buf: Vec::new(),
             },
             (VarType::Numeric, false) => match var.format_class {
                 Some(FormatClass::Date) => ColumnBuilder::Date(
@@ -637,6 +648,8 @@ pub fn read_data_columns_uncompressed(
             (VarType::Str, _) => ColumnBuilder::Utf8 {
                 builder: StringChunkedBuilder::new(name.into(), limit),
                 num_cache: None,
+                scratch: Vec::new(),
+                decode_buf: Vec::new(),
             },
         };
         let missing_set = if var.missing_strings.is_empty() {
@@ -824,7 +837,7 @@ fn append_value(
                 b.append_value(apply_format_class_time(v));
             }
         }
-        (ColumnBuilder::Utf8 { builder, num_cache }, VarType::Numeric) => {
+        (ColumnBuilder::Utf8 { builder, num_cache, .. }, VarType::Numeric) => {
             let t0 = if profile_enabled() {
                 Some(Instant::now())
             } else {
@@ -854,13 +867,10 @@ fn append_value(
                     builder.append_value(label);
                 } else {
                     if let Some(cache) = num_cache {
-                        if cache.has_last && cache.last_bits == bits {
-                            builder.append_value(&cache.last_value);
+                        if let Some(s) = cache.get(bits) {
+                            builder.append_value(s);
                         } else {
-                            cache.last_value = v.to_string();
-                            cache.last_bits = bits;
-                            cache.has_last = true;
-                            builder.append_value(&cache.last_value);
+                            builder.append_value(cache.insert(bits, v));
                         }
                     } else {
                         builder.append_value(&v.to_string());
@@ -868,13 +878,10 @@ fn append_value(
                 }
             } else {
                 if let Some(cache) = num_cache {
-                    if cache.has_last && cache.last_bits == bits {
-                        builder.append_value(&cache.last_value);
+                    if let Some(s) = cache.get(bits) {
+                        builder.append_value(s);
                     } else {
-                        cache.last_value = v.to_string();
-                        cache.last_bits = bits;
-                        cache.has_last = true;
-                        builder.append_value(&cache.last_value);
+                        builder.append_value(cache.insert(bits, v));
                     }
                 } else {
                     builder.append_value(&v.to_string());
@@ -885,7 +892,7 @@ fn append_value(
                 PROFILE_NUM_CT.fetch_add(1, Ordering::Relaxed);
             }
         }
-        (ColumnBuilder::Utf8 { builder, .. }, VarType::Str) => {
+        (ColumnBuilder::Utf8 { builder, scratch, decode_buf, .. }, VarType::Str) => {
             let t0 = if profile_enabled() {
                 Some(Instant::now())
             } else {
@@ -896,48 +903,56 @@ fn append_value(
                 return Ok(());
             }
 
-            let long_string_storage;
-            let raw = if plan.string_len_bytes > 255 {
-                long_string_storage =
-                    reconstruct_very_long_string_bytes(buf, plan.string_len_bytes);
-                long_string_storage.as_slice()
+            // Fix #1a: Reconstruct very-long strings into `scratch` to avoid a
+            // per-row Vec allocation. For normal-length strings, borrow `buf` directly.
+            let short_end = if plan.string_len_bytes > 0 {
+                plan.string_len_bytes.min(buf.len())
             } else {
-                let end = if plan.string_len_bytes > 0 {
-                    plan.string_len_bytes.min(buf.len())
-                } else {
-                    buf.len()
-                };
-                &buf[..end]
+                buf.len()
+            };
+            let mut in_scratch = if plan.string_len_bytes > 255 {
+                reconstruct_very_long_string_bytes_into(buf, plan.string_len_bytes, scratch);
+                true
+            } else {
+                false
             };
 
-            let mut filtered_storage;
-            let raw = if encoding == encoding_rs::UTF_8 {
-                if raw.iter().any(|b| *b == 0) {
-                    filtered_storage = Vec::with_capacity(raw.len());
-                    for &b in raw {
-                        if b != 0 {
-                            filtered_storage.push(b);
+            // Fix #1b: Filter embedded null bytes (UTF-8 only) into `scratch` without
+            // allocating a new Vec per row.
+            if encoding == encoding_rs::UTF_8 {
+                let has_null = if in_scratch {
+                    scratch.iter().any(|b| *b == 0)
+                } else {
+                    buf[..short_end].iter().any(|b| *b == 0)
+                };
+                if has_null {
+                    if in_scratch {
+                        scratch.retain(|&b| b != 0);
+                    } else {
+                        scratch.clear();
+                        for &b in &buf[..short_end] {
+                            if b != 0 {
+                                scratch.push(b);
+                            }
                         }
                     }
-                    filtered_storage.as_slice()
-                } else {
-                    raw
+                    in_scratch = true;
                 }
+            }
+
+            let raw: &[u8] = if in_scratch {
+                scratch.as_slice()
             } else {
-                raw
+                &buf[..short_end]
             };
 
-            let mut end = raw.len();
-            while end > 0 && (raw[end - 1] == b' ' || raw[end - 1] == 0) {
-                end -= 1;
-            }
+            let end = trim_trailing_pad(raw).len();
             let t_decode = if profile_enabled() {
                 Some(Instant::now())
             } else {
                 None
             };
-            let s_owned;
-            let s = if encoding == encoding_rs::UTF_8 {
+            let s: &str = if encoding == encoding_rs::UTF_8 {
                 let slice = &raw[..end];
                 match std::str::from_utf8(slice) {
                     Ok(s) => s,
@@ -947,9 +962,21 @@ fn append_value(
                     }
                 }
             } else {
-                let decoded = encoding.decode_without_bom_handling(&raw[..end]).0;
-                s_owned = decoded.into_owned();
-                s_owned.as_str()
+                // Fix #2: Decode into reusable `decode_buf` to avoid a per-row String
+                // allocation. The buffer grows to the high-water mark and stays there.
+                let input = &raw[..end];
+                let max_len = encoding
+                    .new_decoder_without_bom_handling()
+                    .max_utf8_buffer_length(input.len())
+                    .unwrap_or_else(|| input.len().saturating_mul(4));
+                decode_buf.resize(max_len, 0);
+                let mut decoder = encoding.new_decoder_without_bom_handling();
+                let (_, _, written, _) =
+                    decoder.decode_to_utf8(input, &mut decode_buf[..max_len], true);
+                decode_buf.truncate(written);
+                // SAFETY: encoding_rs guarantees valid UTF-8 output (replacing malformed
+                // bytes with U+FFFD) when using decode_to_utf8.
+                unsafe { std::str::from_utf8_unchecked(decode_buf) }
             };
             if let Some(t_decode) = t_decode {
                 add_ns(&PROFILE_DECODE_NS, t_decode.elapsed());
@@ -1045,6 +1072,26 @@ fn reconstruct_very_long_string_bytes(buf: &[u8], declared_len: usize) -> Vec<u8
     out
 }
 
+/// Like `reconstruct_very_long_string_bytes` but writes into a caller-provided buffer,
+/// avoiding the per-row allocation. `out` is cleared before writing.
+fn reconstruct_very_long_string_bytes_into(buf: &[u8], declared_len: usize, out: &mut Vec<u8>) {
+    out.clear();
+    let target_len = declared_len.min(buf.len());
+    if target_len <= 255 {
+        out.extend_from_slice(&buf[..target_len]);
+        return;
+    }
+    let mut row_offset = 0usize;
+    while target_len.saturating_sub(out.len()) > 255 && row_offset + 255 <= buf.len() {
+        out.extend_from_slice(&buf[row_offset..row_offset + 255]);
+        row_offset += 256;
+    }
+    let remaining = target_len.saturating_sub(out.len());
+    if remaining > 0 && row_offset + remaining <= buf.len() {
+        out.extend_from_slice(&buf[row_offset..row_offset + remaining]);
+    }
+}
+
 /// Returns the user-declared missing indicator string for a numeric SPSS value, or `None`
 /// if the value is system-missing (or not missing at all).
 ///
@@ -1129,10 +1176,7 @@ fn compute_col_indicator(
         VarType::Str => {
             let missing_set = plan.missing_set.as_ref()?;
             // Trim trailing spaces and nulls
-            let mut end = buf.len();
-            while end > 0 && (buf[end - 1] == b' ' || buf[end - 1] == 0) {
-                end -= 1;
-            }
+            let end = trim_trailing_pad(buf).len();
             if end == 0 {
                 return None; // empty → system-missing-like, no indicator
             }
@@ -1337,7 +1381,9 @@ pub fn read_data_frame_with_indicators(
         let builder = match (var.var_type, label_map.is_some() && value_labels_as_strings) {
             (VarType::Numeric, true) => ColumnBuilder::Utf8 {
                 builder: StringChunkedBuilder::new(name.into(), limit),
-                num_cache: Some(NumericStringCache::new()),
+                num_cache: Some(Box::new(NumericStringCache::new())),
+                scratch: Vec::new(),
+                decode_buf: Vec::new(),
             },
             (VarType::Numeric, false) => match var.format_class {
                 Some(FormatClass::Date) => ColumnBuilder::Date(
@@ -1359,6 +1405,8 @@ pub fn read_data_frame_with_indicators(
             (VarType::Str, _) => ColumnBuilder::Utf8 {
                 builder: StringChunkedBuilder::new(name.into(), limit),
                 num_cache: None,
+                scratch: Vec::new(),
+                decode_buf: Vec::new(),
             },
         };
         let missing_set = if var.missing_strings.is_empty() {
@@ -1533,7 +1581,14 @@ enum ColumnBuilder {
     Time(PrimitiveChunkedBuilder<Int64Type>),
     Utf8 {
         builder: StringChunkedBuilder,
-        num_cache: Option<NumericStringCache>,
+        // Boxed to keep sizeof(ColumnBuilder) small: Option<Box<T>> uses the null-pointer
+        // niche so None = 0 overhead, and the 272-byte cache struct lives on the heap.
+        num_cache: Option<Box<NumericStringCache>>,
+        // Reusable scratch buffers to avoid per-row allocation in the string path.
+        // `scratch` is used for long-string reconstruction and UTF-8 null filtering;
+        // `decode_buf` holds the UTF-8 output when transcoding from a non-UTF-8 encoding.
+        scratch: Vec<u8>,
+        decode_buf: Vec<u8>,
     },
 }
 
@@ -1552,19 +1607,49 @@ impl ColumnBuilder {
     }
 }
 
+/// Fixed 8-slot ring-buffer cache mapping f64 bit patterns to their string representations.
+/// Avoids repeated `v.to_string()` allocations for columns whose values repeat within a batch
+/// (e.g. label-only code columns with a handful of distinct codes).
 struct NumericStringCache {
-    last_bits: u64,
-    last_value: String,
-    has_last: bool,
+    bits: [u64; 8],
+    values: [String; 8],
+    len: usize,
+    next: usize,
 }
 
 impl NumericStringCache {
     fn new() -> Self {
         Self {
-            last_bits: 0,
-            last_value: String::new(),
-            has_last: false,
+            bits: [0u64; 8],
+            values: std::array::from_fn(|_| String::new()),
+            len: 0,
+            next: 0,
         }
+    }
+
+    /// Return the cached string for `query_bits`, or `None` on a miss.
+    fn get(&self, query_bits: u64) -> Option<&str> {
+        for i in 0..self.len {
+            if self.bits[i] == query_bits {
+                return Some(&self.values[i]);
+            }
+        }
+        None
+    }
+
+    /// Write `v` into the next slot and return a reference to the stored string.
+    /// Reuses the existing `String` heap allocation when possible.
+    fn insert(&mut self, query_bits: u64, v: f64) -> &str {
+        use std::fmt::Write as FmtWrite;
+        let slot = self.next;
+        self.bits[slot] = query_bits;
+        self.values[slot].clear();
+        let _ = write!(&mut self.values[slot], "{v}");
+        self.next = (slot + 1) % 8;
+        if self.len < 8 {
+            self.len += 1;
+        }
+        &self.values[slot]
     }
 }
 

@@ -305,16 +305,20 @@ fn resolve_column_indices(
 ) -> Result<Option<Vec<usize>>> {
     columns
         .map(|names| {
+            // Duplicate column names shouldn't occur in a well-formed SAS file, but if they
+            // did, `.position()`'s original behavior of matching the first occurrence is
+            // preserved here via `entry(..).or_insert(..)`.
+            let mut index_by_name: std::collections::HashMap<&str, usize> =
+                std::collections::HashMap::with_capacity(metadata.columns.len());
+            for (idx, c) in metadata.columns.iter().enumerate() {
+                index_by_name.entry(c.name.as_str()).or_insert(idx);
+            }
             names
                 .iter()
                 .map(|name| {
-                    metadata
-                        .columns
-                        .iter()
-                        .position(|c| c.name == *name)
-                        .ok_or_else(|| {
-                            crate::error::Error::ParseError(format!("Column '{}' not found", name))
-                        })
+                    index_by_name.get(name.as_str()).copied().ok_or_else(|| {
+                        crate::error::Error::ParseError(format!("Column '{}' not found", name))
+                    })
                 })
                 .collect()
         })
