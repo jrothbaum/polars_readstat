@@ -444,6 +444,8 @@ fn append_row_index_schema(schema: &mut Schema, name: &str) -> PyResult<()> {
 /// Returns ``dict[str, dict[float | str, str]]``:
 /// outer key is the format name (uppercase, no trailing dot),
 /// inner dict maps each code (float for numeric, str for character) to its label.
+/// The catch-all label a format assigns to missing/tagged-missing values
+/// (`.`, `.A`-`.Z`) is keyed by `float('nan')`, matching pyreadstat.
 #[pyfunction]
 fn read_sas7bcat_rs(py: Python<'_>, path: String) -> PyResult<Py<PyAny>> {
     let catalog = read_sas7bcat(std::path::Path::new(&path))
@@ -456,6 +458,7 @@ fn read_sas7bcat_rs(py: Python<'_>, path: String) -> PyResult<Py<PyAny>> {
             let py_key: Py<PyAny> = match key {
                 CatalogKey::Numeric(v) => v.into_pyobject(py).map_err(|e| PyRuntimeError::new_err(e.to_string()))?.into(),
                 CatalogKey::Text(s) => s.into_pyobject(py).map_err(|e| PyRuntimeError::new_err(e.to_string()))?.into(),
+                CatalogKey::Missing => f64::NAN.into_pyobject(py).map_err(|e| PyRuntimeError::new_err(e.to_string()))?.into(),
             };
             inner.set_item(py_key, label)?;
         }

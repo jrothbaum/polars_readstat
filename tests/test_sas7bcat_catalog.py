@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import polars as pl
@@ -13,6 +14,12 @@ SAS_FORMAT_DIR = (
 )
 DAT_PATH = SAS_FORMAT_DIR / "crash_hospital.sas7bdat"
 CAT_PATH = SAS_FORMAT_DIR / "formats.sas7bcat"
+
+# This catalog has formats that label missing/tagged-missing values (e.g. `.`),
+# which is the CatalogKey::Missing case exercised below.
+MISSING_VALUE_CAT_PATH = (
+    REPO_ROOT / "crates/polars_readstat_rs/tests/sas/data/data_gov/formats.sas7bcat"
+)
 
 
 @pytest.fixture(scope="module")
@@ -82,6 +89,62 @@ def test_read_sas7bcat_veheventfmt_entries(catalog):
         3.0: "Collision with non-fixed object",
         4.0: "Collision with fixed object",
     }
+
+
+def test_read_sas7bcat_missing_value_label(package_module):
+    """A format that assigns a label to missing/tagged-missing values (e.g. `.`)
+    should surface it keyed by float('nan'), matching pyreadstat's convention.
+    Regression test: the Rust side used to silently drop these entries."""
+    if not MISSING_VALUE_CAT_PATH.exists():
+        pytest.skip(f"Missing catalog fixture: {MISSING_VALUE_CAT_PATH}")
+
+    catalog = package_module.read_sas7bcat(MISSING_VALUE_CAT_PATH)
+    p445f = catalog["P445F"]
+
+    # Note: can't compare NaN-containing tuples/lists with `==` (NaN != NaN),
+    # so check shape and label separately instead.
+    nan_entries = [(k, v) for k, v in p445f.items() if isinstance(k, float) and math.isnan(k)]
+    assert len(nan_entries) == 1, nan_entries
+    nan_key, nan_label = nan_entries[0]
+    assert math.isnan(nan_key)
+    assert nan_label == "Valid Skip"
+
+    # Non-missing entries in the same format should be unaffected.
+    assert p445f[1.0] == "Parochial"
+    assert p445f[2.0] == "Diocesan"
+    assert p445f[3.0] == "Private"
+
+
+def test_read_sas7bcat_missing_value_label_matches_pyreadstat(package_module):
+    """Cross-check the missing-value label directly against pyreadstat's own
+    reader, not just a hardcoded expectation."""
+    if not MISSING_VALUE_CAT_PATH.exists():
+        pytest.skip(f"Missing catalog fixture: {MISSING_VALUE_CAT_PATH}")
+
+    ours = package_module.read_sas7bcat(MISSING_VALUE_CAT_PATH)
+    _, meta = pyreadstat.read_sas7bcat(str(MISSING_VALUE_CAT_PATH))
+    theirs = meta.value_labels
+
+    checked_any = False
+    for fmt_name, their_labels in theirs.items():
+        their_nan_label = next(
+            (v for k, v in their_labels.items() if isinstance(k, float) and math.isnan(k)),
+            None,
+        )
+        if their_nan_label is None:
+            continue
+        checked_any = True
+        norm_name = fmt_name.rstrip(".").upper()
+        our_labels = ours[norm_name]
+        our_nan_label = next(
+            (v for k, v in our_labels.items() if isinstance(k, float) and math.isnan(k)),
+            None,
+        )
+        assert our_nan_label == their_nan_label, (
+            f"format {norm_name!r}: pyreadstat nan-label={their_nan_label!r}, "
+            f"ours={our_nan_label!r}"
+        )
+    assert checked_any, "expected at least one format with a missing-value label in this fixture"
 
 
 def test_read_sas7bcat_matches_pyreadstat(catalog, pyreadstat_meta):
