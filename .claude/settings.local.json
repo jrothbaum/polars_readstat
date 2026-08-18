@@ -6,7 +6,25 @@
       "Bash(cargo build:*)",
       "Bash(git stash:*)",
       "Bash(grep:*)",
-      "Bash(git pull:*)"
+      "Bash(git pull:*)",
+      "Bash(PROFILE_SAS=1 /home/jrothbaum/Coding/claude_code/polars_readstat/target/release/examples/profile_sas_read tests/sas/data/too_big/psam_p17.sas7bdat 20)",
+      "Bash(/home/jrothbaum/Coding/claude_code/polars_readstat/target/release/examples/profile_sas_read tests/sas/data/too_big/psam_p17.sas7bdat 20)",
+      "Bash(python3 -c ' *)",
+      "Bash(/home/jrothbaum/Coding/claude_code/polars_readstat/target/release/examples/cols /home/jrothbaum/Coding/claude_code/polars_readstat/crates/polars_readstat_rs/tests/sas/data/too_big/psam_p17.sas7bdat)",
+      "Bash(xargs -n1 basename)",
+      "Bash(grep -n \"true,$\" /home/jrothbaum/Coding/claude_code/polars_readstat/crates/polars_readstat_rs/src/sas/reader.rs)",
+      "Bash(/home/jrothbaum/Coding/claude_code/polars_readstat/target/release/examples/profile_sas_read /home/jrothbaum/Coding/claude_code/polars_readstat/crates/polars_readstat_rs/tests/sas/data/too_big/psam_p17.sas7bdat 20)",
+      "Bash(python3 -c \"import polars_readstat; print\\(polars_readstat.__file__\\)\")",
+      "Bash(python3 -m pytest --version)",
+      "Bash(python3 -m pytest tests/test_preserve_order_opts.py -v)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\({k:v for k,v in d.items\\(\\) if 'encod' in k.lower\\(\\)}\\)\")",
+      "Bash(./target/release/examples/encbyte crates/polars_readstat_rs/tests/sas/data/too_big/psam_p17.sas7bdat)",
+      "Bash(mkdir -p /tmp/claude-1000/-home-jrothbaum-Coding-claude-code-polars-readstat/d43cf647-d30f-44d4-a407-fd78d9710f60/scratchpad/glibc_check)",
+      "Bash(rustup run *)",
+      "Bash(objdump -T hello_193)",
+      "Bash(objdump -T hello_196)",
+      "Bash(git log *)",
+      "Read(//home/jrothbaum/**)"
     ]
   }
 }

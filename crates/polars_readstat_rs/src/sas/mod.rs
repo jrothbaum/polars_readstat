@@ -7,6 +7,7 @@ pub(crate) mod encoding;
 pub(crate) mod error;
 pub(crate) mod page;
 pub mod polars_output;
+pub mod profile;
 #[cfg(feature = "row_reader")]
 pub mod row_reader;
 pub(crate) mod types;

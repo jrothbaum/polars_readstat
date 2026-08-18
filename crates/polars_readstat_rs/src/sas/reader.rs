@@ -146,7 +146,7 @@ impl Sas7bdatReader {
             col_indices,
             opts.offset,
             Some(limit),
-            true,
+            opts.preserve_order,
             None,
             opts.informative_nulls.clone(),
             false,
@@ -201,6 +201,7 @@ pub struct ReadBuilder<'a> {
     chunk_size: Option<usize>,
     missing_string_as_null: bool,
     informative_nulls: Option<crate::InformativeNullOpts>,
+    preserve_order: bool,
 }
 
 impl<'a> ReadBuilder<'a> {
@@ -216,6 +217,11 @@ impl<'a> ReadBuilder<'a> {
             chunk_size: None,
             missing_string_as_null: true,
             informative_nulls: None,
+            // Matches `ScanOptions`/the Python bindings' default: parallel workers emit
+            // batches as they finish rather than waiting on file order, which avoids
+            // stalling on the slowest worker. Opt into `.preserve_order(true)` if row
+            // order must match the file (e.g. round-tripping row-for-row).
+            preserve_order: false,
         }
     }
 
@@ -253,6 +259,10 @@ impl<'a> ReadBuilder<'a> {
     }
     pub fn informative_nulls(mut self, v: Option<crate::InformativeNullOpts>) -> Self {
         self.informative_nulls = v;
+        self
+    }
+    pub fn preserve_order(mut self, v: bool) -> Self {
+        self.preserve_order = v;
         self
     }
 

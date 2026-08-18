@@ -167,7 +167,6 @@ pub fn decode_string(bytes: &[u8], encoding_byte: u8, encoding: &'static Encodin
 /// Cow::Borrowed) this is a plain memcpy.  For Latin-1 (encoding_byte 29) each
 /// byte is converted in place.  For other encodings encoding_rs transcodes into
 /// a temporary buffer that is immediately written into `out`.
-#[cfg(feature = "row_reader")]
 pub(crate) fn decode_string_into(
     bytes: &[u8],
     encoding_byte: u8,

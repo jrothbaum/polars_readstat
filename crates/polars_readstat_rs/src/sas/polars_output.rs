@@ -21,6 +21,10 @@ use std::thread::JoinHandle;
 pub struct DataFrameBuilder {
     columns_meta: Vec<SasColumn>,
     buffers: Vec<ColumnBuffer>,
+    /// Reused across `add_row_raw` calls to decode each string cell without a
+    /// fresh heap allocation per cell (most SAS files are dominated by narrow
+    /// flag/code character columns, so per-cell allocation is the hot cost).
+    str_scratch: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -96,6 +100,7 @@ impl DataFrameBuilder {
         Self {
             columns_meta,
             buffers,
+            str_scratch: Vec::new(),
         }
     }
 
@@ -115,6 +120,7 @@ impl DataFrameBuilder {
         Self {
             columns_meta,
             buffers,
+            str_scratch: Vec::new(),
         }
     }
 
@@ -201,22 +207,30 @@ impl DataFrameBuilder {
                     }
                 }
                 ColumnKind::Character => {
-                    if let ColumnBuffer::Character(b) = &mut self.buffers[pos] {
-                        let bytes = &row_bytes[start..end];
-                        let trimmed = crate::text_utils::trim_padded_c_string(bytes);
-                        if trimmed.is_empty() {
+                    let bytes = &row_bytes[start..end];
+                    let trimmed = crate::text_utils::trim_padded_c_string(bytes);
+                    if trimmed.is_empty() {
+                        if let ColumnBuffer::Character(b) = &mut self.buffers[pos] {
                             if plan.missing_string_as_null {
                                 b.append_null();
                             } else {
                                 b.append_value("");
                             }
-                        } else {
-                            let s = crate::encoding::decode_string(
-                                trimmed,
-                                plan.encoding_byte,
-                                plan.encoding,
-                            );
-                            b.append_value(&s);
+                        }
+                    } else {
+                        self.str_scratch.clear();
+                        crate::encoding::decode_string_into(
+                            trimmed,
+                            plan.encoding_byte,
+                            plan.encoding,
+                            &mut self.str_scratch,
+                        );
+                        // decode_string_into always emits valid UTF-8 (encoding_rs's
+                        // guarantee, plus the hand-rolled Latin-1 branch does too).
+                        let s = std::str::from_utf8(&self.str_scratch)
+                            .expect("decode_string_into always produces valid UTF-8");
+                        if let ColumnBuffer::Character(b) = &mut self.buffers[pos] {
+                            b.append_value(s);
                         }
                     }
                 }
@@ -763,11 +777,14 @@ fn spawn_page_worker(
 
         loop {
             let mut buf = Vec::new();
-            let n_read = match data_reader.read_rows_bulk(batch_size, &mut buf) {
-                Ok(n) => n,
-                Err(e) => {
-                    let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
-                    return;
+            let n_read = {
+                let _t = crate::sas::profile::stage(&crate::sas::profile::STAGE_TIMERS.io_decompress_ns);
+                match data_reader.read_rows_bulk(batch_size, &mut buf) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
+                        return;
+                    }
                 }
             };
             if n_read == 0 {
@@ -777,11 +794,42 @@ fn spawn_page_worker(
                 Some(ci) => DataFrameBuilder::new_with_columns(&metadata, ci, n_read),
                 None => DataFrameBuilder::new(&metadata, n_read),
             };
-            for i in 0..n_read {
-                let rs = i * row_length;
-                builder.add_row_raw(&buf[rs..rs + row_length], &plans);
+            if crate::sas::profile::enabled() {
+                let numeric_plans: Vec<ColumnPlan> = plans
+                    .iter()
+                    .filter(|p| !matches!(p.kind, ColumnKind::Character))
+                    .cloned()
+                    .collect();
+                let string_plans: Vec<ColumnPlan> = plans
+                    .iter()
+                    .filter(|p| matches!(p.kind, ColumnKind::Character))
+                    .cloned()
+                    .collect();
+                {
+                    let _t = crate::sas::profile::stage(&crate::sas::profile::STAGE_TIMERS.numeric_parse_ns);
+                    for i in 0..n_read {
+                        let rs = i * row_length;
+                        builder.add_row_raw(&buf[rs..rs + row_length], &numeric_plans);
+                    }
+                }
+                {
+                    let _t = crate::sas::profile::stage(&crate::sas::profile::STAGE_TIMERS.string_parse_ns);
+                    for i in 0..n_read {
+                        let rs = i * row_length;
+                        builder.add_row_raw(&buf[rs..rs + row_length], &string_plans);
+                    }
+                }
+            } else {
+                for i in 0..n_read {
+                    let rs = i * row_length;
+                    builder.add_row_raw(&buf[rs..rs + row_length], &plans);
+                }
             }
-            match builder.build() {
+            let built = {
+                let _t = crate::sas::profile::stage(&crate::sas::profile::STAGE_TIMERS.df_build_ns);
+                builder.build()
+            };
+            match built {
                 Ok(df) => {
                     let df = if let Some(thread_id) = sort_tag {
                         let n = df.height();
