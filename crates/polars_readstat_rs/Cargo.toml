@@ -7,6 +7,23 @@ description = "Pure Rust readers for SAS, Stata, and SPSS with Polars and Arrow 
 license = "MIT"
 repository = "https://github.com/jrothbaum/polars_readstat"
 readme = "README.md"
+# Binary test fixtures are needed for `cargo test` from a repo checkout but
+# not by downstream consumers of the published crate; excluding them keeps
+# the crates.io upload small (source is <1MB; fixtures were ~50MB).
+exclude = [
+    "tests/**/*.sas7bdat",
+    "tests/**/*.sas7bcat",
+    "tests/**/*.sas7bndx",
+    "tests/**/*.dta",
+    "tests/**/*.dta.gz",
+    "tests/**/*.sav",
+    "tests/**/*.zsav",
+    "tests/**/*.xpt",
+    "tests/**/*.xpt5",
+    "tests/**/*.xpt8",
+    "tests/**/*.por",
+    "tests/**/*.csv",
+]
 
 [features]
 row_reader = []
