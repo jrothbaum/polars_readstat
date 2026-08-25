@@ -495,7 +495,8 @@ def test_write_spss_string_widths_preserved_on_roundtrip(tmp_path: Path) -> None
 
 
 def test_write_spss_string_widths_explicit_dict(tmp_path: Path) -> None:
-    """Explicit string_widths dict sets the declared minimum width independently of metadata."""
+    """Explicit string_widths dict sets the declared minimum width independently of metadata,
+    and columns not named in the dict (here "id") must still be written."""
     df = pl.DataFrame({"id": [1.0], "comments": ["hello"]})
 
     out = tmp_path / "out.sav"
@@ -506,7 +507,79 @@ def test_write_spss_string_widths_explicit_dict(tmp_path: Path) -> None:
     assert declared == 1024, f"expected declared width 1024, got {declared}"
 
     result = prs.scan_readstat(str(out)).collect()
+    assert result.columns == ["id", "comments"]
+    assert result["id"].to_list() == [1.0]
     assert result["comments"].to_list() == ["hello"]
+
+
+def test_write_spss_partial_metadata_kwargs_keep_other_columns(tmp_path: Path) -> None:
+    """A metadata kwarg naming only some columns (e.g. variable_labels for one
+    column) must not drop the DataFrame's other columns from the written file."""
+    df = pl.DataFrame({"id": [1.0, 2.0, 3.0], "name": ["a", "b", "c"], "extra": [10, 20, 30]})
+
+    out = tmp_path / "out.sav"
+    prs.write_readstat(df, str(out), variable_labels={"name": "Full Name"})
+
+    result = prs.scan_readstat(str(out)).collect()
+    assert result.columns == ["id", "name", "extra"]
+    assert result["id"].to_list() == [1.0, 2.0, 3.0]
+    assert result["extra"].to_list() == [10.0, 20.0, 30.0]
+
+
+def test_write_stata_partial_metadata_kwargs_keep_other_columns(tmp_path: Path) -> None:
+    """Same bug as above but for the Stata writer: variable_labels naming only
+    one column must not drop the DataFrame's other columns from the .dta file."""
+    df = pl.DataFrame({"id": [1.0, 2.0, 3.0], "name": ["a", "b", "c"], "extra": [10, 20, 30]})
+
+    out = tmp_path / "out.dta"
+    prs.write_readstat(df, str(out), variable_labels={"name": "Full Name"})
+
+    result = prs.scan_readstat(str(out)).collect()
+    assert result.columns == ["id", "name", "extra"]
+    assert result["id"].to_list() == [1.0, 2.0, 3.0]
+    assert result["extra"].to_list() == [10.0, 20.0, 30.0]
+
+
+def test_write_spss_compressed_roundtrip(tmp_path: Path) -> None:
+    """compressed=True writes standard SAV bytecode compression and roundtrips correctly."""
+    n = 200
+    df = pl.DataFrame({
+        "id": [float(i) for i in range(n)],
+        "comments": ["short"] * n,
+    })
+
+    uncompressed = tmp_path / "uncompressed.sav"
+    compressed = tmp_path / "compressed.sav"
+    prs.write_readstat(df, str(uncompressed), string_widths={"comments": 1024}, compressed=False)
+    prs.write_readstat(df, str(compressed), string_widths={"comments": 1024}, compressed=True)
+
+    # Declared width survives compression (this is the point of the feature).
+    meta = prs.ScanReadstat(str(compressed)).metadata_df
+    declared = meta.filter(pl.col("name") == "comments")["string_width_bytes"][0]
+    assert declared == 1024
+
+    result = prs.scan_readstat(str(compressed)).collect()
+    assert_frame_equal(result, df)
+
+    assert compressed.stat().st_size < uncompressed.stat().st_size / 2
+
+
+def test_write_spss_zsav_extension_compresses_by_default(tmp_path: Path) -> None:
+    """Writing to a .zsav path enables compression automatically without an explicit flag."""
+    n = 200
+    df = pl.DataFrame({
+        "id": [float(i) for i in range(n)],
+        "comments": ["short"] * n,
+    })
+
+    sav_path = tmp_path / "plain.sav"
+    zsav_path = tmp_path / "auto.zsav"
+    prs.write_readstat(df, str(sav_path), string_widths={"comments": 1024})
+    prs.write_readstat(df, str(zsav_path), string_widths={"comments": 1024})
+
+    assert zsav_path.stat().st_size < sav_path.stat().st_size / 2
+    result = prs.scan_readstat(str(zsav_path)).collect()
+    assert_frame_equal(result, df)
 
 
 def test_write_spss_string_widths_data_wins_if_larger(tmp_path: Path) -> None:

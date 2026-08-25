@@ -49,7 +49,7 @@ Key parameters:
 - a `CompressOptions` object
 - a plain dict with the same fields
 
-This is read-side type compression (not the Stata writer `compress` flag).
+This is read-side type compression — distinct from the Stata writer's `compress` flag (dtype narrowing on write) and the SPSS writer's `compressed` flag (SAV file-level bytecode compression); see [Write](write.md).
 
 Fields:
 

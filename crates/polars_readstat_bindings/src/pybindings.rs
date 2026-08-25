@@ -1099,7 +1099,7 @@ fn sink_stata(
 }
 
 #[pyfunction]
-#[pyo3(signature = (df, path, value_labels=None, variable_labels=None, variable_measure=None, variable_display_width=None, variable_alignment=None, variable_format=None, string_widths=None))]
+#[pyo3(signature = (df, path, value_labels=None, variable_labels=None, variable_measure=None, variable_display_width=None, variable_alignment=None, variable_format=None, string_widths=None, compressed=None))]
 fn write_spss(
     df: PyDataFrame,
     path: String,
@@ -1110,9 +1110,11 @@ fn write_spss(
     variable_alignment: Option<&Bound<PyDict>>,
     variable_format: Option<&Bound<PyDict>>,
     string_widths: Option<&Bound<PyDict>>,
+    compressed: Option<bool>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["sav", "zsav"])?;
-    let mut writer = SpssWriter::new(path);
+    let compressed = compressed.unwrap_or_else(|| path.to_ascii_lowercase().ends_with(".zsav"));
+    let mut writer = SpssWriter::new(path).with_compression(compressed);
     if let Some(labels) = value_labels {
         writer = writer.with_value_labels(parse_spss_value_labels(labels)?);
     }
@@ -1141,12 +1143,15 @@ fn write_spss(
 
 /// Write SPSS building the writer directly from a metadata DataFrame — no Python dict overhead.
 #[pyfunction]
+#[pyo3(signature = (df, path, metadata_df, compressed=None))]
 fn write_spss_from_df_rs(
     df: PyDataFrame,
     path: String,
     metadata_df: PyDataFrame,
+    compressed: Option<bool>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["sav", "zsav"])?;
+    let compressed = compressed.unwrap_or_else(|| path.to_ascii_lowercase().ends_with(".zsav"));
     let col_names: HashSet<String> = df.0.get_column_names().iter().map(|s| s.to_string()).collect();
     let mdf_owned = filter_metadata_to_df_columns(&metadata_df.0, &df.0)?;
     let mdf = &mdf_owned;
@@ -1168,17 +1173,34 @@ fn write_spss_from_df_rs(
     let mut variable_display_widths: SpssVariableDisplayWidths = HashMap::new();
     let mut variable_formats: SpssVariableFormats = HashMap::new();
     let mut value_labels: SpssValueLabels = HashMap::new();
-    let mut schema_columns: Vec<SpssWriteColumn> = Vec::new();
+    let mut schema_columns: Vec<SpssWriteColumn> = Vec::with_capacity(df.0.width());
 
+    // Map each metadata row to its column name so we can look rows up while
+    // walking the DataFrame's own column list below. Iterating `df`'s columns
+    // (rather than `mdf`'s rows) ensures every DataFrame column ends up in
+    // schema_columns even when it has no metadata row of its own — otherwise
+    // a column absent from e.g. `string_widths`/`variable_labels` would be
+    // silently dropped from the written file entirely.
+    let mut row_by_name: HashMap<String, usize> = HashMap::with_capacity(mdf.height());
     for i in 0..mdf.height() {
-        let name = match name_ca.get(i) {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
+        if let Some(n) = name_ca.get(i) {
+            row_by_name.insert(n.to_string(), i);
+        }
+    }
+
+    for name in df.0.get_column_names() {
+        let name = name.to_string();
         if !col_names.contains(&name) {
             continue;
         }
         let dtype = df.0.column(&name).map(|s| s.dtype().clone()).unwrap_or(DataType::Null);
+        let i = match row_by_name.get(&name) {
+            Some(&i) => i,
+            None => {
+                schema_columns.push(SpssWriteColumn { name, dtype, string_width_bytes: None });
+                continue;
+            }
+        };
         let string_width_bytes = sw_col_opt.as_ref().and_then(|ca| ca.get(i)).map(|w| w as usize);
         schema_columns.push(SpssWriteColumn { name: name.clone(), dtype, string_width_bytes });
         if let Some(m) = measure_ca.get(i) {
@@ -1232,7 +1254,7 @@ fn write_spss_from_df_rs(
         }
     }
 
-    let mut writer = SpssWriter::new(&path);
+    let mut writer = SpssWriter::new(&path).with_compression(compressed);
     if !schema_columns.is_empty() {
         writer = writer.with_schema(SpssWriteSchema {
             columns: schema_columns,
@@ -1271,17 +1293,34 @@ fn write_stata_from_df_rs(
 
     let (variable_labels, variable_formats) = metadata_df_labels_formats(&df.0, mdf)?;
     let mut value_labels: ValueLabels = HashMap::new();
-    let mut schema_columns: Vec<StataWriteColumn> = Vec::new();
+    let mut schema_columns: Vec<StataWriteColumn> = Vec::with_capacity(df.0.width());
 
+    // Map each metadata row to its column name so we can look rows up while
+    // walking the DataFrame's own column list below. Iterating `df`'s columns
+    // (rather than `mdf`'s rows) ensures every DataFrame column ends up in
+    // schema_columns even when it has no metadata row of its own — otherwise
+    // a column absent from e.g. `string_widths`/`variable_labels` would be
+    // silently dropped from the written file entirely.
+    let mut row_by_name: HashMap<String, usize> = HashMap::with_capacity(mdf.height());
     for i in 0..mdf.height() {
-        let name = match name_ca.get(i) {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
+        if let Some(n) = name_ca.get(i) {
+            row_by_name.insert(n.to_string(), i);
+        }
+    }
+
+    for name in df.0.get_column_names() {
+        let name = name.to_string();
         if !col_names.contains(&name) {
             continue;
         }
         let dtype = df.0.column(&name).map(|s| s.dtype().clone()).unwrap_or(DataType::Null);
+        let i = match row_by_name.get(&name) {
+            Some(&i) => i,
+            None => {
+                schema_columns.push(StataWriteColumn { name, dtype, string_width_bytes: None });
+                continue;
+            }
+        };
         let string_width_bytes = sw_col_opt.as_ref().and_then(|ca| ca.get(i)).map(|w| w as usize);
         schema_columns.push(StataWriteColumn { name: name.clone(), dtype, string_width_bytes });
         let codes_av = vl_codes_col.get(i).map_err(|e| PyValueError::new_err(e.to_string()))?;

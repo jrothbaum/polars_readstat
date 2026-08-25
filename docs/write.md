@@ -57,8 +57,9 @@ write_readstat(
 | `variable_measure` | Dict mapping column names to measurement level: `"nominal"`, `"ordinal"`, or `"scale"`. |
 | `variable_display_width` | Dict mapping column names to display width (int). |
 | `variable_alignment` | Dict mapping column names to alignment: `"left"`, `"right"`, or `"center"`. |
-| `string_widths` | Dict mapping column names to a minimum declared string width in bytes (e.g. `{"COMMENTS": 1024}`). The actual data width is used if larger, so no truncation is possible. Results in a larger file when the declared width exceeds the data. Always honoured regardless of `preserve_string_widths`. |
+| `string_widths` | Dict mapping column names to a minimum declared string width in bytes (e.g. `{"COMMENTS": 1024}`). The actual data width is used if larger, so no truncation is possible. Results in a larger file when the declared width exceeds the data, unless `compressed=True`. Always honoured regardless of `preserve_string_widths`. |
 | `preserve_string_widths` | `True` to honour declared string widths from `metadata=` on roundtrip. Default `False` (compact — string columns are sized to the actual data). Has no effect without `metadata=`. See [String width and roundtrip fidelity](#string-width-and-roundtrip-fidelity). |
+| `compressed` | `True`/`False` to force standard SAV compression on or off. If omitted, compression is enabled automatically when the output path ends in `.zsav` and disabled for `.sav`. See [Compression](#compression). |
 
 ```python
 write_readstat(
@@ -72,6 +73,31 @@ write_readstat(
     variable_format={"score": "F10.2"},
 )
 ```
+
+### Compression
+
+SPSS supports a standard run-length "bytecode" compression scheme (the same one SPSS itself, PSPP, and `pyreadstat`/`haven` read). It's independent of declared string width: unused padding in a wide string column and system-missing numeric values collapse to a single byte each on disk, so a column declared `A1024` can keep that width in the metadata without inflating the file to match.
+
+```python
+# Explicit
+write_readstat(df, "/path/out.sav", compressed=True)
+
+# Implicit — .zsav enables compression automatically
+write_readstat(df, "/path/out.zsav")
+```
+
+This pairs naturally with wide declared string widths — compression is what makes `preserve_string_widths=True` or `string_widths=` affordable on real files:
+
+```python
+write_readstat(
+    df, "out.zsav",
+    metadata=reader.metadata_df,
+    preserve_string_widths=True,  # declared widths survive the roundtrip
+    # compressed=True is implied by the .zsav extension here
+)
+```
+
+Note that this is standard SAV compression (compression code 1), not the zlib-block ZSAV format some tools also produce — `.zsav` is used here only as the conventional trigger for "compress this file." True zlib-block ZSAV writing isn't supported yet, but files written this way remain readable as `.sav`/`.zsav` by this library, `pyreadstat`, and SPSS itself.
 
 ## SAS Transport (`write_xpt`)
 

@@ -739,9 +739,15 @@ def write_readstat(
         `variable_display_width`, `variable_alignment`, `variable_format`,
         `string_widths` (dict[str, int]) to set minimum declared string widths
         (e.g. ``{"COMMENTS": 1024}``; always honoured regardless of other flags),
-        and `preserve_string_widths` (bool, default False) to honour declared
+        `preserve_string_widths` (bool, default False) to honour declared
         string widths from the metadata DataFrame on roundtrip — at the cost of
-        larger files when the declared width exceeds the actual data.
+        larger files when the declared width exceeds the actual data, and
+        `compressed` (bool, optional) to enable standard SAV bytecode
+        compression (compression code 1). When omitted, compression is
+        enabled automatically if `path` ends in ``.zsav`` and disabled
+        otherwise. Compression lets a declared string width (e.g. 1024 bytes,
+        via `string_widths`/`preserve_string_widths`) stay in the metadata
+        without inflating the file to that width on disk.
         SAS binary writing is not supported; use `write_sas_csv_import`.
     """
     path = str(path)
@@ -784,10 +790,12 @@ def write_readstat(
         compress = kwargs.pop("compress", None)
         if compress is not None:
             warnings.warn(
-                "compress has no effect for SPSS outputs.",
+                "compress has no effect for SPSS outputs; use compressed=True/False "
+                "to control SAV bytecode compression.",
                 UserWarning,
                 stacklevel=2,
             )
+        compressed = kwargs.pop("compressed", None)
         value_labels = kwargs.pop("value_labels", None)
         variable_labels = kwargs.pop("variable_labels", None)
         variable_measure = kwargs.pop("variable_measure", None)
@@ -826,9 +834,9 @@ def write_readstat(
         merged_df = _coalesce_metadata_dfs(kwargs_df, base_df)
 
         if merged_df is not None:
-            _write_spss_from_df_rs(df, path, merged_df)
+            _write_spss_from_df_rs(df, path, merged_df, compressed)
         else:
-            _write_spss_rs(df, path, None, None, None, None, None, None)
+            _write_spss_rs(df, path, None, None, None, None, None, None, compressed)
         return
     if fmt in ("xpt", "sas_xpt"):
         if isinstance(metadata, pl.DataFrame):

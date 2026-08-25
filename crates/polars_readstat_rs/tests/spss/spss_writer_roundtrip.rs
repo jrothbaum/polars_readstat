@@ -1,6 +1,7 @@
 use polars::frame::row::Row;
 use polars::prelude::*;
 use polars_readstat_rs::{SpssReader, SpssWriter};
+use std::collections::HashMap;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -32,6 +33,98 @@ fn test_spss_roundtrip_basic() {
     assert_eq!(out.shape(), df.shape());
 
     let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn test_spss_compressed_roundtrip_basic() {
+    let df = DataFrame::new_infer_height(vec![
+        Series::new("id".into(), &[1.0f64, 2.0, 3.0, 4.0]).into_column(),
+        Series::new(
+            "score".into(),
+            &[Some(1.5f64), None, Some(-3.0), Some(42.0)],
+        )
+        .into_column(),
+        Series::new(
+            "name".into(),
+            &[Some("alice"), Some("bob"), None, Some("carol")],
+        )
+        .into_column(),
+    ])
+    .unwrap();
+
+    let path = temp_path("spss_compressed_roundtrip", "sav");
+    SpssWriter::new(&path)
+        .with_compression(true)
+        .write_df(&df)
+        .unwrap();
+
+    let out = SpssReader::open(&path).unwrap().read().finish().unwrap();
+    assert_df_equal(&df, &out).unwrap();
+
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn test_spss_compressed_preserves_declared_width_and_shrinks_file() {
+    // A declared width of 1024 bytes should survive the roundtrip exactly
+    // (this is what issue #55 asks for), while the compressed file stays
+    // far smaller than the declared width would imply if stored raw.
+    let n_rows = 200;
+    let df = DataFrame::new_infer_height(vec![
+        Series::new(
+            "id".into(),
+            &(0..n_rows).map(|i| i as f64).collect::<Vec<_>>(),
+        )
+        .into_column(),
+        Series::new(
+            "comments".into(),
+            &(0..n_rows).map(|_| "short").collect::<Vec<_>>(),
+        )
+        .into_column(),
+    ])
+    .unwrap();
+
+    let mut string_widths = HashMap::new();
+    string_widths.insert("comments".to_string(), 1024usize);
+
+    let compressed_path = temp_path("spss_compressed_wide", "sav");
+    SpssWriter::new(&compressed_path)
+        .with_string_widths(string_widths.clone())
+        .with_compression(true)
+        .write_df(&df)
+        .unwrap();
+
+    let uncompressed_path = temp_path("spss_uncompressed_wide", "sav");
+    SpssWriter::new(&uncompressed_path)
+        .with_string_widths(string_widths)
+        .with_compression(false)
+        .write_df(&df)
+        .unwrap();
+
+    let out = SpssReader::open(&compressed_path)
+        .unwrap()
+        .read()
+        .finish()
+        .unwrap();
+    assert_df_equal(&df, &out).unwrap();
+
+    let metadata = SpssReader::open(&compressed_path).unwrap().metadata().clone();
+    let comments_var = metadata
+        .variables
+        .iter()
+        .find(|v| v.name == "comments")
+        .unwrap();
+    assert_eq!(comments_var.string_len, 1024);
+
+    let compressed_size = fs::metadata(&compressed_path).unwrap().len();
+    let uncompressed_size = fs::metadata(&uncompressed_path).unwrap().len();
+    assert!(
+        compressed_size < uncompressed_size / 2,
+        "compressed size {compressed_size} should be far smaller than uncompressed size {uncompressed_size}"
+    );
+
+    let _ = fs::remove_file(&compressed_path);
+    let _ = fs::remove_file(&uncompressed_path);
 }
 
 fn assert_df_equal(left: &DataFrame, right: &DataFrame) -> PolarsResult<()> {

@@ -102,6 +102,7 @@ pub struct SpssWriter {
     variable_display_widths: Option<SpssVariableDisplayWidths>,
     variable_formats: Option<SpssVariableFormats>,
     string_widths: Option<SpssStringWidths>,
+    compressed: bool,
 }
 
 impl SpssWriter {
@@ -116,7 +117,19 @@ impl SpssWriter {
             variable_display_widths: None,
             variable_formats: None,
             string_widths: None,
+            compressed: false,
         }
+    }
+
+    /// Enable standard SAV "bytecode" compression (compression code 1).
+    ///
+    /// This lets a declared variable width (e.g. A1024) stay in the metadata
+    /// as-is while the stored bytes shrink to whatever the data actually
+    /// needs: unused string padding and system-missing numerics collapse to
+    /// single control bytes instead of being stored raw.
+    pub fn with_compression(mut self, enabled: bool) -> Self {
+        self.compressed = enabled;
+        self
     }
 
     pub fn with_schema(mut self, schema: SpssWriteSchema) -> Self {
@@ -193,19 +206,20 @@ impl SpssWriter {
             &mut writer,
             df.height() as i32,
             columns.iter().map(|c| c.width).sum(),
+            self.compressed,
         )?;
         write_variable_records(&mut writer, &columns, encoding)?;
         if let Some(labels) = value_labels.as_ref() {
             write_value_labels(&mut writer, &columns, labels, encoding)?;
         }
-        write_integer_info_record(&mut writer, encoding)?;
+        write_integer_info_record(&mut writer, encoding, self.compressed)?;
         write_floating_point_info_record(&mut writer)?;
         write_variable_display_record(&mut writer, &columns)?;
         write_long_var_names_record(&mut writer, &columns, encoding)?;
         write_very_long_string_record(&mut writer, &columns)?;
         write_number_of_cases_record(&mut writer, df.height() as u64)?;
         write_dict_termination(&mut writer)?;
-        write_data(&mut writer, df, &columns, encoding)?;
+        write_data(&mut writer, df, &columns, encoding, self.compressed)?;
         Ok(())
     }
 }
@@ -639,13 +653,18 @@ fn choose_encoding(
     Ok(encoding_rs::UTF_8)
 }
 
-fn write_header<W: Write>(writer: &mut W, row_count: i32, nominal_case_size: usize) -> Result<()> {
+fn write_header<W: Write>(
+    writer: &mut W,
+    row_count: i32,
+    nominal_case_size: usize,
+    compressed: bool,
+) -> Result<()> {
     // SAV header layout (176 bytes):
     //   0–3    rec_type "$FL2"
     //   4–63   prod_name (60 bytes, space-padded)
     //   64–67  layout_code = 2
     //   68–71  nominal_case_size
-    //   72–75  compression = 0
+    //   72–75  compression = 0 or 1
     //   76–79  weight_index = 0
     //   80–83  ncases
     //   84–91  bias = 100.0 (f64)
@@ -659,7 +678,8 @@ fn write_header<W: Write>(writer: &mut W, row_count: i32, nominal_case_size: usi
     buf[4..4 + prod.len()].copy_from_slice(prod);
     buf[64..68].copy_from_slice(&2i32.to_le_bytes());
     buf[68..72].copy_from_slice(&(nominal_case_size as i32).to_le_bytes());
-    buf[72..76].copy_from_slice(&0i32.to_le_bytes());
+    let compression_flag = if compressed { 1i32 } else { 0i32 };
+    buf[72..76].copy_from_slice(&compression_flag.to_le_bytes());
     buf[76..80].copy_from_slice(&0i32.to_le_bytes());
     buf[80..84].copy_from_slice(&row_count.to_le_bytes());
     buf[84..92].copy_from_slice(&100.0f64.to_le_bytes());
@@ -974,6 +994,7 @@ fn write_very_long_string_record<W: Write>(writer: &mut W, columns: &[ColumnSpec
 fn write_integer_info_record<W: Write>(
     writer: &mut W,
     encoding: &'static encoding_rs::Encoding,
+    compressed: bool,
 ) -> Result<()> {
     write_u32(writer, SAV_RECORD_HAS_DATA)?;
     write_u32(writer, SUBTYPE_INTEGER_INFO)?;
@@ -986,7 +1007,7 @@ fn write_integer_info_record<W: Write>(
     write_i32(writer, 0)?; // version_revision
     write_i32(writer, -1)?; // machine_code
     write_i32(writer, SAV_FLOATING_POINT_REP_IEEE)?;
-    write_i32(writer, 1)?; // compression_code
+    write_i32(writer, if compressed { 1 } else { 0 })?; // compression_code
     let endianness = if cfg!(target_endian = "little") {
         SAV_ENDIANNESS_LITTLE
     } else {
@@ -1100,6 +1121,7 @@ fn write_data<W: Write>(
     df: &DataFrame,
     columns: &[ColumnSpec],
     encoding: &'static encoding_rs::Encoding,
+    compressed: bool,
 ) -> Result<()> {
     let mut cols: Vec<&Series> = Vec::with_capacity(columns.len());
     let mut str_cols: Vec<Option<&StringChunked>> = Vec::with_capacity(columns.len());
@@ -1127,6 +1149,11 @@ fn write_data<W: Write>(
 
     let record_len = offset;
     let mut row_buf = vec![0u8; record_len];
+    let mut compressor = if compressed {
+        Some(SavRowCompressor::new(SAV_COMPRESSION_BIAS))
+    } else {
+        None
+    };
 
     for row_idx in 0..df.height() {
         for (col_idx, col) in columns.iter().enumerate() {
@@ -1162,9 +1189,113 @@ fn write_data<W: Write>(
                 }
             }
         }
-        writer.write_all(&row_buf)?;
+        match compressor.as_mut() {
+            Some(compressor) => compressor.write_row(writer, &row_buf)?,
+            None => writer.write_all(&row_buf)?,
+        }
+    }
+    if let Some(compressor) = compressor {
+        compressor.finish(writer)?;
     }
     Ok(())
+}
+
+/// Bias used for SAV "bytecode" compression (compression code 1). SPSS
+/// itself always uses 100.0, and the reader's decompressor assumes the same
+/// value comes from the file header's bias field, which `write_header`
+/// writes as 100.0 unconditionally.
+const SAV_COMPRESSION_BIAS: f64 = 100.0;
+
+/// Encodes rows into SPSS's standard "bytecode" run-length compression
+/// (compression code 1), the inverse of the `SavRowDecompressor` used when
+/// reading. Each 8-byte segment of a row is represented by a single control
+/// byte when it's all-spaces, system-missing, or a small integer near the
+/// bias; anything else falls back to a raw 8-byte literal. State (the
+/// pending control-byte chunk) persists across row boundaries, matching how
+/// the format is actually laid out on disk.
+struct SavRowCompressor {
+    bias: f64,
+    missing_bytes: [u8; 8],
+    codes: [u8; 8],
+    code_count: usize,
+    literals: Vec<u8>,
+}
+
+impl SavRowCompressor {
+    fn new(bias: f64) -> Self {
+        Self {
+            bias,
+            missing_bytes: SAV_MISSING_DOUBLE.to_le_bytes(),
+            codes: [0u8; 8],
+            code_count: 0,
+            literals: Vec::new(),
+        }
+    }
+
+    fn write_row<W: Write>(&mut self, writer: &mut W, row: &[u8]) -> Result<()> {
+        for seg in row.chunks_exact(8) {
+            self.push_segment(writer, seg)?;
+        }
+        Ok(())
+    }
+
+    fn finish<W: Write>(mut self, writer: &mut W) -> Result<()> {
+        if self.code_count == 8 {
+            self.flush_chunk(writer)?;
+        }
+        self.codes[self.code_count] = 252;
+        self.code_count += 1;
+        self.flush_chunk(writer)?;
+        Ok(())
+    }
+
+    fn push_segment<W: Write>(&mut self, writer: &mut W, seg: &[u8]) -> Result<()> {
+        let code = self.encode_segment(seg);
+        self.codes[self.code_count] = code;
+        self.code_count += 1;
+        if code == 253 {
+            self.literals.extend_from_slice(seg);
+        }
+        if self.code_count == 8 {
+            self.flush_chunk(writer)?;
+        }
+        Ok(())
+    }
+
+    fn encode_segment(&self, seg: &[u8]) -> u8 {
+        if seg == self.missing_bytes {
+            return 255;
+        }
+        if seg.iter().all(|&b| b == b' ') {
+            return 254;
+        }
+        let mut arr = [0u8; 8];
+        arr.copy_from_slice(seg);
+        let value = f64::from_le_bytes(arr);
+        if value.is_finite() {
+            let target = value + self.bias;
+            let rounded = target.round();
+            if (1.0..=251.0).contains(&rounded) && rounded == target {
+                let candidate = rounded as u8;
+                if (candidate as f64 - self.bias).to_le_bytes() == arr {
+                    return candidate;
+                }
+            }
+        }
+        253
+    }
+
+    fn flush_chunk<W: Write>(&mut self, writer: &mut W) -> Result<()> {
+        if self.code_count == 0 {
+            return Ok(());
+        }
+        writer.write_all(&self.codes)?;
+        writer.write_all(&self.literals)?;
+        self.codes = [0u8; 8];
+        self.code_count = 0;
+        self.literals.clear();
+        Ok(())
+    }
 }
 
 #[cfg(test)]
