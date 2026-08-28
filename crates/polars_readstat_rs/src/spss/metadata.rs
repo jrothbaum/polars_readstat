@@ -354,9 +354,7 @@ fn read_variable_record<R: Read + Seek>(
         reader.read_exact(&mut label_buf)?;
         let raw = &label_buf[..len.min(label_buf.len())];
         let text = encoding.decode_without_bom_handling(raw).0.trim().to_string();
-        if !text.is_empty() {
-            label = Some(text);
-        }
+        label = Some(text);
     }
 
     let mut missing_range = false;
@@ -563,9 +561,6 @@ fn read_value_label_record<R: Read + Seek>(
     let mut code_labels = Vec::with_capacity(entry_count);
 
     for (raw, label) in raw_values.into_iter().zip(labels.into_iter()) {
-        if label.is_empty() {
-            continue;
-        }
         if is_string {
             let s = decode_string(&raw, header.endian, encoding);
             codes.push(s.clone());
@@ -777,11 +772,9 @@ fn parse_long_string_value_labels(
             }
             let label = decode_string(&data[pos..pos + label_len], header.endian, encoding);
             pos += label_len;
-            if !label.is_empty() {
-                codes.push(value.clone());
-                code_labels.push(label.clone());
-                mapping.push((crate::spss::types::ValueLabelKey::Str(value), label));
-            }
+            codes.push(value.clone());
+            code_labels.push(label.clone());
+            mapping.push((crate::spss::types::ValueLabelKey::Str(value), label));
         }
         let name = format!("labels{}", *label_set_index);
         *label_set_index += 1;

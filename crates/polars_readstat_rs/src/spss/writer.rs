@@ -1436,7 +1436,7 @@ mod tests {
         let label_col = metadata.metadata_df.column("label").ok();
         let label_ca = label_col.as_ref().and_then(|c| c.str().ok());
         for (i, var) in metadata.variables.iter().enumerate() {
-            if let Some(label) = label_ca.and_then(|ca| ca.get(i)).filter(|s| !s.is_empty()) {
+            if let Some(label) = label_ca.and_then(|ca| ca.get(i)) {
                 variable_labels.insert(var.name.clone(), label.to_string());
             }
             let Some(label_name) = var.value_label.as_ref() else {

@@ -333,23 +333,11 @@ fn push_value_ref(buffer: &mut ColumnBuffer, column: &SasColumn, value: &Value) 
 }
 
 fn to_date(value: Option<f64>) -> Option<i32> {
-    value.map(|sas_value| {
-        let days_since_1970 = (sas_value as i32) - SAS_EPOCH_OFFSET_DAYS;
-        if days_since_1970 >= -135080 && days_since_1970 <= 156935 {
-            days_since_1970
-        } else {
-            (sas_value / SECONDS_PER_DAY as f64) as i32 - SAS_EPOCH_OFFSET_DAYS
-        }
-    })
+    value.map(to_date_value)
 }
 
 pub(crate) fn to_date_value(sas_value: f64) -> i32 {
-    let days_since_1970 = (sas_value as i32) - SAS_EPOCH_OFFSET_DAYS;
-    if days_since_1970 >= -135080 && days_since_1970 <= 156935 {
-        days_since_1970
-    } else {
-        (sas_value / SECONDS_PER_DAY as f64) as i32 - SAS_EPOCH_OFFSET_DAYS
-    }
+    sas_value.round() as i32 - SAS_EPOCH_OFFSET_DAYS
 }
 
 fn to_datetime(value: Option<f64>) -> Option<i64> {
@@ -1854,8 +1842,28 @@ pub fn scan_sas7bdat(
 
 #[cfg(test)]
 mod tests {
-    use super::sas_batch_iter;
+    use super::{sas_batch_iter, to_date_value};
+    use crate::constants::SAS_EPOCH_OFFSET_DAYS;
     use std::path::PathBuf;
+
+    #[test]
+    fn to_date_value_handles_dates_past_the_old_heuristic_threshold() {
+        // SAS epoch is 1960-01-01; the old heuristic treated any days-since-epoch
+        // value above 156935 (~2399-09-05) as a seconds-based timestamp and divided
+        // it by 86,400, collapsing far-future dates back toward 1960-01-01.
+        let sas_days = 156936.0; // one day past the old threshold
+        assert_eq!(to_date_value(sas_days), 156936 - SAS_EPOCH_OFFSET_DAYS);
+
+        let sas_days_far = 200_000.0;
+        assert_eq!(to_date_value(sas_days_far), 200_000 - SAS_EPOCH_OFFSET_DAYS);
+    }
+
+    #[test]
+    fn to_date_value_rounds_instead_of_truncating() {
+        // Values should round to the nearest day rather than truncate toward zero.
+        assert_eq!(to_date_value(100.6), 101 - SAS_EPOCH_OFFSET_DAYS);
+        assert_eq!(to_date_value(-100.6), -101 - SAS_EPOCH_OFFSET_DAYS);
+    }
 
     fn small_sas_path() -> PathBuf {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

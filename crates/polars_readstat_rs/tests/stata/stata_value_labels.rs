@@ -88,3 +88,40 @@ fn test_stata_value_labels_roundtrip() {
 
     let _ = fs::remove_file(&path);
 }
+
+#[test]
+fn test_stata_value_label_with_empty_label_text_is_preserved() {
+    let df = DataFrame::new_infer_height(vec![
+        Series::new("status".into(), &[0i32, 1]).into_column()
+    ])
+    .unwrap();
+
+    let mut mapping: ValueLabelMap = BTreeMap::new();
+    mapping.insert(0, "NO TO:".to_string());
+    mapping.insert(1, String::new());
+
+    let mut labels: ValueLabels = HashMap::new();
+    labels.insert("status".to_string(), mapping);
+
+    let path = temp_path("stata_empty_label", "dta");
+    StataWriter::new(&path)
+        .with_value_labels(labels)
+        .write_df(&df)
+        .unwrap();
+
+    let reader = StataReader::open(&path).unwrap();
+    let meta = reader.metadata();
+    let label = meta
+        .value_labels
+        .iter()
+        .find(|v| v.name == "status")
+        .expect("value label group should be present");
+
+    let has_empty_entry = label
+        .mapping
+        .iter()
+        .any(|(_, text)| text.is_empty());
+    assert!(has_empty_entry, "code with empty label text should be preserved, not dropped");
+
+    let _ = fs::remove_file(&path);
+}

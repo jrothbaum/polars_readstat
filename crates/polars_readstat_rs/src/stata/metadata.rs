@@ -560,9 +560,7 @@ fn read_value_labels<R: Read + Seek>(
                 let start = 8 * i;
                 let end = start + 8;
                 let label = read_string(&table[start..end], metadata.encoding);
-                if !label.is_empty() {
-                    mapping.push((ValueLabelKey::Integer(i as i32), label));
-                }
+                mapping.push((ValueLabelKey::Integer(i as i32), label));
             }
             labels.push(ValueLabel {
                 name: labname,
@@ -599,9 +597,6 @@ fn read_value_labels<R: Read + Seek>(
                     continue;
                 }
                 let label = read_string(&txt[offset..], metadata.encoding);
-                if label.is_empty() {
-                    continue;
-                }
                 let val_bytes = &vals[i * 4..i * 4 + 4];
                 if let Some(v) = crate::stata::value::read_i32(val_bytes, header.endian, rules) {
                     mapping.push((ValueLabelKey::Integer(v), label.clone()));
