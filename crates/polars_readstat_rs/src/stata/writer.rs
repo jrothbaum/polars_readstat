@@ -1,10 +1,10 @@
+use crate::destination::WriteTarget;
 use crate::stata::compress::{compress_df, CompressOptions};
 use crate::stata::error::{Error, Result};
 use polars::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::File;
-use std::io::{BufWriter, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::io::{Seek, SeekFrom, Write};
+use std::path::Path;
 
 const DTA_VERSION_COMPAT: u16 = 118;
 const DTA_VERSION_WIDE: u16 = 119;
@@ -152,7 +152,7 @@ fn pandas_rename_schema(schema: &StataWriteSchema) -> StataWriteSchema {
 }
 
 pub struct StataWriter {
-    path: PathBuf,
+    destination: WriteTarget,
     schema: Option<StataWriteSchema>,
     compress: Option<CompressOptions>,
     value_labels: Option<ValueLabels>,
@@ -163,11 +163,15 @@ pub struct StataWriter {
 
 impl StataWriter {
     pub fn new(path: impl AsRef<Path>) -> Self {
+        Self::with_destination(WriteTarget::local(path))
+    }
+
+    pub fn with_destination(destination: WriteTarget) -> Self {
         let n_threads = std::thread::available_parallelism()
             .map(|n| n.get().min(4))
             .unwrap_or(4);
         Self {
-            path: path.as_ref().to_path_buf(),
+            destination,
             schema: None,
             compress: None,
             value_labels: None,
@@ -256,9 +260,9 @@ impl StataWriter {
             variable_labels.as_ref(),
             variable_formats.as_ref(),
         )?;
-        let file = File::create(&self.path)?;
-        let writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
-        write_dta(writer, &prepared, Some(&df), self.n_threads)?;
+        let mut writer = self.destination.create_writer()?;
+        write_dta(&mut writer, &prepared, Some(&df), self.n_threads)?;
+        writer.finish()?;
         Ok(())
     }
 
@@ -303,8 +307,7 @@ impl StataWriter {
                 "batch writing with strL is not supported without a pre-pass".to_string(),
             ));
         }
-        let file = File::create(&self.path)?;
-        let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
+        let mut writer = self.destination.create_writer()?;
         write_dta_header_and_map(&mut writer, &prepared)?;
         write_dta_descriptors(&mut writer, &prepared)?;
         write_dta_variable_labels(&mut writer, &prepared)?;
@@ -313,6 +316,7 @@ impl StataWriter {
         write_dta_strls(&mut writer, &prepared)?;
         write_dta_value_labels(&mut writer, &prepared)?;
         write_dta_footer(&mut writer)?;
+        writer.finish()?;
         Ok(())
     }
 
@@ -353,20 +357,67 @@ impl StataWriter {
             ));
         }
 
-        let file = File::create(&self.path)?;
-        let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
-        let patch_offsets = write_dta_header_with_placeholders(&mut writer, &prepared)?;
-        write_dta_descriptors(&mut writer, &prepared)?;
-        write_dta_variable_labels(&mut writer, &prepared)?;
-        write_dta_characteristics(&mut writer)?;
-        let rows_written = write_dta_data_batches(&mut writer, &prepared, batches)?;
-        write_dta_strls(&mut writer, &prepared)?;
-        write_dta_value_labels(&mut writer, &prepared)?;
-        write_dta_footer(&mut writer)?;
-        patch_header_and_map(&mut writer, &prepared, rows_written, patch_offsets)?;
-        writer.flush()?;
-        Ok(())
+        // Unlike `write_df`/`write_batches`, the final row count isn't known
+        // until streaming finishes, so the header/map are written as
+        // placeholders and patched in afterward via `Seek` — something a
+        // cloud multipart upload can't do (there's no going back to an
+        // already-uploaded part). For a cloud destination, write to a local
+        // temp file (which does support `Seek`) as normal, then stream that
+        // temp file up to the destination afterward and remove it.
+        let (working_path, temp_for_cloud) = match &self.destination {
+            WriteTarget::Local(path) => (path.clone(), false),
+            #[cfg(feature = "cloud")]
+            WriteTarget::Cloud(_) => {
+                eprintln!(
+                    "polars_readstat: streaming Stata write (sink_stata) to a cloud destination \
+                     can't patch its header in place mid-upload, so it's being buffered through a \
+                     local temp file and uploaded once writing finishes."
+                );
+                (temp_file_path("polars_readstat_stata_stream", "dta"), true)
+            }
+        };
+
+        let result = (|| -> Result<()> {
+            let file = std::fs::File::create(&working_path)?;
+            let mut writer = std::io::BufWriter::with_capacity(8 * 1024 * 1024, file);
+            let patch_offsets = write_dta_header_with_placeholders(&mut writer, &prepared)?;
+            write_dta_descriptors(&mut writer, &prepared)?;
+            write_dta_variable_labels(&mut writer, &prepared)?;
+            write_dta_characteristics(&mut writer)?;
+            let rows_written = write_dta_data_batches(&mut writer, &prepared, batches)?;
+            write_dta_strls(&mut writer, &prepared)?;
+            write_dta_value_labels(&mut writer, &prepared)?;
+            write_dta_footer(&mut writer)?;
+            patch_header_and_map(&mut writer, &prepared, rows_written, patch_offsets)?;
+            writer.flush()?;
+            drop(writer);
+
+            #[cfg(feature = "cloud")]
+            if temp_for_cloud {
+                if let WriteTarget::Cloud(target) = &self.destination {
+                    target.upload_file(&working_path)?;
+                }
+            }
+            Ok(())
+        })();
+
+        if temp_for_cloud {
+            let _ = std::fs::remove_file(&working_path);
+        }
+        result
     }
+}
+
+#[cfg(feature = "cloud")]
+fn temp_file_path(prefix: &str, ext: &str) -> std::path::PathBuf {
+    let mut path = std::env::temp_dir();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+    path.push(format!("{prefix}_{pid}_{nanos}.{ext}"));
+    path
 }
 
 #[derive(Debug, Clone)]

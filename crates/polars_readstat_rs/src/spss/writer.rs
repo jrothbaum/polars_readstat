@@ -1,11 +1,11 @@
+use crate::destination::WriteTarget;
 use crate::spss::error::{Error, Result};
 use crate::spss::types::{Alignment, Measure, VarType};
 use polars::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::path::Path;
 
 const SAV_HEADER_LEN: usize = 176;
 const SAV_RECORD_VARIABLE: u32 = 2;
@@ -93,7 +93,7 @@ pub struct SpssWriteColumn {
 pub type SpssStringWidths = HashMap<String, usize>;
 
 pub struct SpssWriter {
-    path: PathBuf,
+    destination: WriteTarget,
     schema: Option<SpssWriteSchema>,
     value_labels: Option<SpssValueLabels>,
     variable_labels: Option<SpssVariableLabels>,
@@ -107,8 +107,12 @@ pub struct SpssWriter {
 
 impl SpssWriter {
     pub fn new(path: impl AsRef<Path>) -> Self {
+        Self::with_destination(WriteTarget::local(path))
+    }
+
+    pub fn with_destination(destination: WriteTarget) -> Self {
         Self {
-            path: path.as_ref().to_path_buf(),
+            destination,
             schema: None,
             value_labels: None,
             variable_labels: None,
@@ -199,8 +203,7 @@ impl SpssWriter {
             variable_labels.as_ref(),
         )?;
 
-        let file = File::create(&self.path)?;
-        let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
+        let mut writer = self.destination.create_writer()?;
 
         write_header(
             &mut writer,
@@ -220,6 +223,7 @@ impl SpssWriter {
         write_number_of_cases_record(&mut writer, df.height() as u64)?;
         write_dict_termination(&mut writer)?;
         write_data(&mut writer, df, &columns, encoding, self.compressed)?;
+        writer.finish()?;
         Ok(())
     }
 }

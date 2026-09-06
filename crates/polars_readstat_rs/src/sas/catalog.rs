@@ -1,11 +1,11 @@
 use std::collections::HashMap;
-use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::sas::constants::MAGIC_NUMBER;
 use crate::sas::encoding;
 use crate::sas::error::{Error, Result};
+use crate::source::{LocalFileSource, ReadSource};
 
 pub const CATALOG_MAGIC_NUMBER: &[u8; 32] = &[
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -338,7 +338,13 @@ fn parse_block(data: &[u8], ctx: &Ctx) -> Option<(String, Vec<(CatalogKey, Strin
 /// Numeric codes have the SAS negation already reversed (`code * -1`).
 /// SAS missing-value tags are silently skipped.
 pub fn read_sas7bcat(path: &Path) -> Result<CatalogMap> {
-    let file = File::open(path)?;
+    read_sas7bcat_from_source(&LocalFileSource::new(path))
+}
+
+/// Read a `.sas7bcat` catalog from any [`ReadSource`], e.g. an in-memory
+/// buffer or a caller-supplied remote-object backend.
+pub fn read_sas7bcat_from_source(source: &dyn ReadSource) -> Result<CatalogMap> {
+    let file = source.open_reader()?;
     let mut reader = BufReader::new(file);
 
     // Read enough of the header to detect format/endian/encoding

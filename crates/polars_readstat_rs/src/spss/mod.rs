@@ -11,7 +11,11 @@ pub mod writer;
 
 pub use error::{Error, Result};
 pub use polars_output::scan_sav;
-pub use por::{metadata_json_por, metadata_por, read_por, scan_por, write_por, PorMetadata, PorVariable, PorWriteOptions};
+pub use por::{
+    metadata_json_por, metadata_json_por_from_source, metadata_por, metadata_por_from_source,
+    read_por, read_por_from_source, scan_por, schema_from_por_metadata, write_por,
+    write_por_to_destination, PorMetadata, PorVariable, PorWriteOptions,
+};
 pub use reader::SpssReader;
 pub use types::{Alignment, Endian, Header, Measure, Metadata, VarType};
 pub use writer::{

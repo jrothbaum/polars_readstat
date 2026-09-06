@@ -52,6 +52,15 @@ pub type SasVariableLabels = HashMap<String, String>;
 ///
 /// Column names are sanitized to SAS rules (alphanumeric + underscore, starts with
 /// a letter, max 32 chars). Duplicates are disambiguated with a numeric suffix.
+///
+/// Local paths only, unlike the other writers in this crate: the generated
+/// script's `infile` statement embeds a plain filesystem path for SAS's DATA
+/// step to open directly, and SAS has no native `s3://`/`gs://`/`az://`
+/// support. A presigned HTTPS URL (`object_store::signer::Signer`, which
+/// AWS/GCS/Azure all implement) would work with SAS's `FILENAME ... URL`
+/// access method, but that trades this script's "run it anytime" contract
+/// for one that expires and needs outbound internet access — deliberately
+/// not implemented.
 pub struct SasWriter {
     base_path: PathBuf,
     dataset_name: Option<String>,

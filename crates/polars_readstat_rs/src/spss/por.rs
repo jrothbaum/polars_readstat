@@ -1,8 +1,10 @@
+use crate::destination::WriteTarget;
+use crate::source::{LocalFileSource, ReadSource};
 use crate::spss::error::{Error, Result};
 use crate::spss::types::FormatClass;
 use polars::prelude::*;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -305,8 +307,12 @@ fn format_class_from_por_type(code: u32) -> Option<FormatClass> {
 // ─── Reader: parse metadata + data ───────────────────────────────────────────
 
 pub fn read_por<P: AsRef<Path>>(path: P) -> Result<(PorMetadata, DataFrame)> {
-    let path = path.as_ref();
-    let file = File::open(path)?;
+    read_por_from_source(&LocalFileSource::new(path))
+}
+
+/// Same as [`read_por`] but backed by any [`ReadSource`].
+pub fn read_por_from_source(source: &dyn ReadSource) -> Result<(PorMetadata, DataFrame)> {
+    let file = source.open_reader()?;
     let reader = BufReader::with_capacity(1 << 20, file);
     let mut stream = PorStream::new(reader);
 
@@ -641,23 +647,31 @@ impl AnonymousScan for PorScan {
         let mut stream = PorStream::new(reader);
         let meta = read_por_metadata_only(&mut stream)
             .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
-
-        let mut schema = Schema::with_capacity(meta.variables.len());
-        for v in &meta.variables {
-            let dtype = if v.is_string() {
-                DataType::String
-            } else {
-                match v.format_class {
-                    Some(FormatClass::Date) => DataType::Date,
-                    Some(FormatClass::DateTime) => DataType::Datetime(TimeUnit::Milliseconds, None),
-                    Some(FormatClass::Time) => DataType::Time,
-                    None => DataType::Float64,
-                }
-            };
-            schema.with_column(v.name.as_str().into(), dtype);
-        }
-        Ok(Arc::new(schema))
+        Ok(Arc::new(schema_from_por_metadata(&meta)))
     }
+}
+
+/// Build the output `Schema` for an SPSS .por file directly from its
+/// metadata — no data is read, so this is correct even for a zero-row file.
+/// Shared by [`PorScan::schema`] (lazy, path-based) and callers that only
+/// have already-loaded [`PorMetadata`] (e.g. a bytes-backed read, which has
+/// no lazy-scan equivalent).
+pub fn schema_from_por_metadata(meta: &PorMetadata) -> Schema {
+    let mut schema = Schema::with_capacity(meta.variables.len());
+    for v in &meta.variables {
+        let dtype = if v.is_string() {
+            DataType::String
+        } else {
+            match v.format_class {
+                Some(FormatClass::Date) => DataType::Date,
+                Some(FormatClass::DateTime) => DataType::Datetime(TimeUnit::Milliseconds, None),
+                Some(FormatClass::Time) => DataType::Time,
+                None => DataType::Float64,
+            }
+        };
+        schema.with_column(v.name.as_str().into(), dtype);
+    }
+    schema
 }
 
 fn read_por_metadata_only<R: Read>(stream: &mut PorStream<R>) -> Result<PorMetadata> {
@@ -782,8 +796,13 @@ fn df_col_str<'a>(df: &'a polars::prelude::DataFrame, col: &str, row: usize) -> 
 // ─── Metadata JSON ────────────────────────────────────────────────────────────
 
 pub fn metadata_json_por<P: AsRef<Path>>(path: P) -> Result<String> {
+    metadata_json_por_from_source(&LocalFileSource::new(path))
+}
+
+/// Same as [`metadata_json_por`] but backed by any [`ReadSource`].
+pub fn metadata_json_por_from_source(source: &dyn ReadSource) -> Result<String> {
     use serde_json::{json, Map, Value};
-    let file = File::open(path.as_ref())?;
+    let file = source.open_reader()?;
     let reader = BufReader::with_capacity(1 << 16, file);
     let mut stream = PorStream::new(reader);
     let meta = read_por_metadata_only(&mut stream)?;
@@ -809,7 +828,12 @@ pub fn metadata_json_por<P: AsRef<Path>>(path: P) -> Result<String> {
 }
 
 pub fn metadata_por<P: AsRef<Path>>(path: P) -> Result<PorMetadata> {
-    let file = File::open(path.as_ref())?;
+    metadata_por_from_source(&LocalFileSource::new(path))
+}
+
+/// Same as [`metadata_por`] but backed by any [`ReadSource`].
+pub fn metadata_por_from_source(source: &dyn ReadSource) -> Result<PorMetadata> {
+    let file = source.open_reader()?;
     let reader = BufReader::with_capacity(1 << 16, file);
     let mut stream = PorStream::new(reader);
     read_por_metadata_only(&mut stream)
@@ -824,6 +848,10 @@ struct PorLineWriter<W: Write> {
 
 impl<W: Write> PorLineWriter<W> {
     fn new(inner: W) -> Self { Self { inner, pos: 0 } }
+
+    fn into_inner(self) -> W {
+        self.inner
+    }
 
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.inner.write_all(&[b])?;
@@ -968,8 +996,15 @@ pub fn write_por<P: AsRef<Path>>(
     path: P,
     opts: PorWriteOptions,
 ) -> Result<()> {
-    let file = File::create(path.as_ref())?;
-    let writer = BufWriter::with_capacity(1 << 20, file);
+    write_por_to_destination(df, WriteTarget::local(path), opts)
+}
+
+pub fn write_por_to_destination(
+    df: &DataFrame,
+    destination: WriteTarget,
+    opts: PorWriteOptions,
+) -> Result<()> {
+    let writer = destination.create_writer()?;
     let mut w = PorLineWriter::new(writer);
 
     let file_label = opts.file_label.as_deref().unwrap_or("").to_string();
@@ -1152,5 +1187,6 @@ pub fn write_por<P: AsRef<Path>>(
     w.write_byte(b'Z')?;
     w.finish_line()?;
 
+    w.into_inner().finish()?;
     Ok(())
 }

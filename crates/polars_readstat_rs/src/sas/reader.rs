@@ -1,19 +1,19 @@
 use crate::data::{DataReader, DataSubheader};
 use crate::error::Result;
 use crate::header::{check_header, read_header};
-use crate::metadata::read_metadata_from_path;
+use crate::metadata::read_metadata_from_source;
 use crate::page::PageReader;
+use crate::source::{InMemorySource, LocalFileSource, ReadSeek, ReadSource};
 use crate::types::{Compression, Endian, Format, Header, Metadata};
 use polars::prelude::*;
-use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 /// Main reader for SAS7BDAT files
 pub struct Sas7bdatReader {
-    path: PathBuf,
+    source: Arc<dyn ReadSource>,
     header: Header,
     metadata: Metadata,
     endian: Endian,
@@ -43,18 +43,30 @@ pub struct ReadProfile {
 }
 
 impl Sas7bdatReader {
+    /// Open a SAS7BDAT file from a local path.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        let mut file = File::open(&path)?;
+        Self::open_source(Arc::new(LocalFileSource::new(path)))
+    }
+
+    /// Open a SAS7BDAT file already held in memory (e.g. downloaded from S3
+    /// or otherwise fetched by the caller).
+    pub fn open_bytes(bytes: impl Into<Arc<[u8]>>) -> Result<Self> {
+        Self::open_source(Arc::new(InMemorySource::new(bytes)))
+    }
+
+    /// Open a SAS7BDAT file from any [`ReadSource`], e.g. a caller-supplied
+    /// remote-object backend.
+    pub fn open_source(source: Arc<dyn ReadSource>) -> Result<Self> {
+        let mut file = source.open_reader()?;
 
         let (endian, format) = check_header(&mut file)?;
         let header = read_header(&mut file, endian, format)?;
 
         let (metadata, initial_data_subheaders, first_data_page, mix_data_rows) =
-            read_metadata_from_path(&path, &header, endian, format)?;
+            read_metadata_from_source(source.as_ref(), &header, endian, format)?;
 
         Ok(Self {
-            path,
+            source,
             header,
             metadata,
             endian,
@@ -66,8 +78,8 @@ impl Sas7bdatReader {
     }
 
     pub fn open_with_profile(path: impl AsRef<Path>) -> Result<(Self, OpenProfile)> {
-        let path = path.as_ref().to_path_buf();
-        let mut file = File::open(&path)?;
+        let source: Arc<dyn ReadSource> = Arc::new(LocalFileSource::new(path));
+        let mut file = source.open_reader()?;
 
         let header_start = Instant::now();
         let (endian, format) = check_header(&mut file)?;
@@ -76,12 +88,12 @@ impl Sas7bdatReader {
 
         let metadata_start = Instant::now();
         let (metadata, initial_data_subheaders, first_data_page, mix_data_rows) =
-            read_metadata_from_path(&path, &header, endian, format)?;
+            read_metadata_from_source(source.as_ref(), &header, endian, format)?;
         let metadata_ms = metadata_start.elapsed().as_secs_f64() * 1000.0;
 
         Ok((
             Self {
-                path,
+                source,
                 header,
                 metadata,
                 endian,
@@ -95,6 +107,12 @@ impl Sas7bdatReader {
                 metadata_ms,
             },
         ))
+    }
+
+    /// The underlying source backing this reader. Used internally to hand
+    /// each parallel worker its own independent handle.
+    pub(crate) fn source(&self) -> Arc<dyn ReadSource> {
+        self.source.clone()
     }
 
     /// Entry point for reading. Returns a builder to configure the operation.
@@ -139,7 +157,7 @@ impl Sas7bdatReader {
         };
         let mut iter = crate::sas::polars_output::sas_batch_iter_with_reader(
             self,
-            self.path.clone(),
+            self.source(),
             threads,
             missing_null,
             opts.chunk_size,
@@ -280,7 +298,7 @@ impl<'a> ReadBuilder<'a> {
 /// `row_start` initialises the current_row counter (for row-index tracking only; does not
 /// affect when reading stops).
 pub(crate) fn data_reader_at_page_range(
-    path: &Path,
+    source: &dyn ReadSource,
     header: &Header,
     metadata: &Metadata,
     endian: Endian,
@@ -288,9 +306,9 @@ pub(crate) fn data_reader_at_page_range(
     page_number: usize,
     page_count: usize,
     row_start: usize,
-) -> Result<DataReader<BufReader<File>>> {
+) -> Result<DataReader<BufReader<Box<dyn ReadSeek>>>> {
     let byte_offset = header.header_length as u64 + page_number as u64 * header.page_length as u64;
-    let mut file = BufReader::new(File::open(path)?);
+    let mut file = BufReader::new(source.open_reader()?);
     file.seek(SeekFrom::Start(byte_offset))?;
     let page_reader = PageReader::new(file, header.clone(), endian, format);
     let mut data_reader =

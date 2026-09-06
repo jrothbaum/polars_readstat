@@ -4,15 +4,28 @@
 //! It supports all format variants (32/64-bit, big/little endian) and
 //! all compression types (None, RLE, RDC).
 
+#[cfg(feature = "cloud")]
+pub mod cloud_destination;
+#[cfg(feature = "cloud")]
+pub mod cloud_source;
+pub mod destination;
 pub mod metadata_df;
 mod readstat_stream;
 pub mod sas;
 pub(crate) mod scan_prefetch;
+pub mod source;
 pub mod spss;
 pub mod stata;
 pub(crate) mod text_utils;
 
-pub use sas::catalog::{read_sas7bcat, CatalogKey, CatalogMap};
+pub use source::{InMemorySource, LocalFileSource, ReadSeek, ReadSource};
+#[cfg(feature = "cloud")]
+pub use cloud_source::ObjectStoreSource;
+pub use destination::{DestinationWriter, WriteTarget};
+#[cfg(feature = "cloud")]
+pub use cloud_destination::CloudWriteTarget;
+
+pub use sas::catalog::{read_sas7bcat, read_sas7bcat_from_source, CatalogKey, CatalogMap};
 pub use sas::arrow_output as sas_arrow_output;
 pub(crate) use sas::buffer;
 pub(crate) use sas::constants;
@@ -38,9 +51,11 @@ pub use sas::{Compression, Endian, Format, Platform, Header as SasHeader, Metada
 pub use sas::{Error, Result, Sas7bdatReader};
 pub use sas::metadata_json_from_meta as sas_metadata_json_from_meta;
 pub use sas::{SasValueLabelKey, SasValueLabelMap, SasValueLabels, SasVariableLabels, SasWriter};
-pub use sas::{read_xpt_metadata, XptMetadata, XptVariableFormats, XptVariableLabels, XptStorageWidths, XptWriter};
+pub use sas::{read_xpt_metadata, read_xpt_metadata_from_source, schema_from_xpt_metadata, XptMetadata, XptVariableFormats, XptVariableLabels, XptStorageWidths, XptWriter};
 
-pub use readstat_stream::{readstat_batch_iter, ReadstatBatchIter, ReadstatBatchStream};
+pub use readstat_stream::{
+    readstat_batch_iter, readstat_batch_iter_from_source, ReadstatBatchIter, ReadstatBatchStream,
+};
 
 #[cfg(feature = "row_reader")]
 pub use sas::row_reader::{sas_row_readers, SasColumnInfo, SasColumnKind, SasRowReader};
@@ -57,7 +72,9 @@ pub use spss::{
     SpssVariableLabels, SpssVariableMeasures, SpssWriteColumn, SpssWriteSchema, SpssWriter,
 };
 pub use spss::{
-    metadata_json_por, metadata_por, read_por, scan_por, write_por, PorMetadata, PorVariable, PorWriteOptions,
+    metadata_json_por, metadata_json_por_from_source, metadata_por, metadata_por_from_source,
+    read_por, read_por_from_source, scan_por, schema_from_por_metadata, write_por,
+    write_por_to_destination, PorMetadata, PorVariable, PorWriteOptions,
 };
 pub use stata::{
     compress_df, pandas_make_stata_column_names, pandas_prepare_df_for_stata, pandas_rename_df,

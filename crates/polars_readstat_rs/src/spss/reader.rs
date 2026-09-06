@@ -1,31 +1,49 @@
+use crate::source::{InMemorySource, LocalFileSource, ReadSource};
 use crate::spss::error::{Error, Result};
 use crate::spss::header::read_header;
 use crate::spss::metadata::read_metadata;
 use crate::spss::types::{Header, Metadata};
 use polars::prelude::*;
-use std::fs::File;
 use std::io::BufReader;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 pub struct SpssReader {
-    path: PathBuf,
+    source: Arc<dyn ReadSource>,
     header: Header,
     metadata: Metadata,
 }
 
 impl SpssReader {
+    /// Open an SPSS .sav/.zsav file from a local path.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        let file = File::open(&path)?;
+        Self::open_source(Arc::new(LocalFileSource::new(path)))
+    }
+
+    /// Open an SPSS .sav/.zsav file already held in memory (e.g. downloaded
+    /// from S3 or otherwise fetched by the caller).
+    pub fn open_bytes(bytes: impl Into<Arc<[u8]>>) -> Result<Self> {
+        Self::open_source(Arc::new(InMemorySource::new(bytes)))
+    }
+
+    /// Open an SPSS .sav/.zsav file from any [`ReadSource`], e.g. a
+    /// caller-supplied remote-object backend.
+    pub fn open_source(source: Arc<dyn ReadSource>) -> Result<Self> {
+        let file = source.open_reader()?;
         let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
         let header = read_header(&mut reader)?;
         let metadata = read_metadata(&mut reader, &header)?;
         Ok(Self {
-            path,
+            source,
             header,
             metadata,
         })
+    }
+
+    /// The underlying source backing this reader. Used internally to hand
+    /// each parallel worker its own independent handle.
+    pub(crate) fn source(&self) -> Arc<dyn ReadSource> {
+        self.source.clone()
     }
 
     pub fn metadata(&self) -> &Metadata {
@@ -138,7 +156,7 @@ impl<'a> ReadBuilder<'a> {
         };
         let mut iter = crate::spss::polars_output::spss_batch_iter_with_reader(
             &self.reader,
-            self.reader.path.clone(),
+            self.reader.source(),
             threads,
             self.missing_string_as_null,
             self.value_labels_as_strings,
@@ -172,7 +190,7 @@ impl<'a> ReadBuilder<'a> {
         };
         let mut iter = crate::spss::polars_output::spss_batch_iter_with_reader(
             &self.reader,
-            self.reader.path.clone(),
+            self.reader.source(),
             threads,
             self.missing_string_as_null,
             self.value_labels_as_strings,

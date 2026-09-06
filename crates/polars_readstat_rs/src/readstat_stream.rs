@@ -1,10 +1,12 @@
 use crate::compress_df_if_enabled;
 use crate::sas::polars_output::sas_batch_iter_with_reader;
-use crate::spss::polars_output::spss_batch_iter;
-use crate::stata::polars_output::stata_batch_iter;
+use crate::source::ReadSource;
+use crate::spss::polars_output::{spss_batch_iter, spss_batch_iter_with_reader};
+use crate::stata::polars_output::{stata_batch_iter, stata_batch_iter_with_reader};
 use crate::{ReadStatFormat, ScanOptions};
 use polars::prelude::{DataFrame, PolarsError, PolarsResult};
 use std::path::Path;
+use std::sync::Arc;
 
 pub struct ReadstatBatchIter {
     inner: Box<dyn Iterator<Item = PolarsResult<DataFrame>> + Send>,
@@ -87,7 +89,7 @@ pub fn readstat_batch_iter(
                 .transpose()?;
             let iter = sas_batch_iter_with_reader(
                 &reader,
-                path.to_path_buf(),
+                reader.source(),
                 opts.threads,
                 missing_string_as_null,
                 chunk_size,
@@ -103,7 +105,7 @@ pub fn readstat_batch_iter(
         }
         ReadStatFormat::SasXpt => {
             crate::sas::xpt::xpt_batch_iter(
-                path.to_path_buf(),
+                std::sync::Arc::new(crate::source::LocalFileSource::new(path)),
                 opts.threads,
                 missing_string_as_null,
                 chunk_size,
@@ -133,6 +135,125 @@ pub fn readstat_batch_iter(
         ReadStatFormat::Spss => {
             let iter = spss_batch_iter(
                 path.to_path_buf(),
+                opts.threads,
+                missing_string_as_null,
+                value_labels_as_strings,
+                chunk_size,
+                preserve_order,
+                row_index_name.clone(),
+                columns,
+                0,
+                n_rows,
+                opts.informative_nulls.clone(),
+            )?;
+            Box::new(iter)
+        }
+    };
+
+    if opts.compress_opts.enabled {
+        let compress_opts = opts.compress_opts;
+        let mapped = iter.map(move |batch| {
+            let df = batch?;
+            compress_df_if_enabled(&df, &compress_opts)
+                .map_err(|e| PolarsError::ComputeError(e.into()))
+        });
+        Ok(ReadstatBatchIter::new(Box::new(mapped)))
+    } else {
+        Ok(ReadstatBatchIter::new(iter))
+    }
+}
+
+/// Same as [`readstat_batch_iter`] but backed by any [`ReadSource`] instead
+/// of a local path — e.g. an in-memory buffer. Since there's no path to
+/// sniff an extension from, `format` is required (unlike the path-based
+/// version, where it's an optional override). POR isn't included: it has no
+/// entry in [`ReadStatFormat`] and no chunked-streaming implementation even
+/// on the path-based side (see `read_por`/`read_por_from_source`).
+pub fn readstat_batch_iter_from_source(
+    source: Arc<dyn ReadSource>,
+    format: ReadStatFormat,
+    opts: Option<ScanOptions>,
+    columns: Option<Vec<String>>,
+    n_rows: Option<usize>,
+    batch_size: Option<usize>,
+) -> PolarsResult<ReadstatBatchIter> {
+    let opts = opts.unwrap_or_default();
+
+    let row_index_name = opts.row_index_name.clone();
+    let mut columns = columns;
+    if let Some(ref name) = row_index_name {
+        if let Some(cols) = columns.as_mut() {
+            cols.retain(|c| c != name);
+        }
+    }
+    let columns = columns.and_then(|cols| if cols.is_empty() { None } else { Some(cols) });
+
+    let chunk_size = batch_size.or(opts.chunk_size);
+    let missing_string_as_null = opts.missing_string_as_null.unwrap_or(true);
+    let value_labels_as_strings = opts.value_labels_as_strings.unwrap_or(true);
+    let preserve_order = opts.preserve_order.unwrap_or(false);
+    let iter: Box<dyn Iterator<Item = PolarsResult<DataFrame>> + Send> = match format {
+        ReadStatFormat::Sas => {
+            let reader = crate::sas::reader::Sas7bdatReader::open_source(source)
+                .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+            let col_indices = columns
+                .as_ref()
+                .map(|cols| resolve_sas_column_indices(&reader, cols))
+                .transpose()?;
+            let iter = sas_batch_iter_with_reader(
+                &reader,
+                reader.source(),
+                opts.threads,
+                missing_string_as_null,
+                chunk_size,
+                col_indices,
+                0,
+                n_rows,
+                preserve_order,
+                row_index_name.clone(),
+                opts.informative_nulls.clone(),
+                false,
+            )?;
+            Box::new(iter)
+        }
+        ReadStatFormat::SasXpt => {
+            crate::sas::xpt::xpt_batch_iter(
+                source,
+                opts.threads,
+                missing_string_as_null,
+                chunk_size,
+                preserve_order,
+                row_index_name.clone(),
+                columns,
+                0,
+                n_rows,
+            )?
+        }
+        ReadStatFormat::Stata => {
+            let reader = crate::stata::reader::StataReader::open_source(source)
+                .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+            let iter = stata_batch_iter_with_reader(
+                &reader,
+                reader.source(),
+                opts.threads,
+                missing_string_as_null,
+                value_labels_as_strings,
+                chunk_size,
+                preserve_order,
+                row_index_name.clone(),
+                columns,
+                0,
+                n_rows,
+                opts.informative_nulls.clone(),
+            )?;
+            Box::new(iter)
+        }
+        ReadStatFormat::Spss => {
+            let reader = crate::spss::reader::SpssReader::open_source(source)
+                .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+            let iter = spss_batch_iter_with_reader(
+                &reader,
+                reader.source(),
                 opts.threads,
                 missing_string_as_null,
                 value_labels_as_strings,

@@ -38,9 +38,44 @@ class ScanReadstat:
         batch_size: int | None = None,
         informative_nulls: "InformativeNullOpts | dict | None" = None,
         catalog: "CatalogInput" = None,
+        data: bytes | None = None,
+        storage_options: Dict[str, str] | None = None,
     ):
+        """
+        Parameters
+        ----------
+        path : str
+            Path to the file, or a cloud URL — ``s3://bucket/key`` (AWS S3,
+            or an S3-compatible service like MinIO via
+            ``storage_options={"aws_endpoint_url": ...}``), ``gs://bucket/key``
+            (Google Cloud Storage), or ``az://container/key``
+            (Azure Blob Storage) — same three providers and URL schemes
+            Polars documents for ``scan_parquet``/``scan_csv``. When `data`
+            is given, this is only used as a filename-shaped hint for
+            format detection (e.g. "buffer.dta") — it does not need to
+            exist on disk or in the bucket/container.
+        data : bytes, optional
+            Read from these bytes instead of opening `path` (e.g. an object
+            already fetched some other way). `path` is still required,
+            purely to determine the format from its extension. Takes
+            precedence over `storage_options` if both are given.
+        storage_options : dict[str, str], optional
+            Only used when `path` is a cloud URL — same shape and key names
+            as Polars' own ``storage_options`` for
+            ``scan_parquet``/``scan_csv``: for S3, ``aws_access_key_id``,
+            ``aws_secret_access_key``, ``aws_region``, ``aws_endpoint_url``
+            (for an S3-compatible service), ``aws_session_token``,
+            ``aws_allow_http``, ...; for GCS, ``service_account``,
+            ``service_account_key``, ...; for Azure, ``account_name``,
+            ``account_key``, ``sas_token``, ``tenant_id``, ``client_id``,
+            ``client_secret``, .... May be omitted (or left empty) when
+            credentials are already available from the environment or an
+            instance/task role.
+        """
         self.path = str(path)
         self._validation_check(self.path)
+        self.data = data
+        self.storage_options = storage_options
 
         self.threads = threads
 
@@ -110,13 +145,15 @@ class ScanReadstat:
             batch_size=self.batch_size,
             informative_nulls=self.informative_nulls,
             catalog=self.catalog,
+            data=self.data,
+            storage_options=self.storage_options,
         )
 
     @df.setter
     def df(self, value: pl.LazyFrame | pl.DataFrame) -> None:
         self._df = value
 
-        
+
     def _make_src(self) -> PyPolarsReadstat:
         preserve_order, row_index_name, _ = _resolve_preserve_order_opts(self._preserve_order_opts)
         return PyPolarsReadstat(
@@ -130,11 +167,15 @@ class ScanReadstat:
             compress=self.compress.to_dict() if self.compress is not None else None,
             informative_nulls=self.informative_nulls.to_dict() if self.informative_nulls is not None else None,
             row_index_name=row_index_name,
+            data=self.data,
+            storage_options=self.storage_options,
         )
 
     def _get_schema(self) -> None:
         if self.path.lower().endswith(".por"):
-            self._schema, self._metadata = _por_schema_and_metadata(self.path)
+            self._schema, self._metadata = _por_schema_and_metadata(
+                self.path, data=self.data, storage_options=self.storage_options
+            )
             return
         src = self._make_src()
         self._schema = src.schema()
@@ -383,14 +424,24 @@ def _normalize_informative_null_opts(
     )
 
 
-def read_sas7bcat(path: Any) -> dict[str, dict[float | str, str]]:
+def read_sas7bcat(
+    path: Any,
+    data: bytes | None = None,
+    storage_options: Dict[str, str] | None = None,
+) -> dict[str, dict[float | str, str]]:
     """
     Read a SAS format catalog (``.sas7bcat``) and return its value-label mappings.
 
     Parameters
     ----------
     path : str or Path
-        Path to the ``.sas7bcat`` file.
+        Path to the ``.sas7bcat`` file, or a cloud URL (``s3://``, ``gs://``,
+        ``az://`` — see `scan_readstat`). When `data` is given, only used as
+        a filename-shaped hint (not actually opened).
+    data : bytes, optional
+        Read from these bytes instead of opening `path`.
+    storage_options : dict[str, str], optional
+        Only used when `path` is a cloud URL — see `scan_readstat`.
 
     Returns
     -------
@@ -399,7 +450,7 @@ def read_sas7bcat(path: Any) -> dict[str, dict[float | str, str]]:
         Format names are uppercased with trailing dots removed.
         Numeric codes are Python floats; character-format codes are strings.
     """
-    return _read_sas7bcat_rs(str(path))
+    return _read_sas7bcat_rs(str(path), data=data, storage_options=storage_options)
 
 
 _POR_FORMAT_CLASS: dict[int, str] = {
@@ -425,9 +476,13 @@ def _por_dtype_from_var(var: dict) -> pl.PolarsDataType:
     return pl.Float64
 
 
-def _por_schema_and_metadata(path: str) -> tuple[pl.Schema, dict]:
+def _por_schema_and_metadata(
+    path: str,
+    data: bytes | None = None,
+    storage_options: Dict[str, str] | None = None,
+) -> tuple[pl.Schema, dict]:
     import json
-    raw = _por_metadata_json_rs(path)
+    raw = _por_metadata_json_rs(path, data=data, storage_options=storage_options)
     meta = json.loads(raw)
     schema = pl.Schema({
         v["name"]: _por_dtype_from_var(v)
@@ -507,6 +562,8 @@ def scan_readstat(
     batch_size: int | None = None,
     informative_nulls: "InformativeNullOpts | dict | None" = None,
     catalog: "CatalogInput" = None,
+    data: bytes | None = None,
+    storage_options: Dict[str, str] | None = None,
 ) -> pl.LazyFrame:
     """
     Scans a ReadStat file (SAS, SPSS, Stata) into a Polars LazyFrame.
@@ -514,7 +571,14 @@ def scan_readstat(
     Parameters
     ----------
     path : str
-        Path to the file.
+        Path to the file, or a cloud URL — ``s3://bucket/key`` (AWS S3, or
+        an S3-compatible service like MinIO via
+        ``storage_options={"aws_endpoint_url": ...}``), ``gs://bucket/key``
+        (Google Cloud Storage), or ``az://container/key`` (Azure Blob
+        Storage) — same three providers and URL schemes Polars documents.
+        When `data` is given, this is only used as a filename-shaped hint
+        for format detection (e.g. "buffer.sas7bdat") — it does not need to
+        exist on disk or in the bucket/container.
     threads : int, optional
         Number of threads to use.
     missing_string_as_null : bool, optional
@@ -533,11 +597,26 @@ def scan_readstat(
     reader : ScanReadstat, optional
         Internal use.
     schema_overrides : dict, optional
-        A dictionary mapping column names to Polars DataTypes. 
-        Used to force specific types (e.g., Int64) to prevent overflow errors 
+        A dictionary mapping column names to Polars DataTypes.
+        Used to force specific types (e.g., Int64) to prevent overflow errors
         when the schema inferred from the header differs from data in the file body.
     batch_size : int, optional
         Number of rows per batch used by the scan source.
+    data : bytes, optional
+        Read from these bytes instead of opening `path` (e.g. an object
+        already fetched some other way). Takes precedence over
+        `storage_options` if both are given.
+    storage_options : dict[str, str], optional
+        Only used when `path` is a cloud URL — same shape and key names as
+        Polars' own ``storage_options`` for ``scan_parquet``/``scan_csv``:
+        for S3, ``aws_access_key_id``, ``aws_secret_access_key``,
+        ``aws_region``, ``aws_endpoint_url`` (for an S3-compatible
+        service), ``aws_session_token``, ``aws_allow_http``, ...; for GCS,
+        ``service_account``, ``service_account_key``, ...; for Azure,
+        ``account_name``, ``account_key``, ``sas_token``, ``tenant_id``,
+        ``client_id``, ``client_secret``, .... May be omitted (or left
+        empty) when credentials are already available from the environment
+        or an instance/task role.
     """
     path = str(path)
     compress = _normalize_compress_opts(compress)
@@ -546,7 +625,7 @@ def scan_readstat(
     catalog = _normalize_catalog(catalog)
 
     if path.lower().endswith(".por"):
-        return _scan_por_rs(path).lazy()
+        return _scan_por_rs(path, data=data, storage_options=storage_options).lazy()
 
     if reader is None:
         reader = ScanReadstat(
@@ -560,6 +639,8 @@ def scan_readstat(
             batch_size=batch_size,
             informative_nulls=informative_nulls,
             catalog=catalog,
+            data=data,
+            storage_options=storage_options,
         )
     else:
         path = reader.path
@@ -572,6 +653,8 @@ def scan_readstat(
         batch_size = reader.batch_size
         informative_nulls = reader.informative_nulls
         catalog = reader.catalog
+        data = reader.data
+        storage_options = reader.storage_options
 
     preserve_order_flag, row_index_name, sort_in_python = _resolve_preserve_order_opts(
         preserve_order_opts
@@ -650,6 +733,8 @@ def scan_readstat(
             compress=compress.to_dict() if compress is not None else None,
             informative_nulls=informative_nulls.to_dict() if informative_nulls is not None else None,
             row_index_name=row_index_name,
+            data=data,
+            storage_options=storage_options,
         )
         if with_columns is not None:
             src.set_with_columns(with_columns)
@@ -688,6 +773,8 @@ def read_readstat(
     schema_overrides: Dict[Any, Any] | None = None,
     batch_size: int | None = None,
     informative_nulls: "InformativeNullOpts | dict | None" = None,
+    data: bytes | None = None,
+    storage_options: Dict[str, str] | None = None,
 ) -> pl.DataFrame:
     lf = scan_readstat(
         path,
@@ -699,6 +786,8 @@ def read_readstat(
         schema_overrides=schema_overrides,
         batch_size=batch_size,
         informative_nulls=informative_nulls,
+        data=data,
+        storage_options=storage_options,
     )
     if columns is not None:
         lf = lf.select(columns)
@@ -711,6 +800,7 @@ def write_readstat(
     *,
     format: str | None = None,
     metadata: dict | pl.DataFrame | None = None,
+    storage_options: Dict[str, str] | None = None,
     **kwargs: Any,
 ) -> None:
     """
@@ -721,7 +811,12 @@ def write_readstat(
     df : polars.DataFrame or polars.LazyFrame
         Data to write.
     path : str
-        Output path.
+        Output path, or a cloud URL — ``s3://bucket/key`` (AWS S3, or an
+        S3-compatible service like MinIO via
+        ``storage_options={"aws_endpoint_url": ...}``), ``gs://bucket/key``
+        (Google Cloud Storage), or ``az://container/key`` (Azure Blob
+        Storage) — same three providers and URL schemes Polars documents for
+        ``scan_parquet``/``scan_csv``.
     format : str, optional
         One of "dta" (Stata) or "sav"/"zsav" (SPSS). If omitted, inferred
         from the file extension.
@@ -730,6 +825,23 @@ def write_readstat(
         labels, value labels, formats, and (for SPSS) measure/alignment/width
         are extracted automatically. Explicit kwargs take precedence over
         anything derived from metadata.
+    storage_options : dict[str, str], optional
+        Only used when `path` is a cloud URL — same shape and key names as
+        Polars' own ``storage_options`` for ``scan_parquet``/``scan_csv``:
+        for S3, ``aws_access_key_id``, ``aws_secret_access_key``,
+        ``aws_region``, ``aws_endpoint_url`` (for an S3-compatible
+        service), ``aws_session_token``, ``aws_allow_http``, ...; for GCS,
+        ``service_account``, ``service_account_key``, ...; for Azure,
+        ``account_name``, ``account_key``, ``sas_token``, ``tenant_id``,
+        ``client_id``, ``client_secret``, .... May be omitted (or left
+        empty) when credentials are already available from the environment
+        or an instance/task role. Not supported for `write_sas_csv_import`,
+        which remains local files only. The streaming Stata sink
+        (``sink_stata``) does support it, but since it can't finalize its
+        header until the last row is written — and a cloud upload can't be
+        rewritten mid-stream — it buffers the full output through a local
+        temp file first and uploads that once writing finishes, rather than
+        streaming directly.
     **kwargs : Any
         Stata supports `compress` (bool), `threads` (int),
         `value_labels` (dict[str, dict[int, str]]), `variable_labels` (dict[str, str]),
@@ -781,10 +893,11 @@ def write_readstat(
         merged_df = _coalesce_metadata_dfs(kwargs_df, base_df)
 
         if merged_df is not None:
-            _write_stata_from_df_rs(df, path, merged_df, compress, threads)
+            _write_stata_from_df_rs(df, path, merged_df, compress, threads, storage_options=storage_options)
         else:
             _write_stata_rs(df, path, compress=compress, threads=threads,
-                            value_labels=None, variable_labels=None, variable_format=None)
+                            value_labels=None, variable_labels=None, variable_format=None,
+                            storage_options=storage_options)
         return
     if fmt in ("sav", "zsav", "spss"):
         compress = kwargs.pop("compress", None)
@@ -834,9 +947,10 @@ def write_readstat(
         merged_df = _coalesce_metadata_dfs(kwargs_df, base_df)
 
         if merged_df is not None:
-            _write_spss_from_df_rs(df, path, merged_df, compressed)
+            _write_spss_from_df_rs(df, path, merged_df, compressed, storage_options=storage_options)
         else:
-            _write_spss_rs(df, path, None, None, None, None, None, None, compressed)
+            _write_spss_rs(df, path, None, None, None, None, None, None, compressed,
+                            storage_options=storage_options)
         return
     if fmt in ("xpt", "sas_xpt"):
         if isinstance(metadata, pl.DataFrame):
@@ -851,6 +965,7 @@ def write_readstat(
             _write_xpt_from_df_rs(
                 df, path, metadata, version, table_name, file_label,
                 variable_labels, variable_format, storage_widths,
+                storage_options=storage_options,
             )
             return
         base = _xpt_metadata_to_write_kwargs(metadata, df.columns) if metadata is not None else {}
@@ -871,6 +986,7 @@ def write_readstat(
             variable_labels=variable_labels,
             variable_format=variable_format,
             storage_widths=storage_widths,
+            storage_options=storage_options,
         )
         return
     if fmt in ("por", "spss_por"):
@@ -879,14 +995,16 @@ def write_readstat(
             variable_labels = kwargs.pop("variable_labels", None)
             if kwargs:
                 raise TypeError(f"Unsupported kwargs for POR writer: {sorted(kwargs.keys())}")
-            _write_por_from_df_rs(df, path, metadata, file_label, variable_labels)
+            _write_por_from_df_rs(df, path, metadata, file_label, variable_labels,
+                                   storage_options=storage_options)
             return
         base = _por_metadata_to_write_kwargs(metadata, df.columns) if metadata is not None else {}
         file_label = kwargs.pop("file_label", base.get("file_label"))
         variable_labels = kwargs.pop("variable_labels", base.get("variable_labels"))
         if kwargs:
             raise TypeError(f"Unsupported kwargs for POR writer: {sorted(kwargs.keys())}")
-        write_por(df, path, file_label=file_label, variable_labels=variable_labels)
+        write_por(df, path, file_label=file_label, variable_labels=variable_labels,
+                  storage_options=storage_options)
         return
     if fmt in ("sas7bdat", "sas"):
         raise NotImplementedError(
@@ -1344,6 +1462,7 @@ def write_xpt(
     variable_labels: dict[str, str] | None = None,
     variable_format: dict[str, str] | None = None,
     storage_widths: dict[str, int] | None = None,
+    storage_options: Dict[str, str] | None = None,
 ) -> None:
     """
     Write a SAS Transport (`.xpt`) file.
@@ -1353,7 +1472,8 @@ def write_xpt(
     df : polars.DataFrame or polars.LazyFrame
         Data to write.
     path : str or Path
-        Output path (must end in `.xpt`).
+        Output path (must end in `.xpt`), or a cloud URL (``s3://``,
+        ``gs://``, ``az://`` — see `write_readstat`).
     version : int, optional
         XPT version: 5 or 8 (default 8). Version 8 supports variable names
         up to 32 characters and labels up to unlimited length.
@@ -1371,6 +1491,8 @@ def write_xpt(
         Mapping of column name to byte storage width. Numeric columns may
         use 3–8 bytes (default 8). Character columns default to the maximum
         observed string length.
+    storage_options : dict[str, str], optional
+        Only used when `path` is a cloud URL (see `write_readstat`).
     """
     df = _prepare_write_df(df)
     _write_xpt_rs(
@@ -1382,6 +1504,7 @@ def write_xpt(
         variable_labels=variable_labels,
         variable_format=variable_format,
         storage_widths=storage_widths,
+        storage_options=storage_options,
     )
 
 
@@ -1391,6 +1514,7 @@ def write_por(
     *,
     file_label: str | None = None,
     variable_labels: dict[str, str] | None = None,
+    storage_options: Dict[str, str] | None = None,
 ) -> None:
     """
     Write an SPSS Portable (`.por`) file.
@@ -1400,11 +1524,14 @@ def write_por(
     df : polars.DataFrame or polars.LazyFrame
         Data to write.
     path : str or Path
-        Output path (must end in `.por`).
+        Output path (must end in `.por`), or a cloud URL (``s3://``,
+        ``gs://``, ``az://`` — see `write_readstat`).
     file_label : str, optional
         File-level label (max 20 chars).
     variable_labels : dict, optional
         Mapping of column name to variable label text.
+    storage_options : dict[str, str], optional
+        Only used when `path` is a cloud URL (see `write_readstat`).
     """
     df = _prepare_write_df(df)
     _write_por_rs(
@@ -1412,6 +1539,7 @@ def write_por(
         str(path),
         file_label=file_label,
         variable_labels=variable_labels,
+        storage_options=storage_options,
     )
 
 
@@ -1431,6 +1559,17 @@ def write_sas_csv_import(
 
     This does not produce a binary ``.sas7bdat`` file. Run the generated ``.sas``
     script in SAS to load the data.
+
+    Local paths only — unlike `write_readstat`/`write_xpt`/`write_por`, this
+    does not accept a cloud URL. The generated script's ``infile`` statement
+    embeds a plain filesystem path that SAS's DATA step reads directly; SAS
+    has no native ``s3://``/``gs://``/``az://`` support, so uploading the
+    output to a cloud path would leave the script pointing at a location SAS
+    can't open. (Base SAS can read plain HTTPS URLs via ``FILENAME ... URL``,
+    which every provider could support through a presigned link — but that
+    URL would expire and requires the SAS process to have outbound internet
+    access, a different and more fragile contract than a script you can run
+    anytime; not implemented.)
 
     Parameters
     ----------

@@ -1,17 +1,24 @@
 use num_cpus;
 use polars::prelude::*;
 use polars_readstat_rs::{
-    read_sas7bcat, readstat_batch_iter, readstat_metadata_json, readstat_scan, readstat_schema,
-    sas_metadata_json_from_meta, spss_metadata_json_from_meta, stata_metadata_json_from_meta,
-    CatalogKey, InformativeNullColumns, InformativeNullMode, InformativeNullOpts, PorWriteOptions,
+    metadata_json_por_from_source, metadata_por_from_source, read_por_from_source,
+    read_sas7bcat_from_source, readstat_batch_iter, readstat_batch_iter_from_source,
+    readstat_metadata_json, readstat_scan, readstat_schema, sas_metadata_json_from_meta,
+    sas_polars_output, spss_metadata_json_from_meta, spss_polars_output,
+    stata_metadata_json_from_meta, stata_polars_output,
+    CatalogKey, InMemorySource, InformativeNullColumns, InformativeNullMode, InformativeNullOpts,
+    LocalFileSource, ObjectStoreSource, PorWriteOptions, ReadSource, ReadStatFormat as CoreReadStatFormat,
     Sas7bdatReader, SasHeader, SasMetadata, SasWriter, ScanOptions, SpssAlignment, SpssHeader,
     SpssMeasure, SpssMetadata, SpssReader,
     SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels,
     SpssVariableAlignments, SpssVariableDisplayWidths, SpssVariableFormat, SpssVariableFormats,
     SpssStringWidths, SpssVariableMeasures, SpssWriteColumn, SpssWriteSchema, SpssWriter,
     StataHeader, StataMetadata, StataReader, StataWriteColumn, StataWriteSchema, StataWriter,
-    PorMetadata, ValueLabels, XptMetadata,
-    XptWriter,
+    PorMetadata, ValueLabels, WriteTarget, XptMetadata,
+    XptWriter, write_por_to_destination,
+};
+use polars_readstat_rs::sas::xpt::{
+    read_xpt_metadata_from_source, schema_from_xpt_metadata, xpt_metadata_json_from_source,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -86,41 +93,44 @@ impl MetadataInner {
     }
 }
 
-fn build_metadata_inner(path: &str, format: ReadstatFormat) -> PyResult<MetadataInner> {
+/// Builds cached metadata from any [`ReadSource`] — a `LocalFileSource` for
+/// the path case behaves identically to the old `Reader::open(path)` calls
+/// this replaces, so this is format-agnostic w.r.t. path vs. bytes.
+fn build_metadata_inner(source: &Arc<dyn ReadSource>, format: ReadstatFormat) -> PyResult<MetadataInner> {
     match format {
         ReadstatFormat::Spss => {
-            let reader =
-                SpssReader::open(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let reader = SpssReader::open_source(source.clone())
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             Ok(MetadataInner::Spss {
                 meta: Arc::new(reader.metadata().clone()),
                 hdr: Arc::new(reader.header().clone()),
             })
         }
         ReadstatFormat::Stata => {
-            let reader =
-                StataReader::open(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let reader = StataReader::open_source(source.clone())
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             Ok(MetadataInner::Stata {
                 meta: Arc::new(reader.metadata().clone()),
                 hdr: Arc::new(reader.header().clone()),
             })
         }
         ReadstatFormat::Sas => {
-            let reader =
-                Sas7bdatReader::open(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let reader = Sas7bdatReader::open_source(source.clone())
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             Ok(MetadataInner::Sas {
                 meta: Arc::new(reader.metadata().clone()),
                 hdr: Arc::new(reader.header().clone()),
             })
         }
         ReadstatFormat::SasXpt => {
-            let meta = polars_readstat_rs::read_xpt_metadata(Path::new(path))
+            let meta = read_xpt_metadata_from_source(source.as_ref())
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             Ok(MetadataInner::Xpt {
                 meta: Arc::new(meta),
             })
         }
         ReadstatFormat::Por => {
-            let meta = polars_readstat_rs::metadata_por(path)
+            let meta = metadata_por_from_source(source.as_ref())
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             Ok(MetadataInner::Por {
                 meta: Arc::new(meta),
@@ -144,6 +154,63 @@ fn detect_format(path: &str) -> PyResult<ReadstatFormat> {
         "por" => Ok(ReadstatFormat::Por),
         _ => Err(PyValueError::new_err("unknown file extension")),
     }
+}
+
+/// Maps this crate's local format enum to the vendored crate's own
+/// `ReadStatFormat`, used by its format-agnostic, `ReadSource`-based
+/// entry points. Returns `None` for `Por`, which has no variant there
+/// (POR is always handled through its own dedicated, non-chunked functions).
+fn to_core_format(format: ReadstatFormat) -> Option<CoreReadStatFormat> {
+    match format {
+        ReadstatFormat::Sas => Some(CoreReadStatFormat::Sas),
+        ReadstatFormat::SasXpt => Some(CoreReadStatFormat::SasXpt),
+        ReadstatFormat::Stata => Some(CoreReadStatFormat::Stata),
+        ReadstatFormat::Spss => Some(CoreReadStatFormat::Spss),
+        ReadstatFormat::Por => None,
+    }
+}
+
+/// Builds the `ReadSource` for a `path`/`data`/`storage_options` combination
+/// — the same three-way branch every entry point that can read from bytes
+/// or cloud storage needs. `path` is used as a real filesystem path only in
+/// the third case; in the other two it's just the filename-shaped hint
+/// format detection already used (see `detect_format`). Returns
+/// `(source, uses_custom_source)`, where the second element is `true`
+/// whenever the path-only fast paths (`readstat_schema`,
+/// `readstat_batch_iter`, `readstat_metadata_json`) can't be used, matching
+/// `PyPolarsReadstat::uses_custom_source`'s meaning.
+fn build_source(
+    path: &str,
+    data: Option<Vec<u8>>,
+    storage_options: Option<HashMap<String, String>>,
+) -> PyResult<(Arc<dyn ReadSource>, bool)> {
+    if let Some(bytes) = data {
+        return Ok((Arc::new(InMemorySource::new(bytes)), true));
+    }
+    // Any URL-shaped path (s3://, gs://, az://, abfs[s]://, adl://, ...) —
+    // `ObjectStoreSource::from_url` does the real scheme dispatch/validation
+    // via `object_store::parse_url_opts`; this is just "does it look like a
+    // URL, not a local path" so we know which `ReadSource` to build.
+    if path.contains("://") {
+        let source = ObjectStoreSource::from_url(path, storage_options.unwrap_or_default())
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        return Ok((Arc::new(source), true));
+    }
+    Ok((Arc::new(LocalFileSource::new(path)), false))
+}
+
+/// Write-side counterpart of `build_source`: any URL-shaped path is routed
+/// to a cloud `WriteTarget` (same `storage_options`/scheme dispatch as
+/// reads); everything else is a local file, unchanged from before.
+fn build_write_target(
+    path: &str,
+    storage_options: Option<HashMap<String, String>>,
+) -> PyResult<WriteTarget> {
+    if path.contains("://") {
+        return WriteTarget::from_url(path, storage_options.unwrap_or_default())
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()));
+    }
+    Ok(WriteTarget::local(path))
 }
 
 fn ensure_extension(path: &str, allowed: &[&str]) -> PyResult<()> {
@@ -254,8 +321,15 @@ fn parse_informative_null_opts(d: Option<&Bound<PyDict>>) -> PyResult<Option<Inf
     }))
 }
 
+/// Reads a full `DataFrame` from any `ReadSource` — a `LocalFileSource` for
+/// the path case behaves identically to the old `Reader::open(path)` calls
+/// this replaces, so this is format-agnostic w.r.t. path vs. bytes. `format`
+/// is passed explicitly rather than sniffed here, since a bytes-backed
+/// source has no path to sniff from (callers already have it either way,
+/// via `detect_format` or `PyPolarsReadstat.format`).
 fn read_df_with_options(
-    path: &str,
+    source: Arc<dyn ReadSource>,
+    format: ReadstatFormat,
     threads: Option<usize>,
     missing_string_as_null: bool,
     value_labels_as_strings: bool,
@@ -263,11 +337,10 @@ fn read_df_with_options(
     n_rows: Option<usize>,
     informative_nulls: Option<InformativeNullOpts>,
 ) -> PyResult<DataFrame> {
-    let format = detect_format(path)?;
     let df = match format {
         ReadstatFormat::Sas => {
-            let reader =
-                Sas7bdatReader::open(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let reader = Sas7bdatReader::open_source(source)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             let mut builder = reader
                 .read()
                 .missing_string_as_null(missing_string_as_null)
@@ -286,14 +359,14 @@ fn read_df_with_options(
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         }
         ReadstatFormat::SasXpt => {
-            let iter = readstat_batch_iter(
-                path,
+            let iter = readstat_batch_iter_from_source(
+                source,
+                CoreReadStatFormat::SasXpt,
                 Some(ScanOptions {
                     missing_string_as_null: Some(missing_string_as_null),
                     threads,
                     ..Default::default()
                 }),
-                Some(polars_readstat_rs::ReadStatFormat::SasXpt),
                 columns,
                 n_rows,
                 None,
@@ -312,8 +385,8 @@ fn read_df_with_options(
             out.unwrap_or_else(DataFrame::empty)
         }
         ReadstatFormat::Stata => {
-            let reader =
-                StataReader::open(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let reader = StataReader::open_source(source)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             let mut builder = reader
                 .read()
                 .missing_string_as_null(missing_string_as_null)
@@ -333,8 +406,8 @@ fn read_df_with_options(
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         }
         ReadstatFormat::Spss => {
-            let reader =
-                SpssReader::open(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let reader = SpssReader::open_source(source)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             let mut builder = reader
                 .read()
                 .missing_string_as_null(missing_string_as_null)
@@ -354,7 +427,7 @@ fn read_df_with_options(
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         }
         ReadstatFormat::Por => {
-            let (_, df) = polars_readstat_rs::read_por(path)
+            let (_, df) = read_por_from_source(source.as_ref())
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             let mut df = if let Some(cols) = columns {
                 df.select(cols)
@@ -371,8 +444,12 @@ fn read_df_with_options(
     Ok(df)
 }
 
+/// `source`/`format` counterpart of the old `path`-based version — see
+/// `read_df_with_options` for why the source is now explicit rather than a
+/// path to open.
 fn infer_compressed_schema_and_cast_map(
-    path: &str,
+    source: Arc<dyn ReadSource>,
+    format: ReadstatFormat,
     threads: Option<usize>,
     missing_string_as_null: bool,
     value_labels_as_strings: bool,
@@ -382,7 +459,8 @@ fn infer_compressed_schema_and_cast_map(
     informative_nulls: Option<InformativeNullOpts>,
 ) -> PyResult<(Schema, HashMap<String, DataType>)> {
     let probe_df = read_df_with_options(
-        path,
+        source,
+        format,
         threads,
         missing_string_as_null,
         value_labels_as_strings,
@@ -447,9 +525,16 @@ fn append_row_index_schema(schema: &mut Schema, name: &str) -> PyResult<()> {
 /// The catch-all label a format assigns to missing/tagged-missing values
 /// (`.`, `.A`-`.Z`) is keyed by `float('nan')`, matching pyreadstat.
 #[pyfunction]
-fn read_sas7bcat_rs(py: Python<'_>, path: String) -> PyResult<Py<PyAny>> {
-    let catalog = read_sas7bcat(std::path::Path::new(&path))
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+#[pyo3(signature = (path, data=None, storage_options=None))]
+fn read_sas7bcat_rs(
+    py: Python<'_>,
+    path: String,
+    data: Option<Vec<u8>>,
+    storage_options: Option<HashMap<String, String>>,
+) -> PyResult<Py<PyAny>> {
+    let (source, _) = build_source(&path, data, storage_options)?;
+    let catalog =
+        read_sas7bcat_from_source(source.as_ref()).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
     let outer = PyDict::new(py);
     for (fmt_name, entries) in catalog {
@@ -494,6 +579,14 @@ pub fn polars_readstat_bindings(m: &Bound<PyModule>) -> PyResult<()> {
 pub struct PyPolarsReadstat {
     path: String,
     format: ReadstatFormat,
+    source: Arc<dyn ReadSource>,
+    /// True whenever `source` isn't a plain local path (bytes or an S3 URL)
+    /// — those need the generic `ReadSource`-based schema/metadata/streaming
+    /// path (`schema_from_source`, `readstat_batch_iter_from_source`)
+    /// instead of the path-only fast paths (`readstat_schema`,
+    /// `readstat_batch_iter`), which do their own `File::open`/`fs::metadata`
+    /// on the literal path string.
+    uses_custom_source: bool,
     batch_size: usize,
     threads: usize,
     missing_string_as_null: bool,
@@ -514,7 +607,8 @@ pub struct PyPolarsReadstat {
 #[pymethods]
 impl PyPolarsReadstat {
     #[new]
-    #[pyo3(signature = (path, size_hint, n_rows, threads, missing_string_as_null, value_labels_as_strings=false, preserve_order=false, compress=None, informative_nulls=None, row_index_name=None))]
+    #[pyo3(signature = (path, size_hint, n_rows, threads, missing_string_as_null, value_labels_as_strings=false, preserve_order=false, compress=None, informative_nulls=None, row_index_name=None, data=None, storage_options=None))]
+    #[allow(clippy::too_many_arguments)]
     fn new_source(
         path: String,
         size_hint: usize,
@@ -526,6 +620,8 @@ impl PyPolarsReadstat {
         compress: Option<&Bound<PyDict>>,
         informative_nulls: Option<&Bound<PyDict>>,
         row_index_name: Option<String>,
+        data: Option<Vec<u8>>,
+        storage_options: Option<HashMap<String, String>>,
     ) -> PyResult<Self> {
         let max_useful_threads = num_cpus::get_physical();
         let threads = if threads.is_none() {
@@ -534,7 +630,11 @@ impl PyPolarsReadstat {
             min(threads.unwrap(), max_useful_threads)
         };
 
+        // `path` doubles as a filename-shaped hint for format detection when
+        // `data`/`storage_options` is given — it never needs to exist on
+        // disk in that case.
         let format = detect_format(&path)?;
+        let (source, uses_custom_source) = build_source(&path, data, storage_options)?;
         let batch_size = size_hint.max(1);
         let parsed_compress = parse_compress_opts(compress)?;
         let parsed_informative_nulls = parse_informative_null_opts(informative_nulls)?;
@@ -542,6 +642,8 @@ impl PyPolarsReadstat {
         Ok(Self {
             path,
             format,
+            source,
+            uses_custom_source,
             batch_size,
             threads,
             missing_string_as_null,
@@ -570,6 +672,11 @@ impl PyPolarsReadstat {
                 }
                 return Ok(PySchema(Arc::new(schema)));
             }
+        }
+
+        if self.uses_custom_source {
+            let schema = self.schema_from_source()?;
+            return Ok(PySchema(Arc::new(schema)));
         }
 
         let opts = ScanOptions {
@@ -625,6 +732,16 @@ impl PyPolarsReadstat {
     fn get_metadata(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let json = if let Some(ref inner) = self.cached_metadata {
             inner.to_json().map_err(PyValueError::new_err)?
+        } else if self.uses_custom_source {
+            match self.format {
+                ReadstatFormat::SasXpt => xpt_metadata_json_from_source(self.source.as_ref())
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?,
+                ReadstatFormat::Por => metadata_json_por_from_source(self.source.as_ref())
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?,
+                _ => build_metadata_inner(&self.source, self.format)?
+                    .to_json()
+                    .map_err(PyValueError::new_err)?,
+            }
         } else {
             readstat_metadata_json(&self.path, None).map_err(PyValueError::new_err)?
         };
@@ -637,7 +754,7 @@ impl PyPolarsReadstat {
         let inner = if let Some(ref inner) = self.cached_metadata {
             inner.clone()
         } else {
-            let inner = build_metadata_inner(&self.path, self.format)?;
+            let inner = build_metadata_inner(&self.source, self.format)?;
             self.cached_metadata = Some(inner.clone());
             inner
         };
@@ -705,7 +822,8 @@ impl PyPolarsReadstat {
         };
 
         let (schema, cast_map) = infer_compressed_schema_and_cast_map(
-            &self.path,
+            self.source.clone(),
+            self.format,
             Some(self.threads),
             self.missing_string_as_null,
             self.value_labels_as_strings,
@@ -730,17 +848,83 @@ impl PyPolarsReadstat {
             informative_nulls: self.informative_nulls.clone(),
             ..Default::default()
         };
-        let iter = readstat_batch_iter(
-            &self.path,
-            Some(opts),
-            None, // auto-detect from file extension
-            self.with_columns.clone(),
-            self.n_rows,
-            Some(self.batch_size),
-        )
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let iter = if self.uses_custom_source {
+            let core_format = to_core_format(self.format).ok_or_else(|| {
+                PyRuntimeError::new_err(
+                    "streaming from in-memory bytes is not supported for this format",
+                )
+            })?;
+            readstat_batch_iter_from_source(
+                self.source.clone(),
+                core_format,
+                Some(opts),
+                self.with_columns.clone(),
+                self.n_rows,
+                Some(self.batch_size),
+            )
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        } else {
+            readstat_batch_iter(
+                &self.path,
+                Some(opts),
+                None, // auto-detect from file extension
+                self.with_columns.clone(),
+                self.n_rows,
+                Some(self.batch_size),
+            )
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        };
         self.iter = Some(Mutex::new(iter));
         Ok(())
+    }
+
+    fn schema_from_source(&self) -> PyResult<Schema> {
+        let schema = match self.format {
+            ReadstatFormat::Sas => {
+                let reader = Sas7bdatReader::open_source(self.source.clone())
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                sas_polars_output::schema_from_sas_metadata(
+                    reader.metadata(),
+                    self.informative_nulls.as_ref(),
+                    self.row_index_name.as_deref(),
+                )
+            }
+            ReadstatFormat::Stata => {
+                let reader = StataReader::open_source(self.source.clone())
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                stata_polars_output::schema_from_stata_metadata(
+                    reader.metadata(),
+                    self.value_labels_as_strings,
+                    self.informative_nulls.as_ref(),
+                    self.row_index_name.as_deref(),
+                )
+            }
+            ReadstatFormat::Spss => {
+                let reader = SpssReader::open_source(self.source.clone())
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                spss_polars_output::schema_from_spss_metadata(
+                    reader.metadata(),
+                    self.value_labels_as_strings,
+                    self.informative_nulls.as_ref(),
+                    self.row_index_name.as_deref(),
+                )
+            }
+            ReadstatFormat::SasXpt => {
+                let meta = read_xpt_metadata_from_source(self.source.as_ref())
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                schema_from_xpt_metadata(
+                    &meta,
+                    self.with_columns.as_deref(),
+                    self.row_index_name.as_deref(),
+                )
+            }
+            ReadstatFormat::Por => {
+                let meta = metadata_por_from_source(self.source.as_ref())
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                Ok(polars_readstat_rs::schema_from_por_metadata(&meta))
+            }
+        };
+        schema.map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
     fn next_batch(&mut self) -> Result<Option<DataFrame>, String> {
@@ -821,8 +1005,11 @@ fn readstat_schema_rs(
     let parsed_compress = parse_compress_opts(compress)?;
     let parsed_informative_nulls = parse_informative_null_opts(informative_nulls)?;
     if parsed_compress.opts.enabled {
+        let format = detect_format(&path)?;
+        let source: Arc<dyn ReadSource> = Arc::new(LocalFileSource::new(&path));
         let (schema, _) = infer_compressed_schema_and_cast_map(
-            &path,
+            source,
+            format,
             threads,
             missing_string_as_null,
             value_labels_as_strings,
@@ -879,8 +1066,11 @@ fn read_readstat_rs(
 ) -> PyResult<PyDataFrame> {
     let parsed_compress = parse_compress_opts(compress)?;
     let parsed_informative_nulls = parse_informative_null_opts(informative_nulls)?;
+    let format = detect_format(&path)?;
+    let source: Arc<dyn ReadSource> = Arc::new(LocalFileSource::new(&path));
     let df = read_df_with_options(
-        &path,
+        source.clone(),
+        format,
         threads,
         missing_string_as_null,
         value_labels_as_strings,
@@ -890,7 +1080,8 @@ fn read_readstat_rs(
     )?;
     let out = if parsed_compress.opts.enabled {
         let (_, cast_map) = infer_compressed_schema_and_cast_map(
-            &path,
+            source,
+            format,
             threads,
             missing_string_as_null,
             value_labels_as_strings,
@@ -907,6 +1098,16 @@ fn read_readstat_rs(
 }
 
 #[pyfunction]
+#[pyo3(signature = (
+    df,
+    path,
+    compress,
+    threads,
+    value_labels,
+    variable_labels,
+    variable_format,
+    storage_options=None
+))]
 fn write_stata(
     df: PyDataFrame,
     path: String,
@@ -915,9 +1116,10 @@ fn write_stata(
     value_labels: Option<&Bound<PyDict>>,
     variable_labels: Option<&Bound<PyDict>>,
     variable_format: Option<&Bound<PyDict>>,
+    storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["dta"])?;
-    let mut writer = StataWriter::new(path);
+    let mut writer = StataWriter::with_destination(build_write_target(&path, storage_options)?);
     if let Some(enable) = compress {
         writer = writer.with_compress(enable);
     }
@@ -949,7 +1151,8 @@ const DTA_MAX_STR: usize = 2045;
     value_labels=None,
     variable_labels=None,
     batch_size=None,
-    preserve_order=true
+    preserve_order=true,
+    storage_options=None
 ))]
 fn sink_stata(
     lf: PyLazyFrame,
@@ -960,6 +1163,7 @@ fn sink_stata(
     variable_labels: Option<&Bound<PyDict>>,
     batch_size: Option<usize>,
     preserve_order: bool,
+    storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["dta"])?;
     if compress.unwrap_or(false) {
@@ -968,7 +1172,7 @@ fn sink_stata(
         ));
     }
 
-    let mut writer = StataWriter::new(path);
+    let mut writer = StataWriter::with_destination(build_write_target(&path, storage_options)?);
     if let Some(n) = threads {
         writer = writer.with_n_threads(n);
     }
@@ -1099,7 +1303,7 @@ fn sink_stata(
 }
 
 #[pyfunction]
-#[pyo3(signature = (df, path, value_labels=None, variable_labels=None, variable_measure=None, variable_display_width=None, variable_alignment=None, variable_format=None, string_widths=None, compressed=None))]
+#[pyo3(signature = (df, path, value_labels=None, variable_labels=None, variable_measure=None, variable_display_width=None, variable_alignment=None, variable_format=None, string_widths=None, compressed=None, storage_options=None))]
 fn write_spss(
     df: PyDataFrame,
     path: String,
@@ -1111,10 +1315,12 @@ fn write_spss(
     variable_format: Option<&Bound<PyDict>>,
     string_widths: Option<&Bound<PyDict>>,
     compressed: Option<bool>,
+    storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["sav", "zsav"])?;
     let compressed = compressed.unwrap_or_else(|| path.to_ascii_lowercase().ends_with(".zsav"));
-    let mut writer = SpssWriter::new(path).with_compression(compressed);
+    let mut writer =
+        SpssWriter::with_destination(build_write_target(&path, storage_options)?).with_compression(compressed);
     if let Some(labels) = value_labels {
         writer = writer.with_value_labels(parse_spss_value_labels(labels)?);
     }
@@ -1143,12 +1349,13 @@ fn write_spss(
 
 /// Write SPSS building the writer directly from a metadata DataFrame — no Python dict overhead.
 #[pyfunction]
-#[pyo3(signature = (df, path, metadata_df, compressed=None))]
+#[pyo3(signature = (df, path, metadata_df, compressed=None, storage_options=None))]
 fn write_spss_from_df_rs(
     df: PyDataFrame,
     path: String,
     metadata_df: PyDataFrame,
     compressed: Option<bool>,
+    storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["sav", "zsav"])?;
     let compressed = compressed.unwrap_or_else(|| path.to_ascii_lowercase().ends_with(".zsav"));
@@ -1254,7 +1461,8 @@ fn write_spss_from_df_rs(
         }
     }
 
-    let mut writer = SpssWriter::new(&path).with_compression(compressed);
+    let mut writer =
+        SpssWriter::with_destination(build_write_target(&path, storage_options)?).with_compression(compressed);
     if !schema_columns.is_empty() {
         writer = writer.with_schema(SpssWriteSchema {
             columns: schema_columns,
@@ -1274,12 +1482,14 @@ fn write_spss_from_df_rs(
 
 /// Write Stata building the writer directly from a metadata DataFrame — no Python dict overhead.
 #[pyfunction]
+#[pyo3(signature = (df, path, metadata_df, compress, threads, storage_options=None))]
 fn write_stata_from_df_rs(
     df: PyDataFrame,
     path: String,
     metadata_df: PyDataFrame,
     compress: Option<bool>,
     threads: Option<usize>,
+    storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["dta"])?;
     let col_names: HashSet<String> = df.0.get_column_names().iter().map(|s| s.to_string()).collect();
@@ -1347,7 +1557,7 @@ fn write_stata_from_df_rs(
         }
     }
 
-    let mut writer = StataWriter::new(&path);
+    let mut writer = StataWriter::with_destination(build_write_target(&path, storage_options)?);
     if let Some(enable) = compress { writer = writer.with_compress(enable); }
     if let Some(n) = threads { writer = writer.with_n_threads(n); }
     if !schema_columns.is_empty() {
@@ -1375,6 +1585,7 @@ fn write_stata_from_df_rs(
     variable_labels=None,
     variable_format=None,
     storage_widths=None,
+    storage_options=None,
 ))]
 fn write_xpt(
     df: PyDataFrame,
@@ -1385,9 +1596,11 @@ fn write_xpt(
     variable_labels: Option<&Bound<PyDict>>,
     variable_format: Option<&Bound<PyDict>>,
     storage_widths: Option<&Bound<PyDict>>,
+    storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["xpt"])?;
-    let mut writer = XptWriter::new(path).with_version(version);
+    let mut writer =
+        XptWriter::with_destination(build_write_target(&path, storage_options)?).with_version(version);
     if let Some(name) = table_name {
         writer = writer.with_table_name(name);
     }
@@ -1420,6 +1633,7 @@ fn write_xpt(
     variable_labels=None,
     variable_format=None,
     storage_widths=None,
+    storage_options=None,
 ))]
 fn write_xpt_from_df_rs(
     df: PyDataFrame,
@@ -1431,6 +1645,7 @@ fn write_xpt_from_df_rs(
     variable_labels: Option<&Bound<PyDict>>,
     variable_format: Option<&Bound<PyDict>>,
     storage_widths: Option<&Bound<PyDict>>,
+    storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["xpt"])?;
     let mdf_owned = filter_metadata_to_df_columns(&metadata_df.0, &df.0)?;
@@ -1458,7 +1673,8 @@ fn write_xpt_from_df_rs(
         metadata_widths.extend(parse_storage_widths_dict(explicit_widths)?);
     }
 
-    let mut writer = XptWriter::new(path).with_version(version);
+    let mut writer =
+        XptWriter::with_destination(build_write_target(&path, storage_options)?).with_version(version);
     if let Some(name) = table_name {
         writer = writer.with_table_name(name);
     }
@@ -1524,12 +1740,13 @@ fn write_sas_csv_import(
 }
 
 #[pyfunction]
-#[pyo3(signature = (df, path, file_label=None, variable_labels=None))]
+#[pyo3(signature = (df, path, file_label=None, variable_labels=None, storage_options=None))]
 fn write_por(
     df: PyDataFrame,
     path: String,
     file_label: Option<String>,
     variable_labels: Option<&Bound<PyDict>>,
+    storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["por"])?;
     let mut opts = PorWriteOptions::default();
@@ -1537,19 +1754,20 @@ fn write_por(
     if let Some(labels) = variable_labels {
         opts.variable_labels = Some(parse_variable_labels_dict(labels)?);
     }
-    polars_readstat_rs::write_por(&df.0, &path, opts)
+    write_por_to_destination(&df.0, build_write_target(&path, storage_options)?, opts)
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 /// Write POR building labels directly from a metadata DataFrame.
 #[pyfunction]
-#[pyo3(signature = (df, path, metadata_df, file_label=None, variable_labels=None))]
+#[pyo3(signature = (df, path, metadata_df, file_label=None, variable_labels=None, storage_options=None))]
 fn write_por_from_df_rs(
     df: PyDataFrame,
     path: String,
     metadata_df: PyDataFrame,
     file_label: Option<String>,
     variable_labels: Option<&Bound<PyDict>>,
+    storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["por"])?;
     let (mut labels, _) = metadata_df_labels_formats(&df.0, &metadata_df.0)?;
@@ -1562,23 +1780,32 @@ fn write_por_from_df_rs(
     if !labels.is_empty() {
         opts.variable_labels = Some(labels);
     }
-    polars_readstat_rs::write_por(&df.0, &path, opts)
+    write_por_to_destination(&df.0, build_write_target(&path, storage_options)?, opts)
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 #[pyfunction]
-#[pyo3(signature = (path))]
-fn scan_por_rs(path: String) -> PyResult<PyDataFrame> {
-    let (_, df) = polars_readstat_rs::read_por(&path)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+#[pyo3(signature = (path, data=None, storage_options=None))]
+fn scan_por_rs(
+    path: String,
+    data: Option<Vec<u8>>,
+    storage_options: Option<HashMap<String, String>>,
+) -> PyResult<PyDataFrame> {
+    let (source, _) = build_source(&path, data, storage_options)?;
+    let (_, df) =
+        read_por_from_source(source.as_ref()).map_err(|e| PyValueError::new_err(e.to_string()))?;
     Ok(PyDataFrame(df))
 }
 
 #[pyfunction]
-#[pyo3(signature = (path))]
-fn por_metadata_json_rs(path: String) -> PyResult<String> {
-    polars_readstat_rs::metadata_json_por(&path)
-        .map_err(|e| PyValueError::new_err(e.to_string()))
+#[pyo3(signature = (path, data=None, storage_options=None))]
+fn por_metadata_json_rs(
+    path: String,
+    data: Option<Vec<u8>>,
+    storage_options: Option<HashMap<String, String>>,
+) -> PyResult<String> {
+    let (source, _) = build_source(&path, data, storage_options)?;
+    metadata_json_por_from_source(source.as_ref()).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 fn parse_stata_value_labels(labels: &Bound<PyDict>) -> PyResult<polars_readstat_rs::ValueLabels> {

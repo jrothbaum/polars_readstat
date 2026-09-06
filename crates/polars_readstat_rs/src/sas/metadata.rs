@@ -4,8 +4,8 @@ use crate::data::{is_known_metadata_signature, mix_page_data_start, DataSubheade
 use crate::encoding;
 use crate::error::{Error, Result};
 use crate::page::{PageHeader, PageReader, PageSubheader};
+use crate::source::{LocalFileSource, ReadSource};
 use crate::types::{Column, ColumnType, Compression, Endian, Format, Header, Metadata};
-use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -17,33 +17,43 @@ pub fn read_metadata_from_path(
     endian: Endian,
     format: Format,
 ) -> Result<(Metadata, Vec<DataSubheader>, usize, usize)> {
+    read_metadata_from_source(&LocalFileSource::new(path), header, endian, format)
+}
+
+/// Same as [`read_metadata_from_path`] but backed by any [`ReadSource`].
+pub fn read_metadata_from_source(
+    source: &dyn ReadSource,
+    header: &Header,
+    endian: Endian,
+    format: Format,
+) -> Result<(Metadata, Vec<DataSubheader>, usize, usize)> {
     let log_fallback = std::env::var_os("POLARS_READSTAT_METADATA_FALLBACK_LOG").is_some();
 
-    let mut file = BufReader::new(File::open(path)?);
+    let mut file = BufReader::new(source.open_reader()?);
     file.seek(SeekFrom::Start(header.header_length as u64))?;
     match read_metadata_inner(file, header, endian, format, true) {
         Ok(result) => {
             if log_fallback {
-                eprintln!("[metadata] fast-pass used for {}", path.display());
+                eprintln!("[metadata] fast-pass used");
             }
             return Ok(result);
         }
         Err(err) => {
             if log_fallback {
-                eprintln!("[metadata] fast-pass failed for {}: {err}", path.display());
+                eprintln!("[metadata] fast-pass failed: {err}");
             }
             // Fast path failed (incomplete metadata or AMD pages needed) — full scan.
         }
     }
 
     // Fast path failed (incomplete metadata or AMD pages needed) — full scan.
-    let mut file = BufReader::new(File::open(path)?);
+    let mut file = BufReader::new(source.open_reader()?);
     file.seek(SeekFrom::Start(header.header_length as u64))?;
     let result = read_metadata_inner(file, header, endian, format, false);
     if log_fallback {
         match &result {
-            Ok(_) => eprintln!("[metadata] fallback succeeded for {}", path.display()),
-            Err(err) => eprintln!("[metadata] fallback failed for {}: {err}", path.display()),
+            Ok(_) => eprintln!("[metadata] fallback succeeded"),
+            Err(err) => eprintln!("[metadata] fallback failed: {err}"),
         }
     }
     result

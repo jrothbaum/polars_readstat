@@ -1,16 +1,16 @@
+use crate::source::{InMemorySource, LocalFileSource, ReadSource};
 use crate::stata::error::Result;
 use crate::stata::header::read_header;
 use crate::stata::metadata::read_metadata;
 use crate::stata::types::{Header, Metadata};
 use polars::prelude::*;
-use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 /// Main reader for Stata .dta files
 pub struct StataReader {
-    path: PathBuf,
+    source: Arc<dyn ReadSource>,
     header: Header,
     metadata: Metadata,
 }
@@ -31,23 +31,35 @@ pub struct ReadProfile {
 }
 
 impl StataReader {
+    /// Open a Stata .dta file from a local path.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        let mut file = File::open(&path)?;
+        Self::open_source(Arc::new(LocalFileSource::new(path)))
+    }
+
+    /// Open a Stata .dta file already held in memory (e.g. downloaded from
+    /// S3 or otherwise fetched by the caller).
+    pub fn open_bytes(bytes: impl Into<Arc<[u8]>>) -> Result<Self> {
+        Self::open_source(Arc::new(InMemorySource::new(bytes)))
+    }
+
+    /// Open a Stata .dta file from any [`ReadSource`], e.g. a caller-supplied
+    /// remote-object backend.
+    pub fn open_source(source: Arc<dyn ReadSource>) -> Result<Self> {
+        let mut file = source.open_reader()?;
 
         let header = read_header(&mut file)?;
         let metadata = read_metadata(&mut file, &header)?;
 
         Ok(Self {
-            path,
+            source,
             header,
             metadata,
         })
     }
 
     pub fn open_with_profile(path: impl AsRef<Path>) -> Result<(Self, OpenProfile)> {
-        let path = path.as_ref().to_path_buf();
-        let mut file = File::open(&path)?;
+        let source: Arc<dyn ReadSource> = Arc::new(LocalFileSource::new(path));
+        let mut file = source.open_reader()?;
 
         let header_start = Instant::now();
         let header = read_header(&mut file)?;
@@ -59,7 +71,7 @@ impl StataReader {
 
         Ok((
             Self {
-                path,
+                source,
                 header,
                 metadata,
             },
@@ -82,6 +94,12 @@ impl StataReader {
         &self.header
     }
 
+    /// The underlying source backing this reader. Used internally to hand
+    /// each parallel worker its own independent handle.
+    pub(crate) fn source(&self) -> Arc<dyn ReadSource> {
+        self.source.clone()
+    }
+
     fn execute_read(&self, _opts: ReadBuilder) -> Result<DataFrame> {
         let limit = _opts
             .limit
@@ -93,7 +111,7 @@ impl StataReader {
         };
         let mut iter = crate::stata::polars_output::stata_batch_iter_with_reader(
             self,
-            self.path.clone(),
+            self.source(),
             threads,
             _opts.missing_string_as_null,
             _opts.value_labels_as_strings,

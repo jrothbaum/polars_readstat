@@ -5,11 +5,11 @@ use crate::data::DataReader;
 use crate::error::{Error, Result};
 use crate::page::PageReader;
 use crate::reader::{data_reader_at_page_range, Sas7bdatReader};
+use crate::source::{ReadSeek, ReadSource};
 use crate::types::{Column as SasColumn, ColumnType, Endian, Format, Header, Metadata};
 use crate::value::Value;
 use polars::prelude::*;
 use std::cmp::min;
-use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -557,7 +557,7 @@ impl Iterator for RowIndexedIter {
 }
 
 struct AdaptivePageIter {
-    path: PathBuf,
+    source: Arc<dyn ReadSource>,
     header: Header,
     metadata: Arc<Metadata>,
     row_length: usize,
@@ -591,7 +591,7 @@ impl Iterator for AdaptivePageIter {
 
             let page_count = self.pages_per_chunk.min(self.remaining_pages);
             self.current = Some(ordered_parallel_page_iter(
-                self.path.clone(),
+                self.source.clone(),
                 self.header.clone(),
                 self.metadata.clone(),
                 self.row_length,
@@ -694,7 +694,7 @@ impl Drop for OrderedParallelIter {
 }
 
 fn estimate_data_rows_per_page(
-    path: &PathBuf,
+    source: &dyn ReadSource,
     header: &Header,
     endian: Endian,
     format: Format,
@@ -710,7 +710,7 @@ fn estimate_data_rows_per_page(
     let byte_offset = header.header_length as u64
         + first_data_page as u64 * header.page_length as u64
         + page_bit_offset;
-    let mut file = match File::open(path) {
+    let mut file = match source.open_reader() {
         Ok(file) => file,
         Err(_) => return avg,
     };
@@ -730,7 +730,7 @@ fn estimate_data_rows_per_page(
 
 fn spawn_page_worker(
     tx: mpsc::SyncSender<PolarsResult<DataFrame>>,
-    path: PathBuf,
+    source: Arc<dyn ReadSource>,
     header: Header,
     metadata: Arc<Metadata>,
     row_length: usize,
@@ -745,7 +745,7 @@ fn spawn_page_worker(
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let mut data_reader = match data_reader_at_page_range(
-            &path,
+            source.as_ref(),
             &header,
             &metadata,
             endian,
@@ -856,7 +856,7 @@ fn spawn_page_worker(
 }
 
 fn ordered_parallel_page_iter(
-    path: PathBuf,
+    source: Arc<dyn ReadSource>,
     header: Header,
     metadata: Arc<Metadata>,
     row_length: usize,
@@ -884,7 +884,7 @@ fn ordered_parallel_page_iter(
         channels.push_back(rx);
         handles.push(spawn_page_worker(
             tx,
-            path.clone(),
+            source.clone(),
             header.clone(),
             metadata.clone(),
             row_length,
@@ -908,7 +908,7 @@ fn ordered_parallel_page_iter(
 }
 
 pub(crate) struct SerialSasBatchIter {
-    data_reader: DataReader<BufReader<File>>,
+    data_reader: DataReader<BufReader<Box<dyn ReadSeek>>>,
     metadata: Metadata,
     plans: Vec<ColumnPlan>,
     col_indices: Option<Vec<usize>>,
@@ -926,7 +926,7 @@ pub(crate) struct SerialSasBatchIter {
 impl SerialSasBatchIter {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        path: PathBuf,
+        source: Arc<dyn ReadSource>,
         header: Header,
         metadata: Metadata,
         endian: Endian,
@@ -940,7 +940,7 @@ impl SerialSasBatchIter {
         skip: usize,
         row_index_name: Option<String>,
     ) -> PolarsResult<Self> {
-        let mut file = BufReader::new(File::open(&path)?);
+        let mut file = BufReader::new(source.open_reader()?);
         file.seek(SeekFrom::Start(header.header_length as u64))?;
         let page_reader = PageReader::new(file, header, endian, format);
         let mut data_reader = DataReader::new(
@@ -1172,9 +1172,10 @@ pub(crate) fn sas_batch_iter(
 ) -> PolarsResult<SasBatchIter> {
     let reader =
         Sas7bdatReader::open(&path).map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+    let source = reader.source();
     sas_batch_iter_with_reader(
         &reader,
-        path,
+        source,
         threads,
         missing_string_as_null,
         chunk_size,
@@ -1190,7 +1191,7 @@ pub(crate) fn sas_batch_iter(
 
 pub(crate) fn sas_batch_iter_with_reader(
     reader: &Sas7bdatReader,
-    path: PathBuf,
+    source: Arc<dyn ReadSource>,
     threads: Option<usize>,
     missing_string_as_null: bool,
     chunk_size: Option<usize>,
@@ -1280,7 +1281,7 @@ pub(crate) fn sas_batch_iter_with_reader(
         let format = reader.format();
         let initial_data_subheaders = reader.initial_data_subheaders().to_vec();
         let serial = SerialSasBatchIter::new(
-            path.to_path_buf(),
+            source.clone(),
             header,
             metadata,
             endian,
@@ -1325,7 +1326,7 @@ pub(crate) fn sas_batch_iter_with_reader(
         let format = reader.format();
         let initial_data_subheaders = reader.initial_data_subheaders().to_vec();
         let serial = SerialSasBatchIter::new(
-            path.to_path_buf(),
+            source.clone(),
             header,
             metadata,
             endian,
@@ -1361,9 +1362,11 @@ pub(crate) fn sas_batch_iter_with_reader(
         missing_string_as_null,
     ));
 
-    // Derive total page count from file size — no I/O beyond stat(2).
+    // Derive total page count from the source's total length — for a local file this is
+    // still just a stat(2) (see `LocalFileSource::len`); other sources provide their own
+    // cheap-or-not implementation of `ReadSource::len`.
     let total_pages = {
-        let file_len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let file_len = source.len().unwrap_or(0);
         let data_bytes = file_len.saturating_sub(header.header_length as u64);
         (data_bytes / header.page_length as u64) as usize
     };
@@ -1375,7 +1378,7 @@ pub(crate) fn sas_batch_iter_with_reader(
     let mix_iter: Option<SerialSasBatchIter> = if mix_data_rows > 0 {
         let initial_subs = reader.initial_data_subheaders().to_vec();
         Some(SerialSasBatchIter::new(
-            path.clone(),
+            source.clone(),
             header.clone(),
             metadata.as_ref().clone(),
             endian,
@@ -1405,7 +1408,7 @@ pub(crate) fn sas_batch_iter_with_reader(
         if offset > 0 {
             let initial_data_subheaders = reader.initial_data_subheaders().to_vec();
             let serial = SerialSasBatchIter::new(
-                path.to_path_buf(),
+                source.clone(),
                 header,
                 metadata.as_ref().clone(),
                 endian,
@@ -1430,7 +1433,7 @@ pub(crate) fn sas_batch_iter_with_reader(
         let mut exact_iter: SasBatchIter = if requested_mix_rows > 0 {
             let initial_subs = reader.initial_data_subheaders().to_vec();
             Box::new(SerialSasBatchIter::new(
-                path.clone(),
+                source.clone(),
                 header.clone(),
                 metadata.as_ref().clone(),
                 endian,
@@ -1453,7 +1456,7 @@ pub(crate) fn sas_batch_iter_with_reader(
             let total_data_rows = reader.metadata().row_count.saturating_sub(mix_data_rows);
             let data_offset = offset.saturating_sub(mix_data_rows);
             let est_rows_per_page = estimate_data_rows_per_page(
-                &path,
+                source.as_ref(),
                 &header,
                 endian,
                 format,
@@ -1473,7 +1476,7 @@ pub(crate) fn sas_batch_iter_with_reader(
                 .max(1);
 
             let adaptive = AdaptivePageIter {
-                path: path.clone(),
+                source: source.clone(),
                 header: header.clone(),
                 metadata: metadata.clone(),
                 row_length,
@@ -1541,7 +1544,7 @@ pub(crate) fn sas_batch_iter_with_reader(
             channels.push_back(rx);
             handles.push(spawn_page_worker(
                 tx,
-                path.clone(),
+                source.clone(),
                 header.clone(),
                 metadata.clone(),
                 row_length,
@@ -1575,7 +1578,7 @@ pub(crate) fn sas_batch_iter_with_reader(
             let wp_count = pages_per_worker.min(total_pages - wp_start);
             handles.push(spawn_page_worker(
                 shared_tx.clone(),
-                path.clone(),
+                source.clone(),
                 header.clone(),
                 metadata.clone(),
                 row_length,
@@ -1692,7 +1695,7 @@ impl AnonymousScan for SasScan {
 
         let iter = sas_batch_iter_with_reader(
             &reader,
-            self.path.clone(),
+            reader.source(),
             self.num_threads,
             self.missing_string_as_null,
             self.chunk_size,
@@ -1730,95 +1733,112 @@ impl AnonymousScan for SasScan {
     fn schema(&self, _n_rows: Option<usize>) -> PolarsResult<SchemaRef> {
         let reader = Sas7bdatReader::open(&self.path)
             .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+        let schema = schema_from_sas_metadata(
+            reader.metadata(),
+            self.informative_nulls.as_ref(),
+            self.row_index_name.as_deref(),
+        )?;
+        Ok(Arc::new(schema))
+    }
+}
 
-        let cols = &reader.metadata().columns;
-        let var_names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+/// Build the output `Schema` for a SAS7BDAT file directly from its metadata —
+/// no data is read, so this is correct even for a zero-row file. Shared by
+/// [`SasScan::schema`] (lazy, path-based) and callers that only have an
+/// already-open [`Sas7bdatReader`] (e.g. a bytes-backed one, which has no
+/// lazy-scan equivalent).
+pub fn schema_from_sas_metadata(
+    metadata: &Metadata,
+    informative_nulls: Option<&crate::InformativeNullOpts>,
+    row_index_name: Option<&str>,
+) -> PolarsResult<Schema> {
+    let cols = &metadata.columns;
+    let var_names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
 
-        // Build base schema
-        let mut schema = Schema::with_capacity(cols.len());
-        for col in cols.iter() {
-            let dtype = match col.col_type {
-                ColumnType::Numeric => {
-                    // IMPORTANT: Check DATETIME before DATE since "DATETIME" starts with "DATE"
-                    if is_datetime_format(&col.format) {
-                        DataType::Datetime(TimeUnit::Microseconds, None)
-                    } else if is_date_format(&col.format) {
-                        DataType::Date
-                    } else if is_time_format(&col.format) {
-                        DataType::Time
-                    } else {
-                        DataType::Float64
+    // Build base schema
+    let mut schema = Schema::with_capacity(cols.len());
+    for col in cols.iter() {
+        let dtype = match col.col_type {
+            ColumnType::Numeric => {
+                // IMPORTANT: Check DATETIME before DATE since "DATETIME" starts with "DATE"
+                if is_datetime_format(&col.format) {
+                    DataType::Datetime(TimeUnit::Microseconds, None)
+                } else if is_date_format(&col.format) {
+                    DataType::Date
+                } else if is_time_format(&col.format) {
+                    DataType::Time
+                } else {
+                    DataType::Float64
+                }
+            }
+            ColumnType::Character => DataType::String,
+        };
+        schema.with_column(col.name.as_str().into(), dtype);
+    }
+
+    // If informative nulls requested, add/transform indicator columns
+    if let Some(null_opts) = informative_nulls {
+        let eligible: Vec<&str> = cols
+            .iter()
+            .filter(|c| c.col_type == ColumnType::Numeric)
+            .map(|c| c.name.as_str())
+            .collect();
+        let pairs = crate::informative_null_pairs(&var_names, &eligible, null_opts);
+        crate::check_informative_null_collisions(&var_names, &pairs)?;
+
+        use crate::InformativeNullMode;
+        match &null_opts.mode {
+            InformativeNullMode::SeparateColumn { .. } => {
+                // Interleave indicator String columns after each main col
+                let indicator_set: std::collections::HashSet<&str> =
+                    pairs.iter().map(|(_, ind)| ind.as_str()).collect();
+                let main_to_ind: std::collections::HashMap<&str, &str> = pairs
+                    .iter()
+                    .map(|(m, i)| (m.as_str(), i.as_str()))
+                    .collect();
+                let existing_names: Vec<String> =
+                    schema.iter_names().map(|n| n.to_string()).collect();
+                let mut new_schema = Schema::with_capacity(existing_names.len() + pairs.len());
+                for name in &existing_names {
+                    if indicator_set.contains(name.as_str()) {
+                        continue;
+                    }
+                    let dt = schema.get(name.as_str()).unwrap().clone();
+                    new_schema.with_column(name.as_str().into(), dt);
+                    if let Some(&ind) = main_to_ind.get(name.as_str()) {
+                        new_schema.with_column(ind.into(), DataType::String);
                     }
                 }
-                ColumnType::Character => DataType::String,
-            };
-            schema.with_column(col.name.as_str().into(), dtype);
-        }
-
-        // If informative nulls requested, add/transform indicator columns
-        if let Some(null_opts) = &self.informative_nulls {
-            let eligible: Vec<&str> = cols
-                .iter()
-                .filter(|c| c.col_type == ColumnType::Numeric)
-                .map(|c| c.name.as_str())
-                .collect();
-            let pairs = crate::informative_null_pairs(&var_names, &eligible, null_opts);
-            crate::check_informative_null_collisions(&var_names, &pairs)?;
-
-            use crate::InformativeNullMode;
-            match &null_opts.mode {
-                InformativeNullMode::SeparateColumn { .. } => {
-                    // Interleave indicator String columns after each main col
-                    let indicator_set: std::collections::HashSet<&str> =
-                        pairs.iter().map(|(_, ind)| ind.as_str()).collect();
-                    let main_to_ind: std::collections::HashMap<&str, &str> = pairs
-                        .iter()
-                        .map(|(m, i)| (m.as_str(), i.as_str()))
-                        .collect();
-                    let existing_names: Vec<String> =
-                        schema.iter_names().map(|n| n.to_string()).collect();
-                    let mut new_schema = Schema::with_capacity(existing_names.len() + pairs.len());
-                    for name in &existing_names {
-                        if indicator_set.contains(name.as_str()) {
-                            continue;
-                        }
-                        let dt = schema.get(name.as_str()).unwrap().clone();
-                        new_schema.with_column(name.as_str().into(), dt);
-                        if let Some(&ind) = main_to_ind.get(name.as_str()) {
-                            new_schema.with_column(ind.into(), DataType::String);
-                        }
-                    }
-                    schema = new_schema;
+                schema = new_schema;
+            }
+            InformativeNullMode::Struct => {
+                for (main, _ind) in &pairs {
+                    let main_dt = schema
+                        .get(main.as_str())
+                        .cloned()
+                        .unwrap_or(DataType::Float64);
+                    schema.with_column(
+                        main.as_str().into(),
+                        DataType::Struct(vec![
+                            Field::new(main.as_str().into(), main_dt),
+                            Field::new("null_indicator".into(), DataType::String),
+                        ]),
+                    );
                 }
-                InformativeNullMode::Struct => {
-                    for (main, _ind) in &pairs {
-                        let main_dt = schema
-                            .get(main.as_str())
-                            .cloned()
-                            .unwrap_or(DataType::Float64);
-                        schema.with_column(
-                            main.as_str().into(),
-                            DataType::Struct(vec![
-                                Field::new(main.as_str().into(), main_dt),
-                                Field::new("null_indicator".into(), DataType::String),
-                            ]),
-                        );
-                    }
-                }
-                InformativeNullMode::MergedString => {
-                    for (main, _ind) in &pairs {
-                        schema.with_column(main.as_str().into(), DataType::String);
-                    }
+            }
+            InformativeNullMode::MergedString => {
+                for (main, _ind) in &pairs {
+                    schema.with_column(main.as_str().into(), DataType::String);
                 }
             }
         }
-
-        if let Some(ref name) = self.row_index_name {
-            schema = crate::append_row_index_schema(schema, name.as_str())?;
-        }
-
-        Ok(Arc::new(schema))
     }
+
+    if let Some(name) = row_index_name {
+        schema = crate::append_row_index_schema(schema, name)?;
+    }
+
+    Ok(schema)
 }
 
 pub fn scan_sas7bdat(

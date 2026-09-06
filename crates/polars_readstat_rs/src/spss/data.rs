@@ -1,12 +1,11 @@
+use crate::source::{ReadSeek, ReadSource};
 use crate::spss::error::{Error, Result};
 use crate::spss::types::{ColumnPlan as SpssColumnPlan, Endian, FormatClass, Metadata, VarType};
 use crate::text_utils::trim_trailing_pad;
 use flate2::read::ZlibDecoder;
 use polars::prelude::*;
 use std::collections::HashSet;
-use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
-use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -80,7 +79,7 @@ pub(crate) fn profile_print() {
 /// so the file is read in a single sequential pass with no re-seeking.
 /// For compression=2 (ZSAV) it falls back to reading the full range first.
 pub fn read_data_frame_streaming(
-    path: &Path,
+    source: &dyn ReadSource,
     metadata: &Metadata,
     endian: Endian,
     compression: i32,
@@ -93,7 +92,7 @@ pub fn read_data_frame_streaming(
     batch_size: usize,
     on_batch: &mut dyn FnMut(DataFrame) -> bool,
 ) -> Result<()> {
-    let file = File::open(path)?;
+    let file = source.open_reader()?;
     let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
     let data_offset = metadata
         .data_offset
@@ -388,7 +387,7 @@ pub fn read_data_frame_streaming(
 }
 
 pub fn read_data_frame_with_reader(
-    reader: &mut BufReader<File>,
+    reader: &mut BufReader<Box<dyn ReadSeek>>,
     metadata: &Metadata,
     endian: Endian,
     compression: i32,
@@ -561,7 +560,7 @@ pub fn read_data_frame_with_reader(
 
 #[allow(dead_code)]
 pub fn read_data_columns_uncompressed(
-    path: &Path,
+    source: &dyn ReadSource,
     metadata: &Metadata,
     endian: Endian,
     columns: Option<&[usize]>,
@@ -579,7 +578,7 @@ pub fn read_data_columns_uncompressed(
         .map(|v| v.width * 8)
         .sum::<usize>();
 
-    let file = File::open(path)?;
+    let file = source.open_reader()?;
     let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
     reader.seek(SeekFrom::Start(data_offset))?;
 
@@ -1314,7 +1313,7 @@ fn read_zsav_data_with_indicators<R: Read + Seek>(
 /// Indicator columns are of type `String?` (null = not a user-declared missing; `Some(str)` =
 /// the indicator label/value).
 pub fn read_data_frame_with_indicators(
-    path: &Path,
+    source: &dyn ReadSource,
     metadata: &Metadata,
     endian: Endian,
     compression: i32,
@@ -1335,7 +1334,7 @@ pub fn read_data_frame_with_indicators(
         .map(|v| v.width * 8)
         .sum::<usize>();
 
-    let file = File::open(path)?;
+    let file = source.open_reader()?;
     let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
     reader.seek(SeekFrom::Start(data_offset))?;
 

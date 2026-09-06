@@ -2,6 +2,7 @@ use crate::stata::data::{
     build_shared_decode, read_data_frame_range, read_data_frame_range_with_indicators,
     read_data_frame_streaming, SharedDecode,
 };
+use crate::source::ReadSource;
 use crate::stata::reader::StataReader;
 use crate::stata::types::{Endian, Metadata, NumericType, VarType};
 use polars::prelude::*;
@@ -196,7 +197,7 @@ impl Drop for ParallelStataBatchIter {
 }
 
 struct SerialStataBatchIter {
-    path: Arc<PathBuf>,
+    source: Arc<dyn ReadSource>,
     metadata: Arc<Metadata>,
     endian: Endian,
     version: u16,
@@ -226,7 +227,7 @@ impl Iterator for SerialStataBatchIter {
         let row_start = self.cur_offset;
         let result = if let Some(ref null_opts) = self.null_opts {
             read_data_frame_range_with_indicators(
-                &self.path,
+                self.source.as_ref(),
                 &self.metadata,
                 self.endian,
                 self.version,
@@ -255,7 +256,7 @@ impl Iterator for SerialStataBatchIter {
             })
         } else {
             read_data_frame_range(
-                &self.path,
+                self.source.as_ref(),
                 &self.metadata,
                 self.endian,
                 self.version,
@@ -300,9 +301,10 @@ pub(crate) fn stata_batch_iter(
 ) -> PolarsResult<StataBatchIter> {
     let reader =
         StataReader::open(&path).map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+    let source = reader.source();
     stata_batch_iter_with_reader(
         &reader,
-        path,
+        source,
         threads,
         missing_string_as_null,
         value_labels_as_strings,
@@ -318,7 +320,7 @@ pub(crate) fn stata_batch_iter(
 
 pub(crate) fn stata_batch_iter_with_reader(
     reader: &StataReader,
-    path: PathBuf,
+    source: Arc<dyn ReadSource>,
     threads: Option<usize>,
     missing_string_as_null: bool,
     value_labels_as_strings: bool,
@@ -395,7 +397,6 @@ pub(crate) fn stata_batch_iter_with_reader(
         let total_chunks = (total + batch_size - 1) / batch_size;
         let n_workers = n_threads.min(total_chunks.max(1));
         let (tx, rx) = mpsc::sync_channel::<(usize, PolarsResult<DataFrame>)>(n_workers);
-        let path = Arc::new(path);
         let metadata = Arc::new(reader.metadata().clone());
         let endian = reader.header().endian;
         let version = reader.header().version;
@@ -403,7 +404,7 @@ pub(crate) fn stata_batch_iter_with_reader(
         let formats = Arc::new(time_formats);
         let missing_null = missing_string_as_null;
         let labels_as_strings = value_labels_as_strings;
-        let shared = build_shared_decode(&path, &metadata, endian, version, labels_as_strings)
+        let shared = build_shared_decode(source.as_ref(), &metadata, endian, version, labels_as_strings)
             .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
         let shared = Arc::new(shared);
 
@@ -463,7 +464,7 @@ pub(crate) fn stata_batch_iter_with_reader(
                         };
 
                         let result = read_data_frame_streaming(
-                            &path,
+                            source.as_ref(),
                             &metadata,
                             endian,
                             version,
@@ -498,7 +499,6 @@ pub(crate) fn stata_batch_iter_with_reader(
 
     let _ = preserve_order;
 
-    let path = Arc::new(path);
     let metadata = Arc::new(reader.metadata().clone());
     let endian = reader.header().endian;
     let version = reader.header().version;
@@ -529,10 +529,10 @@ pub(crate) fn stata_batch_iter_with_reader(
             crate::InformativeNullMode::SeparateColumn { suffix } => suffix.clone(),
             _ => "_null".to_string(),
         };
-        let shared = build_shared_decode(&path, &metadata, endian, version, labels)
+        let shared = build_shared_decode(source.as_ref(), &metadata, endian, version, labels)
             .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
         return Ok(Box::new(SerialStataBatchIter {
-            path,
+            source,
             metadata,
             endian,
             version,
@@ -552,10 +552,10 @@ pub(crate) fn stata_batch_iter_with_reader(
         }));
     }
 
-    let shared = build_shared_decode(&path, &metadata, endian, version, labels)
+    let shared = build_shared_decode(source.as_ref(), &metadata, endian, version, labels)
         .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
     Ok(Box::new(SerialStataBatchIter {
-        path,
+        source,
         metadata,
         endian,
         version,
@@ -621,63 +621,75 @@ impl AnonymousScan for StataScan {
     fn schema(&self, _n_rows: Option<usize>) -> PolarsResult<SchemaRef> {
         let reader = StataReader::open(&self.path)
             .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
-
-        let mut schema = Schema::with_capacity(reader.metadata().variables.len());
-        for var in &reader.metadata().variables {
-            let use_labels = self.value_labels_as_strings.unwrap_or(true);
-            let dtype = if use_labels && var.value_label_name.is_some() {
-                DataType::String
-            } else {
-                if let Some(kind) = stata_time_format_kind(var.format.as_deref(), &var.var_type) {
-                    match kind {
-                        StataTimeFormatKind::Date => DataType::Date,
-                        StataTimeFormatKind::DateTime => {
-                            DataType::Datetime(TimeUnit::Milliseconds, None)
-                        }
-                        StataTimeFormatKind::Time { .. } => DataType::Time,
-                    }
-                } else {
-                    match var.var_type {
-                        VarType::Numeric(NumericType::Byte) => DataType::Int8,
-                        VarType::Numeric(NumericType::Int) => DataType::Int16,
-                        VarType::Numeric(NumericType::Long) => DataType::Int32,
-                        VarType::Numeric(NumericType::Float) => DataType::Float32,
-                        VarType::Numeric(NumericType::Double) => DataType::Float64,
-                        VarType::Str(_) | VarType::StrL => DataType::String,
-                    }
-                }
-            };
-            schema.with_column(var.name.as_str().into(), dtype);
-        }
-
-        if let Some(ref null_opts) = self.informative_nulls {
-            let var_names: Vec<&str> = reader
-                .metadata()
-                .variables
-                .iter()
-                .map(|v| v.name.as_str())
-                .collect();
-            let eligible: Vec<&str> = reader
-                .metadata()
-                .variables
-                .iter()
-                .filter(|v| matches!(v.var_type, VarType::Numeric(_)))
-                .map(|v| v.name.as_str())
-                .collect();
-            let pairs = crate::informative_null_pairs(&var_names, &eligible, null_opts);
-            crate::check_informative_null_collisions(&var_names, &pairs)?;
-            let mut schema = crate::build_indicator_schema(schema, &pairs, &null_opts.mode);
-            if let Some(ref name) = self.row_index_name {
-                schema = crate::append_row_index_schema(schema, name.as_str())?;
-            }
-            return Ok(Arc::new(schema));
-        }
-
-        if let Some(ref name) = self.row_index_name {
-            schema = crate::append_row_index_schema(schema, name.as_str())?;
-        }
+        let schema = schema_from_stata_metadata(
+            reader.metadata(),
+            self.value_labels_as_strings.unwrap_or(true),
+            self.informative_nulls.as_ref(),
+            self.row_index_name.as_deref(),
+        )?;
         Ok(Arc::new(schema))
     }
+}
+
+/// Build the output `Schema` for a Stata .dta file directly from its
+/// metadata — no data is read, so this is correct even for a zero-row file.
+/// Shared by [`StataScan::schema`] (lazy, path-based) and callers that only
+/// have an already-open [`StataReader`] (e.g. a bytes-backed one, which has
+/// no lazy-scan equivalent).
+pub fn schema_from_stata_metadata(
+    metadata: &Metadata,
+    value_labels_as_strings: bool,
+    informative_nulls: Option<&crate::InformativeNullOpts>,
+    row_index_name: Option<&str>,
+) -> PolarsResult<Schema> {
+    let mut schema = Schema::with_capacity(metadata.variables.len());
+    for var in &metadata.variables {
+        let dtype = if value_labels_as_strings && var.value_label_name.is_some() {
+            DataType::String
+        } else {
+            if let Some(kind) = stata_time_format_kind(var.format.as_deref(), &var.var_type) {
+                match kind {
+                    StataTimeFormatKind::Date => DataType::Date,
+                    StataTimeFormatKind::DateTime => {
+                        DataType::Datetime(TimeUnit::Milliseconds, None)
+                    }
+                    StataTimeFormatKind::Time { .. } => DataType::Time,
+                }
+            } else {
+                match var.var_type {
+                    VarType::Numeric(NumericType::Byte) => DataType::Int8,
+                    VarType::Numeric(NumericType::Int) => DataType::Int16,
+                    VarType::Numeric(NumericType::Long) => DataType::Int32,
+                    VarType::Numeric(NumericType::Float) => DataType::Float32,
+                    VarType::Numeric(NumericType::Double) => DataType::Float64,
+                    VarType::Str(_) | VarType::StrL => DataType::String,
+                }
+            }
+        };
+        schema.with_column(var.name.as_str().into(), dtype);
+    }
+
+    if let Some(null_opts) = informative_nulls {
+        let var_names: Vec<&str> = metadata.variables.iter().map(|v| v.name.as_str()).collect();
+        let eligible: Vec<&str> = metadata
+            .variables
+            .iter()
+            .filter(|v| matches!(v.var_type, VarType::Numeric(_)))
+            .map(|v| v.name.as_str())
+            .collect();
+        let pairs = crate::informative_null_pairs(&var_names, &eligible, null_opts);
+        crate::check_informative_null_collisions(&var_names, &pairs)?;
+        let mut schema = crate::build_indicator_schema(schema, &pairs, &null_opts.mode);
+        if let Some(name) = row_index_name {
+            schema = crate::append_row_index_schema(schema, name)?;
+        }
+        return Ok(schema);
+    }
+
+    if let Some(name) = row_index_name {
+        schema = crate::append_row_index_schema(schema, name)?;
+    }
+    Ok(schema)
 }
 
 #[derive(Debug, Clone, Copy)]

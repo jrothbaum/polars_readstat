@@ -1,3 +1,4 @@
+use crate::source::ReadSource;
 use crate::spss::data::read_data_frame_streaming;
 use crate::spss::reader::SpssReader;
 use crate::spss::types::FormatClass;
@@ -189,9 +190,10 @@ pub(crate) fn spss_batch_iter(
 ) -> PolarsResult<SpssBatchIter> {
     let reader =
         SpssReader::open(&path).map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+    let source = reader.source();
     spss_batch_iter_with_reader(
         &reader,
-        path,
+        source,
         threads,
         missing_string_as_null,
         value_labels_as_strings,
@@ -207,7 +209,7 @@ pub(crate) fn spss_batch_iter(
 
 pub(crate) fn spss_batch_iter_with_reader(
     reader: &SpssReader,
-    path: PathBuf,
+    source: Arc<dyn ReadSource>,
     threads: Option<usize>,
     missing_string_as_null: bool,
     value_labels_as_strings: bool,
@@ -306,11 +308,10 @@ pub(crate) fn spss_batch_iter_with_reader(
             })
             .collect();
 
-        let path = Arc::new(path);
         let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(2);
         let handle = std::thread::spawn(move || {
             let df = crate::spss::data::read_data_frame_with_indicators(
-                &path,
+                source.as_ref(),
                 &metadata,
                 endian,
                 compression,
@@ -363,7 +364,6 @@ pub(crate) fn spss_batch_iter_with_reader(
         let total_chunks = (total + batch_size - 1) / batch_size;
         let n_workers = n_threads.min(total_chunks.max(1));
         let (tx, rx) = mpsc::sync_channel::<(usize, PolarsResult<DataFrame>)>(n_workers);
-        let path = Arc::new(path);
         let metadata = Arc::new(reader.metadata().clone());
         let endian = reader.endian();
         let bias = reader.header().bias;
@@ -439,7 +439,7 @@ pub(crate) fn spss_batch_iter_with_reader(
                         };
 
                         let result = read_data_frame_streaming(
-                            &path,
+                            source.as_ref(),
                             &metadata,
                             endian,
                             0,
@@ -504,7 +504,7 @@ pub(crate) fn spss_batch_iter_with_reader(
         let handle = std::thread::spawn(move || {
             let mut next_row = offset;
             if let Err(e) = crate::spss::data::read_data_frame_streaming(
-                &path,
+                source.as_ref(),
                 &metadata,
                 endian,
                 compression,
@@ -574,7 +574,7 @@ pub(crate) fn spss_batch_iter_with_reader(
     let handle = std::thread::spawn(move || {
         let mut next_row = offset;
         if let Err(e) = crate::spss::data::read_data_frame_streaming(
-            &path,
+            source.as_ref(),
             &metadata,
             endian,
             compression,
@@ -695,37 +695,55 @@ impl AnonymousScan for SpssScan {
     fn schema(&self, _n_rows: Option<usize>) -> PolarsResult<SchemaRef> {
         let reader = SpssReader::open(&self.path)
             .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
-        let metadata = reader.metadata();
-        let value_labels_as_strings = self.value_labels_as_strings.unwrap_or(true);
-        let base_schema = build_schema(metadata, value_labels_as_strings);
+        let schema = schema_from_spss_metadata(
+            reader.metadata(),
+            self.value_labels_as_strings.unwrap_or(true),
+            self.informative_nulls.as_ref(),
+            self.row_index_name.as_deref(),
+        )?;
+        Ok(Arc::new(schema))
+    }
+}
 
-        if let Some(null_opts) = &self.informative_nulls {
-            let var_names: Vec<&str> = metadata.variables.iter().map(|v| v.name.as_str()).collect();
-            let eligible: Vec<&str> = metadata
-                .variables
-                .iter()
-                .filter(|v| {
-                    use crate::spss::types::VarType;
-                    (v.var_type == VarType::Numeric
-                        && (!v.missing_doubles.is_empty() || v.missing_range))
-                        || (v.var_type == VarType::Str && !v.missing_strings.is_empty())
-                })
-                .map(|v| v.name.as_str())
-                .collect();
-            let pairs = crate::informative_null_pairs(&var_names, &eligible, null_opts);
-            crate::check_informative_null_collisions(&var_names, &pairs)?;
-            let mut schema = crate::build_indicator_schema(base_schema, &pairs, &null_opts.mode);
-            if let Some(ref name) = self.row_index_name {
-                schema = crate::append_row_index_schema(schema, name.as_str())?;
-            }
-            Ok(Arc::new(schema))
-        } else {
-            let mut schema = base_schema;
-            if let Some(ref name) = self.row_index_name {
-                schema = crate::append_row_index_schema(schema, name.as_str())?;
-            }
-            Ok(Arc::new(schema))
+/// Build the output `Schema` for an SPSS .sav/.zsav file directly from its
+/// metadata — no data is read, so this is correct even for a zero-row file.
+/// Shared by [`SpssScan::schema`] (lazy, path-based) and callers that only
+/// have an already-open [`SpssReader`] (e.g. a bytes-backed one, which has
+/// no lazy-scan equivalent).
+pub fn schema_from_spss_metadata(
+    metadata: &crate::spss::types::Metadata,
+    value_labels_as_strings: bool,
+    informative_nulls: Option<&crate::InformativeNullOpts>,
+    row_index_name: Option<&str>,
+) -> PolarsResult<Schema> {
+    let base_schema = build_schema(metadata, value_labels_as_strings);
+
+    if let Some(null_opts) = informative_nulls {
+        let var_names: Vec<&str> = metadata.variables.iter().map(|v| v.name.as_str()).collect();
+        let eligible: Vec<&str> = metadata
+            .variables
+            .iter()
+            .filter(|v| {
+                use crate::spss::types::VarType;
+                (v.var_type == VarType::Numeric
+                    && (!v.missing_doubles.is_empty() || v.missing_range))
+                    || (v.var_type == VarType::Str && !v.missing_strings.is_empty())
+            })
+            .map(|v| v.name.as_str())
+            .collect();
+        let pairs = crate::informative_null_pairs(&var_names, &eligible, null_opts);
+        crate::check_informative_null_collisions(&var_names, &pairs)?;
+        let mut schema = crate::build_indicator_schema(base_schema, &pairs, &null_opts.mode);
+        if let Some(name) = row_index_name {
+            schema = crate::append_row_index_schema(schema, name)?;
         }
+        Ok(schema)
+    } else {
+        let mut schema = base_schema;
+        if let Some(name) = row_index_name {
+            schema = crate::append_row_index_schema(schema, name)?;
+        }
+        Ok(schema)
     }
 }
 

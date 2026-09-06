@@ -1,9 +1,9 @@
 use crate::sas::constants::{DATE_FORMATS, DATETIME_FORMATS, TIME_FORMATS};
+use crate::source::{LocalFileSource, ReadSeek, ReadSource};
 use polars::prelude::*;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
@@ -272,7 +272,13 @@ fn align_to_record(reader: &mut (impl Read + Seek)) -> PolarsResult<()> {
 // ────────────────────────────────────────────────────────────────
 
 pub fn read_xpt_metadata(path: &Path) -> PolarsResult<XptMetadata> {
-    let file = File::open(path)
+    read_xpt_metadata_from_source(&LocalFileSource::new(path))
+}
+
+/// Same as [`read_xpt_metadata`] but backed by any [`ReadSource`].
+pub fn read_xpt_metadata_from_source(source: &dyn ReadSource) -> PolarsResult<XptMetadata> {
+    let file = source
+        .open_reader()
         .map_err(|e| PolarsError::ComputeError(format!("XPT open: {e}").into()))?;
     let mut r = BufReader::new(file);
 
@@ -342,11 +348,9 @@ pub fn read_xpt_metadata(path: &Path) -> PolarsResult<XptMetadata> {
         .stream_position()
         .map_err(|e| PolarsError::ComputeError(format!("XPT seek: {e}").into()))?;
 
-    let file_size = r
-        .get_ref()
-        .metadata()
-        .map_err(|e| PolarsError::ComputeError(format!("XPT stat: {e}").into()))?
-        .len();
+    let file_size = source
+        .len()
+        .map_err(|e| PolarsError::ComputeError(format!("XPT stat: {e}").into()))?;
 
     let row_length: usize = columns.iter().map(|c| c.storage_width).sum();
     let row_count = if row_length == 0 {
@@ -683,7 +687,7 @@ impl XptBatchBuilder {
 // ────────────────────────────────────────────────────────────────
 
 struct XptBatchIter {
-    reader: BufReader<File>,
+    reader: BufReader<Box<dyn ReadSeek>>,
     col_plan: Vec<(XptColumn, ColKind)>,
     row_length: usize,
     batch_size: usize,
@@ -701,7 +705,7 @@ struct XptBatchIter {
 
 impl XptBatchIter {
     fn new(
-        path: &Path,
+        source: &dyn ReadSource,
         meta: &XptMetadata,
         col_plan: Vec<(XptColumn, ColKind)>,
         batch_size: usize,
@@ -710,7 +714,8 @@ impl XptBatchIter {
         missing_string_as_null: bool,
         row_index_name: Option<String>,
     ) -> PolarsResult<Self> {
-        let file = File::open(path)
+        let file = source
+            .open_reader()
             .map_err(|e| PolarsError::ComputeError(format!("XPT open: {e}").into()))?;
         let mut reader = BufReader::new(file);
         reader
@@ -866,6 +871,24 @@ fn build_schema(col_plan: &[(XptColumn, ColKind)]) -> Schema {
     schema
 }
 
+/// Build the output `Schema` for an XPT file directly from its metadata —
+/// no data is read, so this is correct even for a zero-row file. Shared by
+/// [`XptScan::schema`] (lazy, path-based) and callers that only have
+/// already-loaded [`XptMetadata`] (e.g. a bytes-backed read, which has no
+/// lazy-scan equivalent).
+pub fn schema_from_xpt_metadata(
+    meta: &XptMetadata,
+    columns: Option<&[String]>,
+    row_index_name: Option<&str>,
+) -> PolarsResult<Schema> {
+    let col_plan = build_col_plan(meta, columns);
+    let mut schema = build_schema(&col_plan);
+    if let Some(name) = row_index_name {
+        schema = crate::append_row_index_schema(schema, name)?;
+    }
+    Ok(schema)
+}
+
 // ────────────────────────────────────────────────────────────────
 // AnonymousScan implementation
 // ────────────────────────────────────────────────────────────────
@@ -924,7 +947,7 @@ impl AnonymousScan for XptScan {
         });
 
         let iter = xpt_batch_iter(
-            self.path.clone(),
+            Arc::new(LocalFileSource::new(&self.path)),
             self.threads,
             self.missing_string_as_null,
             self.chunk_size,
@@ -1034,7 +1057,7 @@ impl Drop for ParallelXptBatchIter {
 
 /// Batch iterator for XPT files (used by readstat_batch_iter).
 pub fn xpt_batch_iter(
-    path: PathBuf,
+    source: Arc<dyn ReadSource>,
     threads: Option<usize>,
     missing_string_as_null: bool,
     chunk_size: Option<usize>,
@@ -1044,7 +1067,7 @@ pub fn xpt_batch_iter(
     skip: usize,
     n_rows: Option<usize>,
 ) -> PolarsResult<Box<dyn Iterator<Item = PolarsResult<DataFrame>> + Send>> {
-    let meta = read_xpt_metadata(&path)?;
+    let meta = read_xpt_metadata_from_source(source.as_ref())?;
     let col_plan = build_col_plan(&meta, columns.as_deref());
 
     let max_rows = meta.row_count.saturating_sub(skip);
@@ -1061,7 +1084,6 @@ pub fn xpt_batch_iter(
         let n_workers = n_threads.min(total_chunks);
         let (tx, rx) = mpsc::sync_channel::<(usize, PolarsResult<DataFrame>)>(n_workers);
 
-        let path = Arc::new(path);
         let meta = Arc::new(meta);
         let col_plan = Arc::new(col_plan);
         let ranges = split_batch_ranges(total_chunks, n_workers);
@@ -1086,7 +1108,7 @@ pub fn xpt_batch_iter(
                         let row_index_name = row_index_name.clone();
 
                         let iter = match XptBatchIter::new(
-                            &path,
+                            source.as_ref(),
                             &meta,
                             (*col_plan).clone(),
                             batch_size,
@@ -1126,7 +1148,7 @@ pub fn xpt_batch_iter(
 
     // Serial path
     let iter = XptBatchIter::new(
-        &path,
+        source.as_ref(),
         &meta,
         col_plan,
         batch_size,
@@ -1144,7 +1166,12 @@ fn df_col_str<'a>(df: &'a polars::prelude::DataFrame, col: &str, row: usize) -> 
 
 /// Export XPT metadata as JSON (mirrors the SAS7BDAT metadata_json format).
 pub fn xpt_metadata_json(path: &Path) -> PolarsResult<String> {
-    let meta = read_xpt_metadata(path)?;
+    xpt_metadata_json_from_source(&LocalFileSource::new(path))
+}
+
+/// Same as [`xpt_metadata_json`] but backed by any [`ReadSource`].
+pub fn xpt_metadata_json_from_source(source: &dyn ReadSource) -> PolarsResult<String> {
+    let meta = read_xpt_metadata_from_source(source)?;
     let df = &meta.metadata_df;
     let columns: Vec<serde_json::Value> = meta
         .columns

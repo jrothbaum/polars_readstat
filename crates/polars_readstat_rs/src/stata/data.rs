@@ -5,12 +5,11 @@ use crate::stata::value::{
     missing_rules, offset_to_stata_label, read_f32, read_f32_tagged, read_f64, read_f64_tagged,
     read_i16, read_i16_tagged, read_i32, read_i32_tagged, read_i8, read_i8_tagged,
 };
+use crate::source::{ReadSeek, ReadSource};
 use byteorder::ReadBytesExt;
 use polars::prelude::*;
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
-use std::path::Path;
 use std::sync::Arc;
 
 pub struct SharedDecode {
@@ -19,13 +18,13 @@ pub struct SharedDecode {
 }
 
 pub fn build_shared_decode(
-    path: &Path,
+    source: &dyn ReadSource,
     metadata: &Metadata,
     endian: Endian,
     ds_format: u16,
     value_labels_as_strings: bool,
 ) -> Result<SharedDecode> {
-    let file = File::open(path)?;
+    let file = source.open_reader()?;
     let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
     let strls = if metadata
         .variables
@@ -48,7 +47,7 @@ pub fn build_shared_decode(
 }
 
 pub fn read_data_frame_range(
-    path: &Path,
+    source: &dyn ReadSource,
     metadata: &Metadata,
     endian: Endian,
     ds_format: u16,
@@ -59,7 +58,7 @@ pub fn read_data_frame_range(
     value_labels_as_strings: bool,
     shared: &SharedDecode,
 ) -> Result<DataFrame> {
-    let file = File::open(path)?;
+    let file = source.open_reader()?;
     let data_offset = metadata.data_offset.ok_or_else(|| Error::MissingMetadata)?;
     let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
 
@@ -222,7 +221,7 @@ pub fn read_data_frame_range(
 /// a batch of `batch_size` rows to `on_batch` as soon as each batch is ready.
 /// Returns `false` from the callback to stop early.
 pub fn read_data_frame_streaming(
-    path: &Path,
+    source: &dyn ReadSource,
     metadata: &Metadata,
     endian: Endian,
     ds_format: u16,
@@ -235,7 +234,7 @@ pub fn read_data_frame_streaming(
     batch_size: usize,
     on_batch: &mut dyn FnMut(DataFrame) -> bool,
 ) -> Result<()> {
-    let file = File::open(path)?;
+    let file = source.open_reader()?;
     let data_offset = metadata.data_offset.ok_or_else(|| Error::MissingMetadata)?;
     let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
 
@@ -495,7 +494,7 @@ fn build_numeric_plans(
 }
 
 fn read_numeric_only(
-    reader: &mut BufReader<File>,
+    reader: &mut BufReader<Box<dyn ReadSeek>>,
     builders: &mut [ColumnBuilder],
     plans: &[NumericPlan],
     row_buf: &mut [u8],
@@ -872,7 +871,7 @@ fn read_tag<R: Read>(reader: &mut R, tag: &[u8]) -> Result<()> {
 }
 
 fn load_strls(
-    reader: &mut BufReader<File>,
+    reader: &mut BufReader<Box<dyn ReadSeek>>,
     metadata: &Metadata,
     endian: Endian,
     ds_format: u16,
@@ -1137,7 +1136,7 @@ fn indicator_from_offset_f(
 /// Informative-null read of a full batch. Returns a DataFrame where indicator columns
 /// are appended after all data columns (caller must apply mode transformation).
 pub fn read_data_frame_range_with_indicators(
-    path: &Path,
+    source: &dyn ReadSource,
     metadata: &Metadata,
     endian: Endian,
     ds_format: u16,
@@ -1151,7 +1150,7 @@ pub fn read_data_frame_range_with_indicators(
     use_value_labels: bool,
     indicator_suffix: &str,
 ) -> Result<DataFrame> {
-    let file = File::open(path)?;
+    let file = source.open_reader()?;
     let data_offset = metadata.data_offset.ok_or_else(|| Error::MissingMetadata)?;
     let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
 

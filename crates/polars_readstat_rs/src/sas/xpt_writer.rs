@@ -1,8 +1,8 @@
+use crate::destination::WriteTarget;
 use chrono::prelude::*;
 use polars::prelude::*;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::path::PathBuf;
 
 const LINE_LEN: usize = 80;
@@ -205,6 +205,10 @@ impl<W: Write> Ctx<W> {
     fn flush(&mut self) -> std::io::Result<()> {
         self.w.flush()
     }
+
+    fn into_inner(self) -> W {
+        self.w
+    }
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -373,7 +377,7 @@ fn extract_col_data(df: &DataFrame, cols: &[WriteColumn]) -> PolarsResult<Vec<Co
 
 #[derive(Debug, Clone)]
 pub struct XptWriter {
-    path: PathBuf,
+    destination: WriteTarget,
     version: u8,
     table_name: String,
     file_label: String,
@@ -384,8 +388,12 @@ pub struct XptWriter {
 
 impl XptWriter {
     pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self::with_destination(WriteTarget::local(path.into()))
+    }
+
+    pub fn with_destination(destination: WriteTarget) -> Self {
         Self {
-            path: path.into(),
+            destination,
             version: 8,
             table_name: String::new(),
             file_label: String::new(),
@@ -426,15 +434,20 @@ impl XptWriter {
                 "XPT version must be 5 or 8".into(),
             ));
         }
-        let file = File::create(&self.path)
+        let writer = self
+            .destination
+            .create_writer()
             .map_err(|e| PolarsError::ComputeError(format!("XPT create: {e}").into()))?;
-        let mut ctx = Ctx::new(BufWriter::new(file));
+        let mut ctx = Ctx::new(writer);
         let (cols, row_length) = self.build_col_plan(df)?;
         let timestamp = format_timestamp();
         write_headers(&mut ctx, &self, &cols, row_length, &timestamp)?;
         write_data(&mut ctx, df, &cols, row_length)?;
         ctx.flush()
-            .map_err(|e| PolarsError::ComputeError(format!("XPT flush: {e}").into()))
+            .map_err(|e| PolarsError::ComputeError(format!("XPT flush: {e}").into()))?;
+        ctx.into_inner()
+            .finish()
+            .map_err(|e| PolarsError::ComputeError(format!("XPT finish: {e}").into()))
     }
 
     fn build_col_plan(&self, df: &DataFrame) -> PolarsResult<(Vec<WriteColumn>, usize)> {
