@@ -108,7 +108,7 @@ scan_readstat("/path/file.sas7bdat",preserve_order=True).sink_parquet("/path/fil
 ```
 
 #### Slower, Order-Preserving, Low-RAM Conversion
-If you don't care as much about speed, but want the row order preserved and low RAM, set the `threads=1` and it will stream in order (somewhat slower) with super low ram usage.
+If you don't care as much about speed, but want the row order preserved and low RAM, set `threads=1` and it will stream in order (somewhat slower) with super low ram usage.
 ```
 scan_readstat("/path/file.sas7bdat",threads=1).sink_parquet("/path/file.parquet")
 ```
