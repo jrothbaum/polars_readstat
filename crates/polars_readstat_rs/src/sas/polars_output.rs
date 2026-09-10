@@ -438,7 +438,7 @@ fn assign_row_index_from_tags(mut df: DataFrame, name: &str) -> PolarsResult<Dat
 
     // Count rows per thread using a BTreeMap so iteration order matches file order.
     let mut thread_counts: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
-    for t in thread_ca.into_iter().flatten() {
+    for t in thread_ca.iter().flatten() {
         *thread_counts.entry(t).or_insert(0) += 1;
     }
 
@@ -452,8 +452,8 @@ fn assign_row_index_from_tags(mut df: DataFrame, name: &str) -> PolarsResult<Dat
 
     // Build the global row index: offset[thread] + row_within_thread.
     let row_indices: Vec<u32> = thread_ca
-        .into_iter()
-        .zip(row_ca.into_iter())
+        .iter()
+        .zip(row_ca.iter())
         .map(|(t, r)| offsets.get(&t.unwrap_or(0)).copied().unwrap_or(0) + r.unwrap_or(0))
         .collect();
 

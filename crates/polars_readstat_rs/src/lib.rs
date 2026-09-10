@@ -85,7 +85,7 @@ pub use stata::{
 pub use stata::metadata_json_from_meta as stata_metadata_json_from_meta;
 
 use polars::prelude::DataFrame;
-use polars_core::POOL;
+use polars_core::runtime::THREAD_POOL as POOL;
 use std::path::Path;
 
 pub(crate) fn default_thread_count() -> usize {

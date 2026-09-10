@@ -1216,7 +1216,7 @@ fn sink_stata(
                     let name = series.name().as_str().to_string();
                     let utf8 = series.str()?;
                     let current = width_guard.entry(name.clone()).or_insert(1);
-                    for opt in utf8.into_iter() {
+                    for opt in utf8.iter() {
                         if let Some(s) = opt {
                             if s.as_bytes().iter().any(|b| *b == 0) || s.ends_with(' ') {
                                 return Err(PolarsError::ComputeError(

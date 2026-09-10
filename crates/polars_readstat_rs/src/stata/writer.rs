@@ -913,7 +913,7 @@ fn analyze_string_column(series: &Series) -> Result<StringColumnAnalysis> {
     let mut max_len = 0usize;
     let mut has_nul = false;
     let mut has_trailing_space = false;
-    for opt in utf8.into_iter() {
+    for opt in utf8.iter() {
         if let Some(s) = opt {
             let bytes = s.as_bytes();
             max_len = max_len.max(bytes.len());

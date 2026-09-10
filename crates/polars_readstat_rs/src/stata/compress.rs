@@ -204,7 +204,7 @@ fn compress_numeric_series(
 fn try_parse_string_to_f64(series: &Series) -> Result<Option<Series>> {
     let utf8 = series.str().map_err(Error::Polars)?;
     let mut values: Vec<Option<f64>> = Vec::with_capacity(series.len());
-    for opt in utf8.into_iter() {
+    for opt in utf8.iter() {
         match opt {
             None => values.push(None),
             Some(s) => {
@@ -228,7 +228,7 @@ fn all_integers(series: &Series) -> Result<bool> {
     match series.dtype() {
         DataType::Float32 => {
             let ca = series.f32().map_err(Error::Polars)?;
-            for v in ca.into_iter() {
+            for v in ca.iter() {
                 if let Some(v) = v {
                     if v.fract() != 0.0 {
                         return Ok(false);
@@ -239,7 +239,7 @@ fn all_integers(series: &Series) -> Result<bool> {
         }
         DataType::Float64 => {
             let ca = series.f64().map_err(Error::Polars)?;
-            for v in ca.into_iter() {
+            for v in ca.iter() {
                 if let Some(v) = v {
                     if v.fract() != 0.0 {
                         return Ok(false);
@@ -259,7 +259,7 @@ fn min_max_f64(series: &Series) -> Result<(Option<f64>, Option<f64>)> {
     match series.dtype() {
         DataType::Float32 => {
             let ca = series.f32().map_err(Error::Polars)?;
-            for v in ca.into_iter() {
+            for v in ca.iter() {
                 if let Some(v) = v {
                     let v = v as f64;
                     any = true;
@@ -274,7 +274,7 @@ fn min_max_f64(series: &Series) -> Result<(Option<f64>, Option<f64>)> {
         }
         _ => {
             let ca = series.f64().map_err(Error::Polars)?;
-            for v in ca.into_iter() {
+            for v in ca.iter() {
                 if let Some(v) = v {
                     any = true;
                     if v < min {
