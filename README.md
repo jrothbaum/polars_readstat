@@ -3,22 +3,26 @@ Polars plugin for SAS (`.sas7bdat`), Stata (`.dta`), and SPSS (`.sav`/`.zsav`) f
 
 The Python package wraps the Rust core in [polars_readstat_rs](https://crates.io/crates/polars-readstat-rs) and exposes a Polars-first API. The project includes cross-library parity tests and roundtrip checks to reduce regressions.
 
-The Rust engine is generally faster for many workloads, but performance varies by file shape and options. If you need the legacy C/C++ engine, use version 0.11.1 (see the [prior version](https://github.com/jrothbaum/polars_readstat/tree/250f516a4424fbbe84c931a41cb82b454c5ca205)).
-
 ## Why use this?
 
-- In project benchmarks, the new Rust-backed engine is typically faster than pandas/pyreadstat on large SAS/Stata files, especially for subset/filter workloads.
-- It avoids the older C/C++ toolchain complexity and ships as standard Python wheels.
-- API is Polars-first (`scan_readstat`, `read_readstat`, `write_readstat`, `write_sas_csv_import`).
-- Because `scan_readstat` returns a Polars `LazyFrame`, column selection and row limits are pushed into the reader — only the data you actually need is read from disk.
+- In project [benchmarks](#benchmark), polars_readstat is typically faster than pandas/pyreadstat (usually at least 4x faster), and can be much, much faster for loading subsets of rows or columns.
+- It returns a Polars `LazyFrame`, so many polars operations that reduce the number of columns or rows you need can be pushed into the reader — only the data you actually need is read from disk.
+- Lots of customization and options for reading metadata (quickly), handling formats and labels, special null encoding, etc. to flexibly handle many needs when converting stat software data into a polars dataframe
+- Fast and low memory streaming of files to parquet, if you just want to get the data out of the original format to something more efficient ([see code below](#sink)).
 
 ## Install
 
 ```bash
+uv add polars-readstat
+```
+
+or if you prefer pip:
+```bash
 pip install polars-readstat
 ```
 
-## Core API
+## Docs/Core API
+View the docs at [https://jrothbaum.github.io/polars_readstat/](https://jrothbaum.github.io/polars_readstat/) for more information than below on the options you can pass to the scan and write functions.
 
 ### 1) Lazy scan
 ```python
@@ -75,7 +79,7 @@ df = scan_readstat("file.dta").select(["id", "age"]).filter(pl.col("age") >= 18)
 
 The benchmark numbers below reflect these optimizations — the large "Subset: True" speedups come from column pushdown.
 
-### 3) Write (Experimental)
+### 3) Write
 Writing support is experimental and compatibility varies across tools. Stata roundtrip tests are included; SPSS roundtrip coverage is limited. Please report issues.
 
 ```python
@@ -89,11 +93,28 @@ write_sas_csv_import(df, "/path/out/sas_bundle", dataset_name="my_data")
 `write_readstat` supports Stata (`dta`) and SPSS (`sav`).  
 Use `write_sas_csv_import` for SAS-ingestible output (`.csv` + `.sas` import script). Binary `.sas7bdat` writing is not currently supported.
 
-## Docs
+### 4) <a id="sink"></a>You just want to get the data into parquet (or any other polars-supported file type):
 
-View the docs at [https://jrothbaum.github.io/polars_readstat/](https://jrothbaum.github.io/polars_readstat/) for more information on the options you can pass to the scan and write functions.
+#### Fast, Low-RAM Conversion
+```
+scan_readstat("/path/file.sas7bdat").sink_parquet("/path/file.parquet")
+```
+To give context, I converted a very tall sas file (over 8 billion rows) that was 500GB on disk to parquet and never exceeded 1GB of RAM.
 
-## Benchmark
+#### Fast, Order-Preserving, but High-RAM Conversion
+However, that code doesn't guarantee the row order is preserved, if you need that, use add `preserve_order=True` (at the cost of greater RAM usage).
+```
+scan_readstat("/path/file.sas7bdat",preserve_order=True).sink_parquet("/path/file.parquet")
+```
+
+#### Slower, Order-Preserving, Low-RAM Conversion
+If you don't care as much about speed, but want the row order preserved and low RAM, set the `threads=1` and it will stream in order (somewhat slower) with super low ram usage.
+```
+scan_readstat("/path/file.sas7bdat",threads=1).sink_parquet("/path/file.parquet")
+```
+
+
+## <a id="benchmark"></a>Benchmark 
 
 Benchmarks compare four scenarios: 1) load the full file, 2) load a subset of columns (Subset:True), 3) filter to a subset of rows (Filter: True), 4) load a subset of columns and filter to a subset of rows (Subset:True, Filter: True).
 
