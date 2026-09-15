@@ -83,7 +83,7 @@ fn test_stata_value_labels_roundtrip() {
         .finish()
         .unwrap();
     let status = df_labeled.column("status").unwrap().str().unwrap();
-    let values: Vec<Option<&str>> = status.into_iter().collect();
+    let values: Vec<Option<&str>> = status.iter().collect();
     assert_eq!(values, vec![Some("one"), Some("two"), Some("three")]);
 
     let _ = fs::remove_file(&path);

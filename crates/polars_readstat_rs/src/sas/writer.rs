@@ -279,7 +279,7 @@ fn prepare_df_for_csv(df: &DataFrame) -> Result<DataFrame> {
                     .map_err(|e| Error::ParseError(e.to_string()))?;
                 let ca = casted.i32().map_err(|e| Error::ParseError(e.to_string()))?;
                 let name = series.name().clone();
-                let iter = ca.into_iter().map(|opt| opt.map(|v| v as i64 + 3653));
+                let iter = ca.iter().map(|opt| opt.map(|v| v as i64 + 3653));
                 Int64Chunked::from_iter_options(name, iter).into_series()
             }
             DataType::Datetime(unit, _) => {
@@ -288,7 +288,7 @@ fn prepare_df_for_csv(df: &DataFrame) -> Result<DataFrame> {
                     .map_err(|e| Error::ParseError(e.to_string()))?;
                 let ca = casted.i64().map_err(|e| Error::ParseError(e.to_string()))?;
                 let name = series.name().clone();
-                let iter = ca.into_iter().map(|opt| {
+                let iter = ca.iter().map(|opt| {
                     opt.map(|v| {
                         let ms = match unit {
                             TimeUnit::Milliseconds => v,
@@ -307,7 +307,7 @@ fn prepare_df_for_csv(df: &DataFrame) -> Result<DataFrame> {
                     .map_err(|e| Error::ParseError(e.to_string()))?;
                 let ca = casted.i64().map_err(|e| Error::ParseError(e.to_string()))?;
                 let name = series.name().clone();
-                let iter = ca.into_iter().map(|opt| opt.map(|v| v / 1_000_000_000));
+                let iter = ca.iter().map(|opt| opt.map(|v| v / 1_000_000_000));
                 Int64Chunked::from_iter_options(name, iter).into_series()
             }
             _ => series.clone(),
@@ -494,7 +494,7 @@ fn sas_quote(s: &str) -> String {
 fn max_string_width(series: &Series) -> Result<usize> {
     let utf8 = series.str().map_err(|e| Error::ParseError(e.to_string()))?;
     let mut max_len = 1usize;
-    for opt in utf8.into_iter() {
+    for opt in utf8.iter() {
         if let Some(s) = opt {
             max_len = max_len.max(s.as_bytes().len());
         }

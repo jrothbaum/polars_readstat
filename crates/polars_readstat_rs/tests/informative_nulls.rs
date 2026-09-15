@@ -124,7 +124,7 @@ fn test_sas_informative_nulls_indicator_values() -> PolarsResult<()> {
         let s = col.as_materialized_series();
         // All indicator values should be one of: null, ".A"–".Z", "._"
         let ca = s.str()?;
-        for val in ca.into_iter().flatten() {
+        for val in ca.iter().flatten() {
             assert!(
                 val.starts_with('.') && val.len() == 2,
                 "unexpected indicator value '{}' in SAS column '{}'",

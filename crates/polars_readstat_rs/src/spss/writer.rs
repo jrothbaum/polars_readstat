@@ -497,7 +497,7 @@ fn string_layout(len: usize) -> Result<(VarType, usize, usize)> {
 fn max_string_width(series: &Series) -> Result<usize> {
     let utf8 = series.str().map_err(|e| Error::ParseError(e.to_string()))?;
     let mut max_len = 0usize;
-    for opt in utf8.into_iter() {
+    for opt in utf8.iter() {
         if let Some(s) = opt {
             let s: &str = s;
             let len = s.as_bytes().len();

@@ -64,7 +64,7 @@ fn test_spss_value_and_variable_labels() {
         .unwrap();
     let col_name = var.name.as_str();
     let col = out.column(col_name).unwrap().str().unwrap();
-    let vals: Vec<Option<&str>> = col.into_iter().collect();
+    let vals: Vec<Option<&str>> = col.iter().collect();
     assert_eq!(vals, vec![Some("one"), Some("two"), Some("three")]);
 
     let _ = fs::remove_file(&path);

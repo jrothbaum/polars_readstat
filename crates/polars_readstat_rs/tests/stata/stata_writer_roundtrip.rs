@@ -45,7 +45,7 @@ fn schema_from_df(df: &DataFrame) -> StataWriteSchema {
             let string_width_bytes = if matches!(s.dtype(), DataType::String) {
                 let mut max_len = 1usize;
                 if let Ok(utf8) = s.str() {
-                    for opt in utf8.into_iter() {
+                    for opt in utf8.iter() {
                         if let Some(v) = opt {
                             max_len = max_len.max(v.len());
                         }

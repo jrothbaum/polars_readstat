@@ -182,7 +182,7 @@ def test_xpt_write_synthetic(tmp_path: Path) -> None:
         "name": ["Alice", "Bob", "Charlie", None],
         "dt": pl.Series([
             "2020-01-01", "1960-01-01", "2000-06-15", None
-        ]).cast(pl.Date),
+        ]).str.to_date(),
     })
 
     out = tmp_path / "synthetic.xpt"

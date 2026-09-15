@@ -1,4 +1,8 @@
-use crate::stata::polars_output::{scan_dta, stata_batch_iter};
+use crate::source::ReadSource;
+use crate::stata::polars_output::{
+    scan_dta, schema_from_stata_metadata, stata_batch_iter, stata_batch_iter_with_reader,
+};
+use crate::stata::reader::StataReader;
 use polars::prelude::*;
 use polars_arrow::array::StructArray;
 use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
@@ -7,6 +11,7 @@ use polars_arrow::ffi::{
     ArrowSchema,
 };
 use std::path::Path;
+use std::sync::Arc;
 
 fn build_struct_field(schema: &SchemaRef) -> ArrowField {
     let arrow_schema = schema.to_arrow(CompatLevel::newest());
@@ -130,4 +135,69 @@ pub fn read_to_arrow_stream_ffi(
 /// Backwards-compatible: single full array export with defaults.
 pub fn read_to_arrow_ffi(path: &Path) -> PolarsResult<(*mut ArrowSchema, *mut ArrowArray)> {
     read_to_arrow_array_ffi(path, None, true, Some(false), None)
+}
+
+/// Same as [`read_to_arrow_schema_ffi`], but reads through a caller-supplied
+/// [`ReadSource`] instead of opening `path` directly.
+pub fn read_to_arrow_schema_ffi_from_source(
+    source: Arc<dyn ReadSource>,
+    value_labels_as_strings: Option<bool>,
+) -> PolarsResult<*mut ArrowSchema> {
+    let reader = StataReader::open_source(source)
+        .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+    let schema = schema_from_stata_metadata(
+        reader.metadata(),
+        value_labels_as_strings.unwrap_or(true),
+        None,
+        None,
+    )?;
+    let field = build_struct_field(&Arc::new(schema));
+    Ok(Box::into_raw(Box::new(export_field_to_c(&field))))
+}
+
+/// Same as [`read_to_arrow_stream_ffi`], but reads through a caller-supplied
+/// [`ReadSource`] instead of opening `path` directly.
+pub fn read_to_arrow_stream_ffi_from_source(
+    source: Arc<dyn ReadSource>,
+    threads: Option<usize>,
+    missing_string_as_null: bool,
+    value_labels_as_strings: Option<bool>,
+    chunk_size: Option<usize>,
+    offset: usize,
+    n_rows: Option<usize>,
+) -> PolarsResult<*mut ArrowArrayStream> {
+    let reader = StataReader::open_source(source.clone())
+        .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+    let value_labels_as_strings = value_labels_as_strings.unwrap_or(true);
+    let schema = schema_from_stata_metadata(reader.metadata(), value_labels_as_strings, None, None)?;
+    let field = build_struct_field(&Arc::new(schema));
+    let field_for_iter = field.clone();
+
+    let mut iter = stata_batch_iter_with_reader(
+        &reader,
+        source,
+        threads,
+        missing_string_as_null,
+        value_labels_as_strings,
+        chunk_size,
+        true,
+        None,
+        None,
+        offset,
+        n_rows,
+        None,
+    )?;
+    let iter = Box::new(std::iter::from_fn(move || {
+        let next = iter.next()?;
+        match next {
+            Ok(df) => match df_to_struct_array(&df, &field_for_iter) {
+                Ok(array) => Some(Ok(Box::new(array) as Box<dyn polars_arrow::array::Array>)),
+                Err(e) => Some(Err(e)),
+            },
+            Err(e) => Some(Err(e)),
+        }
+    }));
+
+    let stream = export_iterator(iter, field);
+    Ok(Box::into_raw(Box::new(stream)))
 }
