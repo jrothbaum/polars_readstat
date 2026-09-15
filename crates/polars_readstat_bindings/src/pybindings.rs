@@ -624,10 +624,25 @@ impl PyPolarsReadstat {
         storage_options: Option<HashMap<String, String>>,
     ) -> PyResult<Self> {
         let max_useful_threads = num_cpus::get_physical();
-        let threads = if threads.is_none() {
-            num_cpus::get_physical()
-        } else {
-            min(threads.unwrap(), max_useful_threads)
+        // Polars' own engine (predicate evaluation, pipeline scheduling, ...)
+        // runs concurrently with our decode threads once there's downstream
+        // work (a filter, etc.), using its own thread pool sized to
+        // `polars_threads`. Reserve half of that for it by default.
+        let polars_threads = polars_core::runtime::THREAD_POOL
+            .current_num_threads()
+            .max(1);
+        let budget = (polars_threads / 2).max(1);
+        let threads = match threads {
+            // No explicit request: use the reserved budget.
+            None => budget,
+            // An explicit request that mirrors or exceeds polars' own
+            // thread count almost never means "and also starve polars for
+            // CPU" — it's usually just someone passing `pl.thread_pool_size()`
+            // through. Treat that the same as no request.
+            Some(t) if t >= polars_threads => budget,
+            // A genuinely smaller explicit request already leaves room —
+            // honor it as-is, still capped at the physical core count.
+            Some(t) => min(t, max_useful_threads),
         };
 
         // `path` doubles as a filename-shaped hint for format detection when

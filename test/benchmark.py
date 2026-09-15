@@ -20,7 +20,7 @@ FIXTURE = {
         f_pandas=pd.read_sas,
         f_pyreadstat=prs.read_sas7bdat,
         pandas_col_kwarg=None,  # pd.read_sas has no column selection
-        threads=None,           # default (all cores)
+        threads=None,           # default (half the physical cores)
         subset_columns=["SERIALNO", "STATE", "PINCP"],
         filter_col="PINCP", filter_val=5000,
     ),
@@ -76,7 +76,10 @@ if __name__ == "__main__":
         f_pandas = fix["f_pandas"]
         f_pyreadstat = fix["f_pyreadstat"]
         pandas_col_kwarg = fix["pandas_col_kwarg"]
-        threads = fix["threads"] or pl.thread_pool_size()
+        # None flows through to scan_readstat unresolved, so polars_readstat
+        # applies its own default (half the physical cores, reserving the
+        # rest for polars' own engine) rather than us handing it every core.
+        threads = fix["threads"]
         columns = fix["subset_columns"] if subset_columns else None
         filter_col = fix["filter_col"]
         filter_val = fix["filter_val"]
@@ -113,7 +116,7 @@ if __name__ == "__main__":
             elif enginei == "pyreadstat":
                 (df, _) = prs.read_file_multiprocessing(
                     f_pyreadstat, path,
-                    num_processes=threads,
+                    num_processes=threads or pl.thread_pool_size(),
                     usecols=columns,
                 )
                 if filter_rows:
