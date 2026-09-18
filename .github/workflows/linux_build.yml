@@ -16,8 +16,8 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           source ~/.cargo/env
-          rustup toolchain install 1.93.0
-          rustup default 1.93.0
+          rustup toolchain install 1.95.0
+          rustup default 1.95.0
           rustup target add x86_64-unknown-linux-gnu
         shell: bash
 
