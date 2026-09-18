@@ -1119,7 +1119,7 @@ fn missing_numeric_indicator(plan: &ColumnPlan, v: f64, bits: u64) -> Option<Str
                         return Some(label.clone());
                     }
                 }
-                return Some("MISSING".to_string());
+                return Some(v.to_string());
             }
         }
         // Third (discrete) value in range-mode

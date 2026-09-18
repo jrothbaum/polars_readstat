@@ -19,9 +19,10 @@ pub use por::{
 pub use reader::SpssReader;
 pub use types::{Alignment, Endian, Header, Measure, Metadata, VarType};
 pub use writer::{
-    SpssStringWidths, SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels,
-    SpssVariableAlignments, SpssVariableDisplayWidths, SpssVariableFormat, SpssVariableFormats,
-    SpssVariableLabels, SpssVariableMeasures, SpssWriteColumn, SpssWriteSchema, SpssWriter,
+    merge_informative_null_columns, SpssMissingValue, SpssStringWidths, SpssValueLabelKey,
+    SpssValueLabelMap, SpssValueLabels, SpssVariableAlignments, SpssVariableDisplayWidths,
+    SpssVariableFormat, SpssVariableFormats, SpssVariableLabels, SpssVariableMeasures,
+    SpssVariableMissingValues, SpssWriteColumn, SpssWriteSchema, SpssWriter,
 };
 
 use serde_json::{json, Map, Value};

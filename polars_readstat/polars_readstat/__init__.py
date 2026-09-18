@@ -110,14 +110,19 @@ class ScanReadstat:
         """Per-variable metadata as a Polars DataFrame.
 
         Columns: name, label, value_label_codes (List[str]), value_label_labels (List[str]),
-        format, format_type, format_width, format_decimals, measure, display_width, alignment.
+        format, format_type, format_width, format_decimals, measure, display_width, alignment,
+        string_width_bytes, missing_discrete (List[str]), missing_range_lo, missing_range_hi
+        (SPSS user-declared missing values — see ``write_readstat``'s ``missing_ranges``),
+        and, when this reader was scanned with ``informative_nulls`` in ``"separate_column"``
+        mode, ``informative_null_indicator`` (the paired indicator column name per variable).
 
         Pass directly to ``write_readstat(..., metadata=reader.metadata_df)`` for efficient
         roundtripping — Rust reads Arrow arrays directly, no JSON serialization.
         """
         if self._metadata_df is None:
             src = self._make_src()
-            self._metadata_df = src.get_metadata_df()
+            mdf = src.get_metadata_df()
+            self._metadata_df = _stamp_informative_null_indicator(mdf, self.schema, self.informative_nulls)
         return self._metadata_df
 
     @property
@@ -422,6 +427,48 @@ def _normalize_informative_null_opts(
     raise TypeError(
         f"informative_nulls must be InformativeNullOpts, dict, or None, got {type(informative_nulls)}"
     )
+
+
+def _stamp_informative_null_indicator(
+    metadata_df: pl.DataFrame,
+    schema: pl.Schema,
+    informative_nulls: "InformativeNullOpts | None",
+) -> pl.DataFrame:
+    """Record which indicator column pairs with each variable when scanning with
+    ``informative_nulls`` in ``"separate_column"`` mode, so ``write_readstat(...,
+    merge_informative_nulls=True)`` can reconstruct raw missing values on a plain
+    scan -> edit -> write roundtrip without the caller re-specifying the pairing
+    (and without guessing it from column-name patterns, which risks merging an
+    unrelated column that happens to share the naming convention).
+
+    Struct mode needs no such column — it's self-describing at write time. Merged-string
+    mode is never reconstructible, so it's left alone too.
+    """
+    if informative_nulls is None or informative_nulls.mode != "separate_column":
+        return metadata_df
+    if "name" not in metadata_df.columns:
+        return metadata_df
+
+    suffix = informative_nulls.suffix
+    selected = None if informative_nulls.columns == "all" else set(informative_nulls.columns)
+    names = metadata_df["name"].to_list()
+    discrete_col = (
+        metadata_df["missing_discrete"].to_list()
+        if "missing_discrete" in metadata_df.columns
+        else [None] * len(names)
+    )
+
+    indicators: list[str | None] = []
+    for nm, discrete in zip(names, discrete_col):
+        if selected is not None and nm not in selected:
+            indicators.append(None)
+            continue
+        dtype = schema.get(nm)
+        is_numeric = dtype is not None and dtype.is_numeric()
+        eligible = is_numeric or bool(discrete)
+        indicators.append(f"{nm}{suffix}" if eligible else None)
+
+    return metadata_df.with_columns(pl.Series("informative_null_indicator", indicators, dtype=pl.String))
 
 
 def read_sas7bcat(
@@ -853,7 +900,30 @@ def write_readstat(
         (e.g. ``{"COMMENTS": 1024}``; always honoured regardless of other flags),
         `preserve_string_widths` (bool, default False) to honour declared
         string widths from the metadata DataFrame on roundtrip — at the cost of
-        larger files when the declared width exceeds the actual data, and
+        larger files when the declared width exceeds the actual data,
+        `missing_ranges` (dict[str, list[int | float | str | dict[str, int | float]]])
+        to declare SPSS user-defined missing values — matches pyreadstat's
+        ``write_sav(missing_ranges=...)`` shape: each list holds up to 3 discrete
+        values, or 1 ``{"hi": ..., "lo": ...}`` range plus 1 additional discrete
+        value (SPSS's own per-variable limit; violating it raises ``ValueError``).
+        For this to affect the written data, the dataframe's own values must
+        already be the raw missing codes, not null — see `merge_informative_nulls`
+        below, or pass `metadata=reader.metadata_df` from a source file that had
+        the same missing values declared (auto-populates this from
+        `missing_discrete`/`missing_range_lo`/`missing_range_hi`).
+        `merge_informative_nulls` (bool, default False) reconstructs
+        `scan_readstat(informative_nulls=...)`-shaped columns back into a single
+        written variable before writing: `Struct{value, null_indicator}` columns
+        (`informative_nulls` `"struct"` mode) are detected automatically; for
+        `"separate_column"` mode pairs, pass `informative_null_pairs` (dict[str, str],
+        main column name -> indicator column name) explicitly, or rely on
+        `metadata_df`'s `informative_null_indicator` column when it was captured at
+        scan time (never inferred from column-name patterns). Each null cell is
+        reconstructed from its indicator text — a value-label lookup first, then a
+        bare-number parse — and left null if neither resolves. `"merged_string"`
+        mode output can't be reversed and is left alone. `informative_null_pairs`
+        (dict[str, str]) also works standalone (without `merge_informative_nulls=True`)
+        for hand-built pairs.
         `compressed` (bool, optional) to enable standard SAV bytecode
         compression (compression code 1). When omitted, compression is
         enabled automatically if `path` ends in ``.zsav`` and disabled
@@ -917,6 +987,9 @@ def write_readstat(
         variable_format = kwargs.pop("variable_format", None)
         string_widths = kwargs.pop("string_widths", None)
         preserve_string_widths = kwargs.pop("preserve_string_widths", False)
+        missing_ranges = kwargs.pop("missing_ranges", None)
+        merge_informative_nulls = kwargs.pop("merge_informative_nulls", False)
+        informative_null_pairs = kwargs.pop("informative_null_pairs", None)
         if kwargs:
             raise TypeError(f"Unsupported kwargs for SPSS writer: {sorted(kwargs.keys())}")
 
@@ -930,6 +1003,7 @@ def write_readstat(
                 kw.get("value_labels"), kw.get("variable_labels"), kw.get("variable_measure"),
                 kw.get("variable_display_width"), kw.get("variable_alignment"), kw.get("variable_format"),
                 kw.get("string_width_bytes") if preserve_string_widths else None,
+                kw.get("missing_ranges"),
             )
         elif metadata is not None:
             raise TypeError(f"metadata must be a dict or pl.DataFrame, got {type(metadata)}")
@@ -942,15 +1016,28 @@ def write_readstat(
         kwargs_df = _spss_kwargs_to_metadata_df(
             value_labels, variable_labels, variable_measure,
             variable_display_width, variable_alignment, variable_format,
-            string_widths,
+            string_widths, missing_ranges,
         )
         merged_df = _coalesce_metadata_dfs(kwargs_df, base_df)
 
         if merged_df is not None:
-            _write_spss_from_df_rs(df, path, merged_df, compressed, storage_options=storage_options)
+            _write_spss_from_df_rs(
+                df, path, merged_df,
+                merge_informative_nulls=merge_informative_nulls,
+                informative_null_pairs=informative_null_pairs,
+                compressed=compressed,
+                storage_options=storage_options,
+            )
         else:
-            _write_spss_rs(df, path, None, None, None, None, None, None, compressed,
-                            storage_options=storage_options)
+            _write_spss_rs(
+                df, path,
+                value_labels=None, variable_labels=None, variable_measure=None,
+                variable_display_width=None, variable_alignment=None, variable_format=None,
+                string_widths=None, missing_ranges=None,
+                merge_informative_nulls=merge_informative_nulls,
+                informative_null_pairs=informative_null_pairs,
+                compressed=compressed, storage_options=storage_options,
+            )
         return
     if fmt in ("xpt", "sas_xpt"):
         if isinstance(metadata, pl.DataFrame):
@@ -1031,6 +1118,7 @@ def _spss_variable_metadata_to_write_kwargs(
     variable_display_width: dict[str, int] = {}
     variable_alignment: dict[str, str] = {}
     variable_format: dict[str, str] = {}
+    missing_ranges: dict[str, list] = {}
 
     for name, meta in variable_items:
         label = meta.get("label")
@@ -1060,6 +1148,10 @@ def _spss_variable_metadata_to_write_kwargs(
         if fmt is not None:
             variable_format[name] = fmt
 
+        items = _spss_missing_range_items_from_metadata(meta)
+        if items:
+            missing_ranges[name] = items
+
     string_width_bytes: dict[str, int] = {}
     for name, meta in variable_items:
         sl = meta.get("string_len")
@@ -1081,7 +1173,34 @@ def _spss_variable_metadata_to_write_kwargs(
         out["variable_format"] = variable_format
     if string_width_bytes:
         out["string_width_bytes"] = string_width_bytes
+    if missing_ranges:
+        out["missing_ranges"] = missing_ranges
     return out
+
+
+def _spss_missing_range_items_from_metadata(meta: Mapping[str, Any]) -> list:
+    """Extracts a variable's user-declared missing values from the raw fields
+    ``ScanReadstat(...).metadata`` reports (``missing_range``/``missing_doubles``/
+    ``missing_strings``), in ``missing_ranges``' own list shape (see ``write_readstat``).
+    """
+    missing_range = meta.get("missing_range")
+    missing_doubles = meta.get("missing_doubles") or []
+    missing_strings = meta.get("missing_strings") or []
+
+    items: list = []
+    if missing_range:
+        if len(missing_doubles) >= 2:
+            items.append({
+                "lo": min(missing_doubles[0], missing_doubles[1]),
+                "hi": max(missing_doubles[0], missing_doubles[1]),
+            })
+        if len(missing_doubles) >= 3:
+            items.append(missing_doubles[2])
+    elif missing_doubles:
+        items.extend(missing_doubles)
+    elif missing_strings:
+        items.extend(missing_strings)
+    return items
 
 
 def _normalize_variable_metadata_items(
@@ -1287,10 +1406,12 @@ def _spss_kwargs_to_metadata_df(
     variable_alignment: "dict | None",
     variable_format: "dict | None",
     string_width_bytes: "dict | None" = None,
+    missing_ranges: "dict | None" = None,
 ) -> "pl.DataFrame | None":
     all_names: set[str] = set()
     for d in (variable_labels, variable_measure, variable_display_width,
-              variable_alignment, variable_format, value_labels, string_width_bytes):
+              variable_alignment, variable_format, value_labels, string_width_bytes,
+              missing_ranges):
         if d:
             all_names.update(d.keys())
     if not all_names:
@@ -1341,6 +1462,31 @@ def _spss_kwargs_to_metadata_df(
             vl_labels_list.append(None)
 
     sw_vals = [string_width_bytes.get(nm) if string_width_bytes else None for nm in names]
+
+    missing_discrete_list: list = []
+    missing_range_lo_list: list = []
+    missing_range_hi_list: list = []
+    for nm in names:
+        items = missing_ranges.get(nm) if missing_ranges else None
+        discrete: list[str] = []
+        lo = None
+        hi = None
+        range_seen = False
+        for item in items or []:
+            if isinstance(item, dict):
+                if range_seen:
+                    raise ValueError(
+                        f"missing_ranges[{nm!r}]: at most one range is allowed per variable"
+                    )
+                range_seen = True
+                lo = item.get("lo")
+                hi = item.get("hi")
+            else:
+                discrete.append(str(item))
+        missing_discrete_list.append(discrete if discrete else None)
+        missing_range_lo_list.append(lo)
+        missing_range_hi_list.append(hi)
+
     df = _make_metadata_df(
         names=names, labels=labels,
         vl_codes=vl_codes_list, vl_labels=vl_labels_list,
@@ -1348,7 +1494,12 @@ def _spss_kwargs_to_metadata_df(
         format_types=format_types, format_widths=format_widths, format_decimalss=format_decimalss,
         measures=measures, display_widths=display_widths, alignments=alignments,
     )
-    return df.with_columns(pl.Series("string_width_bytes", sw_vals, dtype=pl.Int32))
+    return df.with_columns(
+        pl.Series("string_width_bytes", sw_vals, dtype=pl.Int32),
+        pl.Series("missing_discrete", missing_discrete_list, dtype=pl.List(pl.String)),
+        pl.Series("missing_range_lo", missing_range_lo_list, dtype=pl.Float64),
+        pl.Series("missing_range_hi", missing_range_hi_list, dtype=pl.Float64),
+    )
 
 
 def _coalesce_metadata_dfs(

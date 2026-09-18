@@ -2,10 +2,14 @@ use std::collections::HashMap;
 
 /// Shared accumulator for building per-variable metadata DataFrames during file parsing.
 ///
-/// All five formats (SPSS, Stata, SAS, XPT, POR) produce the same 12-column schema.
+/// All five formats (SPSS, Stata, SAS, XPT, POR) produce the same 15-column schema.
 /// Each parser pushes rows as it reads variable records, updates fields via index-based
 /// setters during extension/secondary passes, then calls `into_dataframe()` once at the
 /// end of parsing — no separate conversion step needed.
+///
+/// `missing_discrete`/`missing_range_lo`/`missing_range_hi` capture SPSS user-declared
+/// missing values (see the SPSS variable record's `n_missing`); only the SPSS parser
+/// populates them today, other formats leave them null.
 pub struct MetadataAccumulator {
     pub names: Vec<String>,
     labels: Vec<Option<String>>,
@@ -20,6 +24,9 @@ pub struct MetadataAccumulator {
     display_widths: Vec<Option<i32>>,
     alignments: Vec<Option<&'static str>>,
     string_width_bytes: Vec<Option<i32>>,
+    missing_discrete: Vec<Option<Vec<String>>>,
+    missing_range_lo: Vec<Option<f64>>,
+    missing_range_hi: Vec<Option<f64>>,
 }
 
 impl MetadataAccumulator {
@@ -37,6 +44,9 @@ impl MetadataAccumulator {
             display_widths: Vec::with_capacity(n),
             alignments: Vec::with_capacity(n),
             string_width_bytes: Vec::with_capacity(n),
+            missing_discrete: Vec::with_capacity(n),
+            missing_range_lo: Vec::with_capacity(n),
+            missing_range_hi: Vec::with_capacity(n),
         }
     }
 
@@ -61,6 +71,9 @@ impl MetadataAccumulator {
         self.display_widths.push(None);
         self.alignments.push(None);
         self.string_width_bytes.push(None);
+        self.missing_discrete.push(None);
+        self.missing_range_lo.push(None);
+        self.missing_range_hi.push(None);
     }
 
     pub fn set_string_width_bytes(&mut self, idx: usize, width: Option<i32>) {
@@ -87,6 +100,18 @@ impl MetadataAccumulator {
         self.var_value_label_names[idx] = Some(name);
     }
 
+    /// Up to 3 discrete user-declared missing values (formatted as decimal strings for
+    /// numeric variables, or literal strings for string variables).
+    pub fn set_missing_discrete(&mut self, idx: usize, values: Option<Vec<String>>) {
+        self.missing_discrete[idx] = values;
+    }
+
+    /// A user-declared missing range (numeric only — SPSS doesn't support string ranges).
+    pub fn set_missing_range(&mut self, idx: usize, lo: Option<f64>, hi: Option<f64>) {
+        self.missing_range_lo[idx] = lo;
+        self.missing_range_hi[idx] = hi;
+    }
+
     pub fn add_value_label_group(&mut self, name: String, codes: Vec<String>, labels: Vec<String>) {
         self.value_label_groups.insert(name, (codes, labels));
     }
@@ -109,6 +134,9 @@ impl MetadataAccumulator {
         self.display_widths.drain(range.clone());
         self.alignments.drain(range.clone());
         self.string_width_bytes.drain(range.clone());
+        self.missing_discrete.drain(range.clone());
+        self.missing_range_lo.drain(range.clone());
+        self.missing_range_hi.drain(range.clone());
     }
 
     pub fn len(&self) -> usize {
@@ -145,7 +173,7 @@ impl MetadataAccumulator {
             .collect();
     }
 
-    /// Consume the accumulator and produce the canonical 12-column metadata DataFrame.
+    /// Consume the accumulator and produce the canonical 15-column metadata DataFrame.
     pub fn into_dataframe(self) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
         use polars::prelude::*;
 
@@ -194,6 +222,9 @@ impl MetadataAccumulator {
             Series::new("display_width".into(), self.display_widths).into_column(),
             Series::new("alignment".into(), self.alignments).into_column(),
             Series::new("string_width_bytes".into(), self.string_width_bytes).into_column(),
+            make_list("missing_discrete", self.missing_discrete)?.into_column(),
+            Series::new("missing_range_lo".into(), self.missing_range_lo).into_column(),
+            Series::new("missing_range_hi".into(), self.missing_range_hi).into_column(),
         ])
     }
 }

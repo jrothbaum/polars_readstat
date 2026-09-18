@@ -12,7 +12,8 @@ use polars_readstat_rs::{
     SpssMeasure, SpssMetadata, SpssReader,
     SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels,
     SpssVariableAlignments, SpssVariableDisplayWidths, SpssVariableFormat, SpssVariableFormats,
-    SpssStringWidths, SpssVariableMeasures, SpssWriteColumn, SpssWriteSchema, SpssWriter,
+    SpssStringWidths, SpssVariableMeasures, SpssMissingValue, SpssVariableMissingValues,
+    SpssWriteColumn, SpssWriteSchema, SpssWriter, merge_informative_null_columns,
     StataHeader, StataMetadata, StataReader, StataWriteColumn, StataWriteSchema, StataWriter,
     PorMetadata, ValueLabels, WriteTarget, XptMetadata,
     XptWriter, write_por_to_destination,
@@ -1318,7 +1319,7 @@ fn sink_stata(
 }
 
 #[pyfunction]
-#[pyo3(signature = (df, path, value_labels=None, variable_labels=None, variable_measure=None, variable_display_width=None, variable_alignment=None, variable_format=None, string_widths=None, compressed=None, storage_options=None))]
+#[pyo3(signature = (df, path, value_labels=None, variable_labels=None, variable_measure=None, variable_display_width=None, variable_alignment=None, variable_format=None, string_widths=None, missing_ranges=None, merge_informative_nulls=false, informative_null_pairs=None, compressed=None, storage_options=None))]
 fn write_spss(
     df: PyDataFrame,
     path: String,
@@ -1329,6 +1330,9 @@ fn write_spss(
     variable_alignment: Option<&Bound<PyDict>>,
     variable_format: Option<&Bound<PyDict>>,
     string_widths: Option<&Bound<PyDict>>,
+    missing_ranges: Option<&Bound<PyDict>>,
+    merge_informative_nulls: bool,
+    informative_null_pairs: Option<HashMap<String, String>>,
     compressed: Option<bool>,
     storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<()> {
@@ -1336,8 +1340,9 @@ fn write_spss(
     let compressed = compressed.unwrap_or_else(|| path.to_ascii_lowercase().ends_with(".zsav"));
     let mut writer =
         SpssWriter::with_destination(build_write_target(&path, storage_options)?).with_compression(compressed);
-    if let Some(labels) = value_labels {
-        writer = writer.with_value_labels(parse_spss_value_labels(labels)?);
+    let value_labels_map = value_labels.map(parse_spss_value_labels).transpose()?;
+    if let Some(labels) = value_labels_map.clone() {
+        writer = writer.with_value_labels(labels);
     }
     if let Some(labels) = variable_labels {
         writer = writer.with_variable_labels(parse_spss_variable_labels(labels)?);
@@ -1357,24 +1362,40 @@ fn write_spss(
     if let Some(widths) = string_widths {
         writer = writer.with_string_widths(parse_storage_widths_dict(widths)?);
     }
+    if let Some(ranges) = missing_ranges {
+        writer = writer.with_missing_values(parse_spss_missing_ranges(ranges)?);
+    }
+
+    let df_inner = if merge_informative_nulls || informative_null_pairs.is_some() {
+        merge_informative_null_columns(
+            df.0,
+            value_labels_map.as_ref(),
+            informative_null_pairs.as_ref(),
+        )
+        .map_err(|e| PyValueError::new_err(e.to_string()))?
+    } else {
+        df.0
+    };
+
     writer
-        .write_df(&df.0)
+        .write_df(&df_inner)
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 /// Write SPSS building the writer directly from a metadata DataFrame — no Python dict overhead.
 #[pyfunction]
-#[pyo3(signature = (df, path, metadata_df, compressed=None, storage_options=None))]
+#[pyo3(signature = (df, path, metadata_df, merge_informative_nulls=false, informative_null_pairs=None, compressed=None, storage_options=None))]
 fn write_spss_from_df_rs(
     df: PyDataFrame,
     path: String,
     metadata_df: PyDataFrame,
+    merge_informative_nulls: bool,
+    informative_null_pairs: Option<HashMap<String, String>>,
     compressed: Option<bool>,
     storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<()> {
     ensure_extension(&path, &["sav", "zsav"])?;
     let compressed = compressed.unwrap_or_else(|| path.to_ascii_lowercase().ends_with(".zsav"));
-    let col_names: HashSet<String> = df.0.get_column_names().iter().map(|s| s.to_string()).collect();
     let mdf_owned = filter_metadata_to_df_columns(&metadata_df.0, &df.0)?;
     let mdf = &mdf_owned;
 
@@ -1388,17 +1409,72 @@ fn write_spss_from_df_rs(
     let sw_col_opt = mdf.column("string_width_bytes").ok().and_then(|c| c.i32().ok().map(|ca| ca.clone()));
     let vl_codes_col = mdf.column("value_label_codes").map_err(|e| PyValueError::new_err(e.to_string()))?.as_materialized_series().clone();
     let vl_labels_col = mdf.column("value_label_labels").map_err(|e| PyValueError::new_err(e.to_string()))?.as_materialized_series().clone();
+    let missing_discrete_col = mdf
+        .column("missing_discrete")
+        .ok()
+        .map(|c| c.as_materialized_series().clone());
+    let missing_lo_ca = mdf.column("missing_range_lo").ok().and_then(|c| c.f64().ok().cloned());
+    let missing_hi_ca = mdf.column("missing_range_hi").ok().and_then(|c| c.f64().ok().cloned());
+    let informative_null_indicator_ca = mdf
+        .column("informative_null_indicator")
+        .ok()
+        .and_then(|c| c.str().ok().cloned());
 
-    let (variable_labels, _) = metadata_df_labels_formats(&df.0, mdf)?;
+    // Value labels and informative-null pairing are resolved up front (from `mdf` alone,
+    // independent of the DataFrame's own column list) because the informative-null merge
+    // below needs both — label lookups for cell reconstruction, pairs for which columns to
+    // merge — and must run *before* the schema/dtype inference loop, since merging changes
+    // struct-shaped columns' dtype (Struct -> numeric) and that dtype decides whether a
+    // discrete missing value is written as a number or a string.
+    let mut value_labels: SpssValueLabels = HashMap::new();
+    let mut informative_null_pairs = informative_null_pairs.unwrap_or_default();
+    for i in 0..mdf.height() {
+        let Some(name) = name_ca.get(i) else { continue };
+        let codes_av = vl_codes_col.get(i).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let lbls_av = vl_labels_col.get(i).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if let (AnyValue::List(codes_s), AnyValue::List(lbls_s)) = (codes_av, lbls_av) {
+            let codes_ca = codes_s.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let lbls_ca = lbls_s.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let mut map: SpssValueLabelMap = HashMap::new();
+            for j in 0..codes_s.len() {
+                if let (Some(code), Some(lbl)) = (codes_ca.get(j), lbls_ca.get(j)) {
+                    if let Ok(v) = code.parse::<f64>() {
+                        map.insert(SpssValueLabelKey::from_f64(v), lbl.to_string());
+                    }
+                }
+            }
+            if !map.is_empty() {
+                value_labels.insert(name.to_string(), map);
+            }
+        }
+        if let Some(ind_ca) = informative_null_indicator_ca.as_ref() {
+            if let Some(ind_name) = ind_ca.get(i) {
+                informative_null_pairs
+                    .entry(name.to_string())
+                    .or_insert_with(|| ind_name.to_string());
+            }
+        }
+    }
+
+    let df_inner = if merge_informative_nulls || !informative_null_pairs.is_empty() {
+        merge_informative_null_columns(df.0, Some(&value_labels), Some(&informative_null_pairs))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?
+    } else {
+        df.0
+    };
+    let col_names: HashSet<String> =
+        df_inner.get_column_names().iter().map(|s| s.to_string()).collect();
+
+    let (variable_labels, _) = metadata_df_labels_formats(&df_inner, mdf)?;
     let mut variable_measures: SpssVariableMeasures = HashMap::new();
     let mut variable_alignments: SpssVariableAlignments = HashMap::new();
     let mut variable_display_widths: SpssVariableDisplayWidths = HashMap::new();
     let mut variable_formats: SpssVariableFormats = HashMap::new();
-    let mut value_labels: SpssValueLabels = HashMap::new();
-    let mut schema_columns: Vec<SpssWriteColumn> = Vec::with_capacity(df.0.width());
+    let mut variable_missing: SpssVariableMissingValues = HashMap::new();
+    let mut schema_columns: Vec<SpssWriteColumn> = Vec::with_capacity(df_inner.width());
 
     // Map each metadata row to its column name so we can look rows up while
-    // walking the DataFrame's own column list below. Iterating `df`'s columns
+    // walking the DataFrame's own column list below. Iterating `df_inner`'s columns
     // (rather than `mdf`'s rows) ensures every DataFrame column ends up in
     // schema_columns even when it has no metadata row of its own — otherwise
     // a column absent from e.g. `string_widths`/`variable_labels` would be
@@ -1410,12 +1486,12 @@ fn write_spss_from_df_rs(
         }
     }
 
-    for name in df.0.get_column_names() {
+    for name in df_inner.get_column_names() {
         let name = name.to_string();
         if !col_names.contains(&name) {
             continue;
         }
-        let dtype = df.0.column(&name).map(|s| s.dtype().clone()).unwrap_or(DataType::Null);
+        let dtype = df_inner.column(&name).map(|s| s.dtype().clone()).unwrap_or(DataType::Null);
         let i = match row_by_name.get(&name) {
             Some(&i) => i,
             None => {
@@ -1424,6 +1500,7 @@ fn write_spss_from_df_rs(
             }
         };
         let string_width_bytes = sw_col_opt.as_ref().and_then(|ca| ca.get(i)).map(|w| w as usize);
+        let numeric_var = dtype.is_numeric();
         schema_columns.push(SpssWriteColumn { name: name.clone(), dtype, string_width_bytes });
         if let Some(m) = measure_ca.get(i) {
             let spss_measure = match m {
@@ -1457,22 +1534,32 @@ fn write_spss_from_df_rs(
                 decimals: Some(fd as u8),
             });
         }
-        let codes_av = vl_codes_col.get(i).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let lbls_av = vl_labels_col.get(i).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        if let (AnyValue::List(codes_s), AnyValue::List(lbls_s)) = (codes_av, lbls_av) {
-            let codes_ca = codes_s.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
-            let lbls_ca = lbls_s.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
-            let mut map: SpssValueLabelMap = HashMap::new();
-            for j in 0..codes_s.len() {
-                if let (Some(code), Some(lbl)) = (codes_ca.get(j), lbls_ca.get(j)) {
-                    if let Ok(v) = code.parse::<f64>() {
-                        map.insert(SpssValueLabelKey::from_f64(v), lbl.to_string());
+
+        let mut missing_items: Vec<SpssMissingValue> = Vec::new();
+        if let (Some(lo_ca), Some(hi_ca)) = (missing_lo_ca.as_ref(), missing_hi_ca.as_ref()) {
+            if let (Some(lo), Some(hi)) = (lo_ca.get(i), hi_ca.get(i)) {
+                missing_items.push(SpssMissingValue::Range { lo, hi });
+            }
+        }
+        if let Some(disc_series) = missing_discrete_col.as_ref() {
+            let av = disc_series.get(i).map_err(|e| PyValueError::new_err(e.to_string()))?;
+            if let AnyValue::List(vals) = av {
+                let ca = vals.str().map_err(|e| PyValueError::new_err(e.to_string()))?;
+                for j in 0..vals.len() {
+                    if let Some(s) = ca.get(j) {
+                        if numeric_var {
+                            if let Ok(v) = s.parse::<f64>() {
+                                missing_items.push(SpssMissingValue::Num(v));
+                            }
+                        } else {
+                            missing_items.push(SpssMissingValue::Str(s.to_string()));
+                        }
                     }
                 }
             }
-            if !map.is_empty() {
-                value_labels.insert(name.clone(), map);
-            }
+        }
+        if !missing_items.is_empty() {
+            variable_missing.insert(name.clone(), missing_items);
         }
     }
 
@@ -1491,8 +1578,10 @@ fn write_spss_from_df_rs(
     if !variable_alignments.is_empty() { writer = writer.with_variable_alignments(variable_alignments); }
     if !variable_display_widths.is_empty() { writer = writer.with_variable_display_widths(variable_display_widths); }
     if !variable_formats.is_empty() { writer = writer.with_variable_formats(variable_formats); }
+    if !variable_missing.is_empty() { writer = writer.with_missing_values(variable_missing); }
     if !value_labels.is_empty() { writer = writer.with_value_labels(value_labels); }
-    writer.write_df(&df.0).map_err(|e| PyValueError::new_err(e.to_string()))
+
+    writer.write_df(&df_inner).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 /// Write Stata building the writer directly from a metadata DataFrame — no Python dict overhead.
@@ -1902,6 +1991,63 @@ fn parse_spss_value_labels(
             inner.insert(key, value);
         }
         out.insert(col, inner);
+    }
+    Ok(out)
+}
+
+/// Parses `missing_ranges`, matching pyreadstat's `write_sav(missing_ranges=...)` shape:
+/// `dict[str, list[int | float | str | dict[str, int | float]]]`. Each list entry is either a
+/// discrete value, or a `{"hi": ..., "lo": ...}` dict for a range (numeric only). SPSS's own
+/// per-variable limit (max 3 discrete, or max 1 range + 1 discrete) is enforced in the writer,
+/// so it applies uniformly whether this dict came from an explicit kwarg or from metadata_df.
+fn parse_spss_missing_ranges(
+    ranges: &Bound<PyDict>,
+) -> PyResult<SpssVariableMissingValues> {
+    let mut out: SpssVariableMissingValues = HashMap::with_capacity(ranges.len());
+    for (col_obj, items_obj) in ranges.iter() {
+        let col = col_obj.extract::<String>()?;
+        let items = items_obj.cast::<PyList>().map_err(|_| {
+            PyValueError::new_err(format!(
+                "missing_ranges[{col:?}] must be a list, got {}",
+                items_obj
+                    .get_type()
+                    .name()
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|_| "?".to_string())
+            ))
+        })?;
+        let mut values = Vec::with_capacity(items.len());
+        for item in items.iter() {
+            if let Ok(dict) = item.cast::<PyDict>() {
+                let lo = dict
+                    .get_item("lo")?
+                    .ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "missing_ranges[{col:?}] range entry is missing 'lo'"
+                        ))
+                    })?
+                    .extract::<f64>()?;
+                let hi = dict
+                    .get_item("hi")?
+                    .ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "missing_ranges[{col:?}] range entry is missing 'hi'"
+                        ))
+                    })?
+                    .extract::<f64>()?;
+                values.push(SpssMissingValue::Range { lo, hi });
+            } else if let Ok(v) = item.extract::<f64>() {
+                values.push(SpssMissingValue::Num(v));
+            } else if let Ok(s) = item.extract::<String>() {
+                values.push(SpssMissingValue::Str(s));
+            } else {
+                return Err(PyValueError::new_err(format!(
+                    "missing_ranges[{col:?}] entries must be int, float, str, or a \
+                     {{'lo':..,'hi':..}} dict"
+                )));
+            }
+        }
+        out.insert(col, values);
     }
     Ok(out)
 }

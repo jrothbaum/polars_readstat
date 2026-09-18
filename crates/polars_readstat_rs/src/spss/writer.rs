@@ -75,6 +75,18 @@ pub struct SpssVariableFormat {
 
 pub type SpssVariableFormats = HashMap<String, SpssVariableFormat>;
 
+/// A single user-declared missing value: a discrete numeric/string code, or a numeric range
+/// (`lo`/`hi`, inclusive). Per variable, SPSS allows at most 3 discrete values OR 1 range plus
+/// 1 additional discrete value — enforced by `validate_missing_values`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpssMissingValue {
+    Num(f64),
+    Str(String),
+    Range { lo: f64, hi: f64 },
+}
+
+pub type SpssVariableMissingValues = HashMap<String, Vec<SpssMissingValue>>;
+
 #[derive(Debug, Clone)]
 pub struct SpssWriteSchema {
     pub columns: Vec<SpssWriteColumn>,
@@ -102,6 +114,7 @@ pub struct SpssWriter {
     variable_display_widths: Option<SpssVariableDisplayWidths>,
     variable_formats: Option<SpssVariableFormats>,
     string_widths: Option<SpssStringWidths>,
+    missing_values: Option<SpssVariableMissingValues>,
     compressed: bool,
 }
 
@@ -121,6 +134,7 @@ impl SpssWriter {
             variable_display_widths: None,
             variable_formats: None,
             string_widths: None,
+            missing_values: None,
             compressed: false,
         }
     }
@@ -176,6 +190,11 @@ impl SpssWriter {
         self
     }
 
+    pub fn with_missing_values(mut self, missing_values: SpssVariableMissingValues) -> Self {
+        self.missing_values = Some(missing_values);
+        self
+    }
+
     pub fn write_df(&self, df: &DataFrame) -> Result<()> {
         let schema = self.schema.as_ref();
         let value_labels = merge_value_labels(
@@ -195,6 +214,7 @@ impl SpssWriter {
             self.variable_display_widths.as_ref(),
             self.variable_formats.as_ref(),
             self.string_widths.as_ref(),
+            self.missing_values.as_ref(),
         )?;
         let encoding = choose_encoding(
             df,
@@ -243,6 +263,64 @@ struct ColumnSpec {
     alignment: Alignment,
     display_width: i32,
     label: Option<String>,
+    missing: Option<Vec<SpssMissingValue>>,
+    missing_n: i32,
+}
+
+fn resolve_missing_for_column(
+    name: &str,
+    var_type: VarType,
+    variable_missing: Option<&SpssVariableMissingValues>,
+) -> Result<(Option<Vec<SpssMissingValue>>, i32)> {
+    let Some(items) = variable_missing.and_then(|m| m.get(name)) else {
+        return Ok((None, 0));
+    };
+    if items.is_empty() {
+        return Ok((None, 0));
+    }
+    let missing_n = validate_missing_values(name, var_type, items)?;
+    Ok((Some(items.clone()), missing_n))
+}
+
+/// Validates SPSS's per-variable missing-value constraint — at most 3 discrete values, or 1
+/// range plus 1 additional discrete value — and returns the raw `n_missing` field to write
+/// (positive count of discrete values, or negative for range mode: -2 for range-only, -3 for
+/// range + 1 discrete).
+fn validate_missing_values(
+    name: &str,
+    var_type: VarType,
+    items: &[SpssMissingValue],
+) -> Result<i32> {
+    let range_count = items
+        .iter()
+        .filter(|v| matches!(v, SpssMissingValue::Range { .. }))
+        .count();
+    if range_count > 1 {
+        return Err(Error::ParseError(format!(
+            "SPSS missing_ranges for '{name}': at most one range is allowed per variable"
+        )));
+    }
+    if range_count == 1 {
+        if var_type != VarType::Numeric {
+            return Err(Error::ParseError(format!(
+                "SPSS missing_ranges for '{name}': a range is only valid for numeric variables"
+            )));
+        }
+        if items.len() > 2 {
+            return Err(Error::ParseError(format!(
+                "SPSS missing_ranges for '{name}': a range may be combined with at most 1 \
+                 discrete value (max 1 range + 1 discrete per variable)"
+            )));
+        }
+        return Ok(if items.len() == 2 { -3 } else { -2 });
+    }
+    if items.len() > 3 {
+        return Err(Error::ParseError(format!(
+            "SPSS missing_ranges for '{name}': at most 3 discrete missing values are allowed \
+             per variable"
+        )));
+    }
+    Ok(items.len() as i32)
 }
 
 fn infer_columns(
@@ -254,6 +332,7 @@ fn infer_columns(
     variable_display_widths: Option<&SpssVariableDisplayWidths>,
     variable_formats: Option<&SpssVariableFormats>,
     string_widths: Option<&SpssStringWidths>,
+    variable_missing: Option<&SpssVariableMissingValues>,
 ) -> Result<Vec<ColumnSpec>> {
     if let Some(schema) = schema {
         let mut cols = Vec::with_capacity(schema.columns.len());
@@ -272,6 +351,8 @@ fn infer_columns(
                 format_decimals,
                 variable_formats,
             )?;
+            let (missing, missing_n) =
+                resolve_missing_for_column(&col.name, var_type, variable_missing)?;
             cols.push(ColumnSpec {
                 name: col.name.clone(),
                 short_name: short_names[idx].clone(),
@@ -292,6 +373,8 @@ fn infer_columns(
                     variable_display_widths,
                 )?,
                 label,
+                missing,
+                missing_n,
             });
             offset += width;
         }
@@ -330,6 +413,7 @@ fn infer_columns(
             format_decimals,
             variable_formats,
         )?;
+        let (missing, missing_n) = resolve_missing_for_column(&name, var_type, variable_missing)?;
         cols.push(ColumnSpec {
             name,
             short_name: short_names[idx].clone(),
@@ -350,6 +434,8 @@ fn infer_columns(
                 variable_display_widths,
             )?,
             label,
+            missing,
+            missing_n,
         });
         offset += width;
     }
@@ -614,6 +700,132 @@ fn sanitize_long_name_for_record(name: &str) -> String {
         .collect()
 }
 
+/// Reconstructs `value`/`null_indicator`-shaped informative-null columns back into a single
+/// plain column before writing, so a `scan_readstat(informative_nulls=...)` round trip can
+/// write the raw missing codes back out (see `SpssMissingValue`/`with_missing_values`).
+///
+/// - Struct-shaped columns (`Struct{<name>: T, null_indicator: String}`, as produced by
+///   `InformativeNullMode::Struct`) are detected automatically — the shape is self-describing.
+/// - Separate-column pairs (`InformativeNullMode::SeparateColumn`) aren't structurally
+///   distinguishable from two unrelated columns, so they're only merged when explicitly named
+///   in `explicit_pairs` (main column name -> indicator column name).
+/// - `InformativeNullMode::MergedString` output can't be reversed (value and reason are already
+///   collapsed into one ambiguous string) and is never merged here.
+///
+/// For each reconstructed cell: if the indicator text matches a value label being written for
+/// that variable, the label's code is used; otherwise the indicator is parsed as a bare number
+/// (this covers every case `informative_nulls` can produce, discrete or range, since both fall
+/// back to `v.to_string()` when no label applies). A cell that can't be resolved either way is
+/// left as a plain null (system-missing). Only numeric columns are reconstructed; non-numeric
+/// struct/pair columns pass through with their (already-null) value field unchanged.
+pub fn merge_informative_null_columns(
+    df: DataFrame,
+    value_labels: Option<&SpssValueLabels>,
+    explicit_pairs: Option<&HashMap<String, String>>,
+) -> Result<DataFrame> {
+    let mut indicator_names_to_drop: HashSet<String> = HashSet::new();
+    if let Some(pairs) = explicit_pairs {
+        for (main, ind) in pairs {
+            if df.column(main).is_ok() && df.column(ind).is_ok() {
+                indicator_names_to_drop.insert(ind.clone());
+            }
+        }
+    }
+
+    let mut new_columns: Vec<Column> = Vec::with_capacity(df.width());
+    for col in df.columns() {
+        let name = col.name().to_string();
+        if indicator_names_to_drop.contains(&name) {
+            continue;
+        }
+
+        if let DataType::Struct(fields) = col.dtype() {
+            let has_indicator = fields
+                .iter()
+                .any(|f| f.name().as_str() == "null_indicator" && *f.dtype() == DataType::String);
+            let has_value_field = fields.iter().any(|f| f.name().as_str() == name.as_str());
+            if fields.len() == 2 && has_indicator && has_value_field {
+                let sc = col.struct_().map_err(|e| Error::ParseError(e.to_string()))?;
+                let value_field = sc
+                    .field_by_name(&name)
+                    .map_err(|e| Error::ParseError(e.to_string()))?;
+                let indicator_field = sc
+                    .field_by_name("null_indicator")
+                    .map_err(|e| Error::ParseError(e.to_string()))?;
+                let label_map = value_labels.and_then(|vl| vl.get(&name));
+                let merged = if value_field.dtype().is_numeric() {
+                    reconstruct_informative_null_column(&value_field, &indicator_field, label_map)?
+                } else {
+                    value_field
+                };
+                new_columns.push(merged.into_column());
+                continue;
+            }
+        }
+
+        if let Some(pairs) = explicit_pairs {
+            if let Some(ind_name) = pairs.get(&name) {
+                if let Ok(ind_col) = df.column(ind_name) {
+                    let value_series = col.as_materialized_series();
+                    let label_map = value_labels.and_then(|vl| vl.get(&name));
+                    let merged = if value_series.dtype().is_numeric() {
+                        reconstruct_informative_null_column(
+                            value_series,
+                            ind_col.as_materialized_series(),
+                            label_map,
+                        )?
+                    } else {
+                        value_series.clone()
+                    };
+                    new_columns.push(merged.into_column());
+                    continue;
+                }
+            }
+        }
+
+        new_columns.push(col.clone());
+    }
+    DataFrame::new_infer_height(new_columns).map_err(|e| Error::ParseError(e.to_string()))
+}
+
+/// Rebuilds one numeric column's null cells from its informative-null indicator text: a value
+/// label reverse-lookup first, then a bare-number parse. Unresolvable cells stay null.
+fn reconstruct_informative_null_column(
+    value_series: &Series,
+    indicator_series: &Series,
+    label_map: Option<&SpssValueLabelMap>,
+) -> Result<Series> {
+    let values = value_series
+        .cast(&DataType::Float64)
+        .map_err(|e| Error::ParseError(e.to_string()))?;
+    let values = values.f64().map_err(|e| Error::ParseError(e.to_string()))?;
+    let indicators = indicator_series
+        .str()
+        .map_err(|e| Error::ParseError(e.to_string()))?;
+
+    let mut out: Vec<Option<f64>> = Vec::with_capacity(values.len());
+    for i in 0..values.len() {
+        if let Some(v) = values.get(i) {
+            out.push(Some(v));
+            continue;
+        }
+        let Some(ind) = indicators.get(i) else {
+            out.push(None);
+            continue;
+        };
+        let mut resolved = label_map.and_then(|map| {
+            map.iter()
+                .find(|(_, label)| label.as_str() == ind)
+                .map(|(key, _)| key.to_f64())
+        });
+        if resolved.is_none() {
+            resolved = ind.parse::<f64>().ok();
+        }
+        out.push(resolved);
+    }
+    Ok(Series::new(value_series.name().clone(), out))
+}
+
 fn merge_value_labels(
     base: Option<SpssValueLabels>,
     extra: Option<SpssValueLabels>,
@@ -768,6 +980,12 @@ fn write_very_long_variable_records<W: Write>(
     col: &ColumnSpec,
     encoding: &'static encoding_rs::Encoding,
 ) -> Result<()> {
+    if col.missing.is_some() {
+        return Err(Error::ParseError(format!(
+            "SPSS missing_ranges for '{}': not supported for strings longer than 255 bytes",
+            col.name
+        )));
+    }
     let segments = long_string_segment_sizes(col.string_len);
     if segments.is_empty() {
         return Ok(());
@@ -847,13 +1065,53 @@ fn write_variable_record<W: Write>(
     write_i32(writer, typ)?;
     let has_label = if col.label.is_some() { 1 } else { 0 };
     write_i32(writer, has_label)?;
-    write_i32(writer, 0)?;
+    write_i32(writer, col.missing_n)?;
     let fmt = encode_format(col.format_type, col.format_width, col.format_decimals);
     write_i32(writer, fmt)?;
     write_i32(writer, fmt)?;
     write_name(writer, &col.short_name)?;
     if let Some(label) = &col.label {
         write_variable_label(writer, label, encoding)?;
+    }
+    if let Some(items) = &col.missing {
+        write_missing_values(writer, items, encoding)?;
+    }
+    Ok(())
+}
+
+/// Writes a variable's user-declared missing values (8 bytes each), in the order SPSS expects:
+/// range bounds (lo, hi) first if present, then any discrete values.
+fn write_missing_values<W: Write>(
+    writer: &mut W,
+    items: &[SpssMissingValue],
+    encoding: &'static encoding_rs::Encoding,
+) -> Result<()> {
+    let range = items.iter().find_map(|v| match v {
+        SpssMissingValue::Range { lo, hi } => Some((*lo, *hi)),
+        _ => None,
+    });
+    if let Some((lo, hi)) = range {
+        writer.write_all(&lo.to_le_bytes())?;
+        writer.write_all(&hi.to_le_bytes())?;
+    }
+    for item in items {
+        match item {
+            SpssMissingValue::Num(v) => writer.write_all(&v.to_le_bytes())?,
+            SpssMissingValue::Str(s) => {
+                let (bytes, _, had_errors) = encoding.encode(s);
+                if had_errors {
+                    return Err(Error::ParseError(
+                        "SPSS missing value string not representable in target encoding"
+                            .to_string(),
+                    ));
+                }
+                let mut buf = [b' '; 8];
+                let len = bytes.len().min(8);
+                buf[..len].copy_from_slice(&bytes[..len]);
+                writer.write_all(&buf)?;
+            }
+            SpssMissingValue::Range { .. } => {}
+        }
     }
     Ok(())
 }

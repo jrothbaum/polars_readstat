@@ -67,9 +67,10 @@ pub use spss::{
 };
 pub use spss::metadata_json_from_meta as spss_metadata_json_from_meta;
 pub use spss::{
-    SpssStringWidths, SpssValueLabelKey, SpssValueLabelMap, SpssValueLabels,
-    SpssVariableAlignments, SpssVariableDisplayWidths, SpssVariableFormat, SpssVariableFormats,
-    SpssVariableLabels, SpssVariableMeasures, SpssWriteColumn, SpssWriteSchema, SpssWriter,
+    merge_informative_null_columns, SpssMissingValue, SpssStringWidths, SpssValueLabelKey,
+    SpssValueLabelMap, SpssValueLabels, SpssVariableAlignments, SpssVariableDisplayWidths,
+    SpssVariableFormat, SpssVariableFormats, SpssVariableLabels, SpssVariableMeasures,
+    SpssVariableMissingValues, SpssWriteColumn, SpssWriteSchema, SpssWriter,
 };
 pub use spss::{
     metadata_json_por, metadata_json_por_from_source, metadata_por, metadata_por_from_source,

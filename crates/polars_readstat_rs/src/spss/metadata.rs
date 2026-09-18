@@ -392,6 +392,23 @@ fn read_variable_record<R: Read + Seek>(
     );
     let acc_idx = acc.len() - 1;
     acc.set_string_width_bytes(acc_idx, if string_len > 0 { Some(string_len as i32) } else { None });
+    if missing_range {
+        if missing_doubles.len() >= 2 {
+            let lo = missing_doubles[0].min(missing_doubles[1]);
+            let hi = missing_doubles[0].max(missing_doubles[1]);
+            acc.set_missing_range(acc_idx, Some(lo), Some(hi));
+        }
+        if let Some(discrete) = missing_doubles.get(2) {
+            acc.set_missing_discrete(acc_idx, Some(vec![discrete.to_string()]));
+        }
+    } else if !missing_doubles.is_empty() {
+        acc.set_missing_discrete(
+            acc_idx,
+            Some(missing_doubles.iter().map(|v| v.to_string()).collect()),
+        );
+    } else if !missing_strings.is_empty() {
+        acc.set_missing_discrete(acc_idx, Some(missing_strings.clone()));
+    }
 
     Ok(Some(ColumnPlan {
         name: name.clone(),
