@@ -512,8 +512,9 @@ fn alignment_str_from_i32(value: i32) -> Option<&'static str> {
 fn format_class_from_type(code: u8) -> Option<FormatClass> {
     match code {
         20 | 23 | 24 | 38 | 39 => Some(FormatClass::Date),
-        21 | 25 => Some(FormatClass::Time),
+        21 => Some(FormatClass::Time),
         22 | 41 => Some(FormatClass::DateTime),
+        25 => Some(FormatClass::Duration),
         _ => None,
     }
 }

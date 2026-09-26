@@ -542,6 +542,7 @@ fn dtype_to_spss(
         DataType::Date => Ok((VarType::Numeric, 0, 1, 20, 11, 0)),
         DataType::Datetime(_, _) => Ok((VarType::Numeric, 0, 1, 22, 20, 0)),
         DataType::Time => Ok((VarType::Numeric, 0, 1, 21, 8, 0)),
+        DataType::Duration(_) => Ok((VarType::Numeric, 0, 1, 25, 11, 0)),
         _ => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 2)),
     }
 }
@@ -563,6 +564,7 @@ fn infer_series(series: &Series) -> Result<(VarType, usize, usize, u8, u8, u8)> 
         DataType::Date => Ok((VarType::Numeric, 0, 1, 20, 11, 0)),
         DataType::Datetime(_, _) => Ok((VarType::Numeric, 0, 1, 22, 20, 0)),
         DataType::Time => Ok((VarType::Numeric, 0, 1, 21, 8, 0)),
+        DataType::Duration(_) => Ok((VarType::Numeric, 0, 1, 25, 11, 0)),
         _ => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 2)),
     }
 }
@@ -1902,6 +1904,14 @@ fn anyvalue_to_f64(v: AnyValue) -> Option<f64> {
         AnyValue::Time(v) => {
             let secs = v / 1_000_000_000;
             Some(secs as f64)
+        }
+        AnyValue::Duration(v, unit) => {
+            let secs = match unit {
+                TimeUnit::Milliseconds => (v as f64) / 1_000.0,
+                TimeUnit::Microseconds => (v as f64) / 1_000_000.0,
+                TimeUnit::Nanoseconds => (v as f64) / 1_000_000_000.0,
+            };
+            Some(secs)
         }
         _ => None,
     }
