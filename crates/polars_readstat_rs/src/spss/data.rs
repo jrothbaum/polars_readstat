@@ -183,6 +183,9 @@ pub fn read_data_frame_streaming(
                             Some(FormatClass::Time) => ColumnBuilder::Time(
                                 PrimitiveChunkedBuilder::<Int64Type>::new(name.into(), cap),
                             ),
+                            Some(FormatClass::Duration) => ColumnBuilder::Duration(
+                                PrimitiveChunkedBuilder::<Int64Type>::new(name.into(), cap),
+                            ),
                             None => ColumnBuilder::Float64(
                                 PrimitiveChunkedBuilder::<Float64Type>::new(name.into(), cap),
                             ),
@@ -466,6 +469,9 @@ pub fn read_data_frame_with_reader(
                 Some(FormatClass::Time) => ColumnBuilder::Time(
                     PrimitiveChunkedBuilder::<Int64Type>::new(name.into(), limit),
                 ),
+                Some(FormatClass::Duration) => ColumnBuilder::Duration(
+                    PrimitiveChunkedBuilder::<Int64Type>::new(name.into(), limit),
+                ),
                 None => ColumnBuilder::Float64(PrimitiveChunkedBuilder::<Float64Type>::new(
                     name.into(),
                     limit,
@@ -637,6 +643,9 @@ pub fn read_data_columns_uncompressed(
                     name.into(), limit
                 )),
                 Some(FormatClass::Time) => ColumnBuilder::Time(
+                    PrimitiveChunkedBuilder::<Int64Type>::new(name.into(), limit),
+                ),
+                Some(FormatClass::Duration) => ColumnBuilder::Duration(
                     PrimitiveChunkedBuilder::<Int64Type>::new(name.into(), limit),
                 ),
                 None => ColumnBuilder::Float64(PrimitiveChunkedBuilder::<Float64Type>::new(
@@ -834,6 +843,21 @@ fn append_value(
                 b.append_null();
             } else {
                 b.append_value(apply_format_class_time(v));
+            }
+        }
+        (ColumnBuilder::Duration(b), VarType::Numeric) => {
+            let bytes: [u8; 8] = buf[..8]
+                .try_into()
+                .map_err(|_| Error::ParseError("short numeric value".to_string()))?;
+            let v = match endian {
+                Endian::Little => f64::from_le_bytes(bytes),
+                Endian::Big => f64::from_be_bytes(bytes),
+            };
+            let bits = v.to_bits();
+            if is_missing_numeric(plan, v, bits) {
+                b.append_null();
+            } else {
+                b.append_value(apply_format_class_duration(v));
             }
         }
         (ColumnBuilder::Utf8 { builder, num_cache, .. }, VarType::Numeric) => {
@@ -1396,6 +1420,9 @@ pub fn read_data_frame_with_indicators(
                 Some(FormatClass::Time) => ColumnBuilder::Time(
                     PrimitiveChunkedBuilder::<Int64Type>::new(name.into(), limit),
                 ),
+                Some(FormatClass::Duration) => ColumnBuilder::Duration(
+                    PrimitiveChunkedBuilder::<Int64Type>::new(name.into(), limit),
+                ),
                 None => ColumnBuilder::Float64(PrimitiveChunkedBuilder::<Float64Type>::new(
                     name.into(),
                     limit,
@@ -1506,6 +1533,7 @@ fn apply_format_class(v: f64, class: Option<FormatClass>) -> f64 {
         Some(FormatClass::Date) => ((v as i64 - SPSS_SEC_SHIFT) / SEC_PER_DAY) as f64,
         Some(FormatClass::DateTime) => ((v as i64 - SPSS_SEC_SHIFT) * SEC_MILLISECOND) as f64,
         Some(FormatClass::Time) => ((v as i64) * SEC_NANOSECOND) as f64,
+        Some(FormatClass::Duration) => (v * SEC_MILLISECOND as f64).round(),
         None => v,
     }
 }
@@ -1520,6 +1548,10 @@ fn apply_format_class_datetime(v: f64) -> i64 {
 
 fn apply_format_class_time(v: f64) -> i64 {
     (v as i64) * SEC_NANOSECOND
+}
+
+fn apply_format_class_duration(v: f64) -> i64 {
+    (v * SEC_MILLISECOND as f64).round() as i64
 }
 
 #[derive(Debug, Clone)]
@@ -1578,6 +1610,7 @@ enum ColumnBuilder {
     Date(PrimitiveChunkedBuilder<Int32Type>),
     DateTime(PrimitiveChunkedBuilder<Int64Type>),
     Time(PrimitiveChunkedBuilder<Int64Type>),
+    Duration(PrimitiveChunkedBuilder<Int64Type>),
     Utf8 {
         builder: StringChunkedBuilder,
         // Boxed to keep sizeof(ColumnBuilder) small: Option<Box<T>> uses the null-pointer
@@ -1601,6 +1634,10 @@ impl ColumnBuilder {
                 .into_datetime(TimeUnit::Milliseconds, None)
                 .into_series(),
             ColumnBuilder::Time(b) => b.finish().into_time().into_series(),
+            ColumnBuilder::Duration(b) => b
+                .finish()
+                .into_duration(TimeUnit::Milliseconds)
+                .into_series(),
             ColumnBuilder::Utf8 { builder, .. } => builder.finish().into_series(),
         }
     }

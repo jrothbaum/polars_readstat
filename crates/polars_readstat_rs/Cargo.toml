@@ -30,7 +30,7 @@ row_reader = []
 cloud = ["dep:object_store", "dep:tokio", "dep:url"]
 
 [dependencies]
-polars = { version = "0.55", features = ["lazy", "dtype-datetime", "dtype-date", "dtype-u8", "dtype-u16", "dtype-struct"] }
+polars = { version = "0.55", features = ["lazy", "dtype-datetime", "dtype-date", "dtype-duration", "dtype-u8", "dtype-u16", "dtype-struct"] }
 polars-core = { version = "0.55", default-features = false }
 polars-arrow = { version = "0.55"}
 byteorder = "1.5"

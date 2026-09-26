@@ -298,8 +298,9 @@ fn format_class_from_por_type(code: u32) -> Option<FormatClass> {
     let c = if code > 82 { code - 82 } else { code };
     match c {
         20 | 23 | 24 | 38 | 39 => Some(FormatClass::Date),
-        21 | 25 => Some(FormatClass::Time),
+        21 => Some(FormatClass::Time),
         22 | 41 => Some(FormatClass::DateTime),
+        25 => Some(FormatClass::Duration),
         _ => None,
     }
 }
@@ -494,6 +495,7 @@ fn read_por_data<R: Read>(
         DateI32(PrimitiveChunkedBuilder<Int32Type>),
         DatetimeI64(PrimitiveChunkedBuilder<Int64Type>),
         TimeI64(PrimitiveChunkedBuilder<Int64Type>),
+        DurationI64(PrimitiveChunkedBuilder<Int64Type>),
         Str(StringChunkedBuilder),
     }
 
@@ -512,6 +514,9 @@ fn read_por_data<R: Read>(
                         PrimitiveChunkedBuilder::new(v.name.as_str().into(), initial_cap),
                     ),
                     Some(FormatClass::Time) => ColBuilder::TimeI64(
+                        PrimitiveChunkedBuilder::new(v.name.as_str().into(), initial_cap),
+                    ),
+                    Some(FormatClass::Duration) => ColBuilder::DurationI64(
                         PrimitiveChunkedBuilder::new(v.name.as_str().into(), initial_cap),
                     ),
                     None => ColBuilder::Float(PrimitiveChunkedBuilder::new(
@@ -573,6 +578,14 @@ fn read_por_data<R: Read>(
                                     b.append_value(ns);
                                 }
                             }
+                            ColBuilder::DurationI64(b) => {
+                                if is_null {
+                                    b.append_null();
+                                } else {
+                                    let ms = (v * 1_000.0).round() as i64;
+                                    b.append_value(ms);
+                                }
+                            }
                             ColBuilder::Str(_) => unreachable!(),
                         }
                     }
@@ -601,6 +614,10 @@ fn read_por_data<R: Read>(
                 .into_series()
                 .cast(&DataType::Time)
                 .expect("cast to Time"),
+            ColBuilder::DurationI64(b) => b
+                .finish()
+                .into_duration(TimeUnit::Milliseconds)
+                .into_series(),
             ColBuilder::Str(b) => b.finish().into_series(),
         })
         .collect();
@@ -666,6 +683,7 @@ pub fn schema_from_por_metadata(meta: &PorMetadata) -> Schema {
                 Some(FormatClass::Date) => DataType::Date,
                 Some(FormatClass::DateTime) => DataType::Datetime(TimeUnit::Milliseconds, None),
                 Some(FormatClass::Time) => DataType::Time,
+                Some(FormatClass::Duration) => DataType::Duration(TimeUnit::Milliseconds),
                 None => DataType::Float64,
             }
         };
@@ -974,6 +992,7 @@ enum PorWriteData {
     Date(Int32Chunked),
     Datetime(Int64Chunked),
     Time(Int64Chunked),
+    Duration(Int64Chunked),
     Numeric(Float64Chunked),
 }
 
@@ -1097,6 +1116,16 @@ pub fn write_por_to_destination(
                 let s = col.as_materialized_series().cast(&DataType::Int64).map_err(polars_err)?;
                 (0, PorWriteData::Time(s.i64().map_err(polars_err)?.clone()))
             }
+            DataType::Duration(unit) => {
+                let s = col.as_materialized_series().cast(&DataType::Int64).map_err(polars_err)?;
+                let ca = s.i64().map_err(polars_err)?;
+                let ms_ca = match unit {
+                    TimeUnit::Milliseconds => ca.clone(),
+                    TimeUnit::Microseconds => ca / 1_000,
+                    TimeUnit::Nanoseconds => ca / 1_000_000,
+                };
+                (0, PorWriteData::Duration(ms_ca))
+            }
             _ => {
                 let s = col.as_materialized_series().cast(&DataType::Float64).map_err(polars_err)?;
                 (0, PorWriteData::Numeric(s.f64().map_err(polars_err)?.clone()))
@@ -1108,9 +1137,10 @@ pub fn write_por_to_destination(
             DataType::Date => 20,
             DataType::Datetime(_, _) => 22,
             DataType::Time => 21,
+            DataType::Duration(_) => 25,
             _ => 5,
         };
-        let fmt_width: u32 = if is_string { str_width.max(1) } else { 8 };
+        let fmt_width: u32 = if is_string { str_width.max(1) } else if fmt_type == 25 { 11 } else { 8 };
         let fmt_dec: u32 = if is_string || fmt_type != 5 { 0 } else { 2 };
 
         plans.push(PorWritePlan {
@@ -1175,6 +1205,12 @@ pub fn write_por_to_destination(
                 PorWriteData::Time(ca) => {
                     let v = ca.get(row_idx)
                         .map(|ns| (ns / 1_000_000_000) as f64)
+                        .unwrap_or(f64::NAN);
+                    w.write_double(v)?;
+                }
+                PorWriteData::Duration(ca) => {
+                    let v = ca.get(row_idx)
+                        .map(|ms| (ms as f64) / 1_000.0)
                         .unwrap_or(f64::NAN);
                     w.write_double(v)?;
                 }

@@ -502,8 +502,9 @@ def read_sas7bcat(
 
 _POR_FORMAT_CLASS: dict[int, str] = {
     20: "Date", 23: "Date", 24: "Date", 38: "Date", 39: "Date",
-    21: "Time", 25: "Time",
+    21: "Time",
     22: "DateTime", 41: "DateTime",
+    25: "Duration",
 }
 
 def _por_dtype_from_var(var: dict) -> pl.PolarsDataType:
@@ -520,6 +521,8 @@ def _por_dtype_from_var(var: dict) -> pl.PolarsDataType:
         return pl.Datetime("ms")
     if cls == "Time":
         return pl.Time
+    if cls == "Duration":
+        return pl.Duration("ms")
     return pl.Float64
 
 

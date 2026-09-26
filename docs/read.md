@@ -342,7 +342,7 @@ Other codes appear in the wild but are less common. The full list is in the [SPS
 
 **`format_class`**
 
-`format_class` is set to `"Date"`, `"Time"`, or `"DateTime"` for temporal formats (codes 20–25, 38–39, 41) so you can detect date/time columns without hardcoding the numeric codes. It is `null` for all other formats (numeric, string, etc.).
+`format_class` is set to `"Date"`, `"Time"`, `"DateTime"`, or `"Duration"` for temporal formats (codes 20–25, 38–39, 41) so you can detect date/time/duration columns without hardcoding the numeric codes. It is `null` for all other formats (numeric, string, etc.).
 
 **`value_label` vs `value_labels`**
 

@@ -15,6 +15,7 @@ pub enum FormatClass {
     Date,
     DateTime,
     Time,
+    Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

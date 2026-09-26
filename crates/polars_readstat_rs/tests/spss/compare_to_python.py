@@ -74,6 +74,7 @@ TEMPORAL_CLASS_TO_DTYPE = {
     "Date": pl.Date,
     "DateTime": pl.Datetime,
     "Time": pl.Time,
+    "Duration": pl.Duration,
 }
 
 
