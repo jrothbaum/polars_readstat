@@ -522,7 +522,7 @@ def _por_dtype_from_var(var: dict) -> pl.PolarsDataType:
     if cls == "Time":
         return pl.Time
     if cls == "Duration":
-        return pl.Duration("ms")
+        return pl.Duration("us")
     return pl.Float64
 
 

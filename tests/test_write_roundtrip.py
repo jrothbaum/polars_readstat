@@ -11,6 +11,13 @@ XPT_DIR = REPO_ROOT / "crates/polars_readstat_rs/tests/sas/data/xpt"
 
 import polars_readstat as prs
 
+
+def _write_spss_duration(df: pl.DataFrame, path: Path) -> None:
+    if path.suffix == ".por":
+        prs.write_por(df, str(path))
+    else:
+        prs.write_readstat(df, str(path))
+
 ROUNDTRIP_SOURCE_FILES = [
     "sas/data/data/file1.sas7bdat",
     "sas/data/data_pandas/test1.sas7bdat",
@@ -333,6 +340,51 @@ def test_por_write_roundtrip(tmp_path: Path) -> None:
     rt_names = rt["NAME"].str.strip_chars_end(" ").fill_null("")
     orig_names = df["NAME"].fill_null("")
     assert_frame_equal(rt_names.to_frame(), orig_names.to_frame(), check_dtypes=False)
+
+
+@pytest.mark.parametrize("suffix", ["sav", "por"])
+@pytest.mark.parametrize(
+    ("unit", "values"),
+    [
+        ("ms", [30_123, 86_873_654, -3_600_123, None]),
+        ("us", [30_123_456, 86_873_654_321, -3_600_123_456, None]),
+        ("ns", [30_123_456_000, 86_873_654_321_000, -3_600_123_456_000, None]),
+    ],
+)
+def test_spss_duration_roundtrip_supported_precision(
+    tmp_path: Path,
+    suffix: str,
+    unit: str,
+    values: list[int | None],
+) -> None:
+    duration = pl.Series("duration", values, dtype=pl.Int64).cast(pl.Duration(unit))
+    df = pl.DataFrame([duration])
+    expected = duration.cast(pl.Duration("us")).to_list()
+    out = tmp_path / f"duration.{suffix}"
+
+    _write_spss_duration(df, out)
+    result = prs.scan_readstat(str(out)).collect()
+    name = "DURATION" if suffix == "por" else "duration"
+
+    assert result.schema[name] == pl.Duration("us")
+    assert result[name].to_list() == expected
+
+    metadata = prs.ScanReadstat(str(out)).metadata_df
+    variable = metadata.filter(pl.col("name") == name).row(0, named=True)
+    assert variable["format_type"] == 25
+    assert variable["format_width"] == 18
+    assert variable["format_decimals"] == 6
+
+
+@pytest.mark.parametrize("suffix", ["sav", "por"])
+def test_spss_duration_rejects_nanosecond_precision(tmp_path: Path, suffix: str) -> None:
+    duration = pl.Series("duration", [30_123_456_789], dtype=pl.Int64).cast(
+        pl.Duration("ns")
+    )
+    out = tmp_path / f"duration.{suffix}"
+
+    with pytest.raises(Exception, match="microsecond precision, not nanosecond precision"):
+        _write_spss_duration(pl.DataFrame([duration]), out)
 
 
 def test_por_write_bad_extension(tmp_path: Path) -> None:

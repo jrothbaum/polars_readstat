@@ -582,8 +582,7 @@ fn read_por_data<R: Read>(
                                 if is_null {
                                     b.append_null();
                                 } else {
-                                    let ms = (v * 1_000.0).round() as i64;
-                                    b.append_value(ms);
+                                    b.append_value(crate::spss::spss_duration_to_micros(v)?);
                                 }
                             }
                             ColBuilder::Str(_) => unreachable!(),
@@ -616,7 +615,7 @@ fn read_por_data<R: Read>(
                 .expect("cast to Time"),
             ColBuilder::DurationI64(b) => b
                 .finish()
-                .into_duration(TimeUnit::Milliseconds)
+                .into_duration(TimeUnit::Microseconds)
                 .into_series(),
             ColBuilder::Str(b) => b.finish().into_series(),
         })
@@ -683,7 +682,7 @@ pub fn schema_from_por_metadata(meta: &PorMetadata) -> Schema {
                 Some(FormatClass::Date) => DataType::Date,
                 Some(FormatClass::DateTime) => DataType::Datetime(TimeUnit::Milliseconds, None),
                 Some(FormatClass::Time) => DataType::Time,
-                Some(FormatClass::Duration) => DataType::Duration(TimeUnit::Milliseconds),
+                Some(FormatClass::Duration) => DataType::Duration(TimeUnit::Microseconds),
                 None => DataType::Float64,
             }
         };
@@ -992,7 +991,7 @@ enum PorWriteData {
     Date(Int32Chunked),
     Datetime(Int64Chunked),
     Time(Int64Chunked),
-    Duration(Int64Chunked),
+    Duration(Int64Chunked, TimeUnit),
     Numeric(Float64Chunked),
 }
 
@@ -1118,13 +1117,8 @@ pub fn write_por_to_destination(
             }
             DataType::Duration(unit) => {
                 let s = col.as_materialized_series().cast(&DataType::Int64).map_err(polars_err)?;
-                let ca = s.i64().map_err(polars_err)?;
-                let ms_ca = match unit {
-                    TimeUnit::Milliseconds => ca.clone(),
-                    TimeUnit::Microseconds => ca / 1_000,
-                    TimeUnit::Nanoseconds => ca / 1_000_000,
-                };
-                (0, PorWriteData::Duration(ms_ca))
+                let ca = s.i64().map_err(polars_err)?.clone();
+                (0, PorWriteData::Duration(ca, *unit))
             }
             _ => {
                 let s = col.as_materialized_series().cast(&DataType::Float64).map_err(polars_err)?;
@@ -1140,8 +1134,8 @@ pub fn write_por_to_destination(
             DataType::Duration(_) => 25,
             _ => 5,
         };
-        let fmt_width: u32 = if is_string { str_width.max(1) } else if fmt_type == 25 { 11 } else { 8 };
-        let fmt_dec: u32 = if is_string || fmt_type != 5 { 0 } else { 2 };
+        let fmt_width: u32 = if is_string { str_width.max(1) } else if fmt_type == 25 { 18 } else { 8 };
+        let fmt_dec: u32 = if fmt_type == 25 { 6 } else if is_string || fmt_type != 5 { 0 } else { 2 };
 
         plans.push(PorWritePlan {
             original_name: name_raw.to_string(),
@@ -1208,9 +1202,10 @@ pub fn write_por_to_destination(
                         .unwrap_or(f64::NAN);
                     w.write_double(v)?;
                 }
-                PorWriteData::Duration(ca) => {
+                PorWriteData::Duration(ca, unit) => {
                     let v = ca.get(row_idx)
-                        .map(|ms| (ms as f64) / 1_000.0)
+                        .map(|value| crate::spss::duration_to_spss_seconds(value, *unit))
+                        .transpose()?
                         .unwrap_or(f64::NAN);
                     w.write_double(v)?;
                 }

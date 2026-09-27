@@ -857,7 +857,7 @@ fn append_value(
             if is_missing_numeric(plan, v, bits) {
                 b.append_null();
             } else {
-                b.append_value(apply_format_class_duration(v));
+                b.append_value(apply_format_class_duration(v)?);
             }
         }
         (ColumnBuilder::Utf8 { builder, num_cache, .. }, VarType::Numeric) => {
@@ -1550,8 +1550,8 @@ fn apply_format_class_time(v: f64) -> i64 {
     (v as i64) * SEC_NANOSECOND
 }
 
-fn apply_format_class_duration(v: f64) -> i64 {
-    (v * SEC_MILLISECOND as f64).round() as i64
+fn apply_format_class_duration(v: f64) -> Result<i64> {
+    crate::spss::spss_duration_to_micros(v)
 }
 
 #[derive(Debug, Clone)]
@@ -1636,7 +1636,7 @@ impl ColumnBuilder {
             ColumnBuilder::Time(b) => b.finish().into_time().into_series(),
             ColumnBuilder::Duration(b) => b
                 .finish()
-                .into_duration(TimeUnit::Milliseconds)
+                .into_duration(TimeUnit::Microseconds)
                 .into_series(),
             ColumnBuilder::Utf8 { builder, .. } => builder.finish().into_series(),
         }

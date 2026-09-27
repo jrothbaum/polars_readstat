@@ -344,6 +344,11 @@ Other codes appear in the wild but are less common. The full list is in the [SPS
 
 `format_class` is set to `"Date"`, `"Time"`, `"DateTime"`, or `"Duration"` for temporal formats (codes 20–25, 38–39, 41) so you can detect date/time/duration columns without hardcoding the numeric codes. It is `null` for all other formats (numeric, string, etc.).
 
+SPSS `DTIME` values are returned as Polars `Duration("us")`. SPSS stores elapsed
+time as floating-point seconds; this mapping preserves its supported
+microsecond precision, including negative and multi-day durations. SPSS does
+not provide nanosecond precision.
+
 **`value_label` vs `value_labels`**
 
 - `value_label` — the name of the label set as stored in the file (a string like `"labels0"`), useful for identifying which variables share the same label set.
@@ -352,4 +357,3 @@ Other codes appear in the wild but are less common. The full list is in the [SPS
 ### SPSS Portable (`.por`)
 
 `file_label`, `precision`, and a `variables` list with `name`, `type`, `width`, `format_type`, `format_width`, `format_decimals`, and `label`. No value labels or missing value definitions. `format_type` codes follow the same SPSS numbering as SAV.
-

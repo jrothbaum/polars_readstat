@@ -758,7 +758,7 @@ fn build_schema(metadata: &crate::spss::types::Metadata, value_labels_as_strings
                     Some(FormatClass::Date) => DataType::Date,
                     Some(FormatClass::DateTime) => DataType::Datetime(TimeUnit::Milliseconds, None),
                     Some(FormatClass::Time) => DataType::Time,
-                    Some(FormatClass::Duration) => DataType::Duration(TimeUnit::Milliseconds),
+                    Some(FormatClass::Duration) => DataType::Duration(TimeUnit::Microseconds),
                     None => DataType::Float64,
                 },
                 crate::spss::types::VarType::Str => DataType::String,

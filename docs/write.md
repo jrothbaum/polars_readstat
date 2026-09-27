@@ -122,6 +122,19 @@ write_por(df, "/path/out.por", file_label="My dataset", variable_labels={"ID": "
 
 Parameters: `file_label`, `variable_labels`. Also callable as `write_readstat(df, "out.por")`. Variable names are uppercased and truncated to 8 characters.
 
+## SPSS durations
+
+Polars `Duration("ms")` and `Duration("us")` columns are written as SPSS
+`DTIME` values with six fractional-second decimal places. `Duration("ns")`
+columns are accepted only when every non-null value is exactly divisible by
+1,000 and therefore losslessly representable in microseconds. Values with true
+nanosecond precision, or values too large for SPSS's floating-point seconds to
+retain microsecond precision, raise an error instead of being truncated.
+
+Reading either SAV or POR canonicalizes `DTIME` columns to `Duration("us")`;
+SPSS stores a numeric number of seconds and does not record the original Polars
+time unit.
+
 ## Preserving metadata from a source file
 
 `write_readstat` accepts a `metadata=` argument that carries over variable labels, value labels, formats, and SPSS-specific attributes (measure, alignment, display width). Only variables present in the DataFrame being written are included, so this works correctly when writing a column subset. Explicit kwargs always override anything derived from `metadata=`.

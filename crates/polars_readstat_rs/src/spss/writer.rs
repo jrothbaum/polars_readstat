@@ -542,7 +542,7 @@ fn dtype_to_spss(
         DataType::Date => Ok((VarType::Numeric, 0, 1, 20, 11, 0)),
         DataType::Datetime(_, _) => Ok((VarType::Numeric, 0, 1, 22, 20, 0)),
         DataType::Time => Ok((VarType::Numeric, 0, 1, 21, 8, 0)),
-        DataType::Duration(_) => Ok((VarType::Numeric, 0, 1, 25, 11, 0)),
+        DataType::Duration(_) => Ok((VarType::Numeric, 0, 1, 25, 18, 6)),
         _ => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 2)),
     }
 }
@@ -564,7 +564,7 @@ fn infer_series(series: &Series) -> Result<(VarType, usize, usize, u8, u8, u8)> 
         DataType::Date => Ok((VarType::Numeric, 0, 1, 20, 11, 0)),
         DataType::Datetime(_, _) => Ok((VarType::Numeric, 0, 1, 22, 20, 0)),
         DataType::Time => Ok((VarType::Numeric, 0, 1, 21, 8, 0)),
-        DataType::Duration(_) => Ok((VarType::Numeric, 0, 1, 25, 11, 0)),
+        DataType::Duration(_) => Ok((VarType::Numeric, 0, 1, 25, 18, 6)),
         _ => Ok((VarType::Numeric, 0, 1, SPSS_FORMAT_F, 8, 2)),
     }
 }
@@ -1431,7 +1431,7 @@ fn write_data<W: Write>(
                     if value.is_null() {
                         cell[..8].copy_from_slice(&SAV_MISSING_DOUBLE.to_le_bytes());
                     } else {
-                        let v = anyvalue_to_f64(value)
+                        let v = anyvalue_to_f64(value)?
                             .ok_or(Error::ParseError("unsupported numeric type".to_string()))?;
                         cell[..8].copy_from_slice(&v.to_le_bytes());
                     }
@@ -1875,8 +1875,8 @@ mod tests {
     }
 }
 
-fn anyvalue_to_f64(v: AnyValue) -> Option<f64> {
-    match v {
+fn anyvalue_to_f64(v: AnyValue) -> Result<Option<f64>> {
+    Ok(match v {
         AnyValue::Float64(v) => Some(v),
         AnyValue::Float32(v) => Some(v as f64),
         AnyValue::Int64(v) => Some(v as f64),
@@ -1905,16 +1905,9 @@ fn anyvalue_to_f64(v: AnyValue) -> Option<f64> {
             let secs = v / 1_000_000_000;
             Some(secs as f64)
         }
-        AnyValue::Duration(v, unit) => {
-            let secs = match unit {
-                TimeUnit::Milliseconds => (v as f64) / 1_000.0,
-                TimeUnit::Microseconds => (v as f64) / 1_000_000.0,
-                TimeUnit::Nanoseconds => (v as f64) / 1_000_000_000.0,
-            };
-            Some(secs)
-        }
+        AnyValue::Duration(v, unit) => Some(crate::spss::duration_to_spss_seconds(v, unit)?),
         _ => None,
-    }
+    })
 }
 
 fn write_name<W: Write>(writer: &mut W, name: &str) -> Result<()> {

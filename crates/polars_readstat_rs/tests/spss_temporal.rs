@@ -77,15 +77,15 @@ fn spss_duration_over_24h_roundtrip() -> PolarsResult<()> {
     // - 337,771 s = 93.8 hours (> 24 hours, previously dropped by Time mapping)
     // - null
     // - -3,600 s = -1 hour
-    let raw_ms = vec![
-        Some(85_876 * 1_000i64),
-        Some(86_873 * 1_000i64),
-        Some(337_771 * 1_000i64),
+    let raw_us = vec![
+        Some(85_876_123_456i64),
+        Some(86_873_654_321i64),
+        Some(337_771_000_001i64),
         None,
-        Some(-3_600 * 1_000i64),
+        Some(-3_600_123_456i64),
     ];
-    let duration_series = Int64Chunked::from_iter_options("w1intdur".into(), raw_ms.iter().copied())
-        .into_duration(TimeUnit::Milliseconds)
+    let duration_series = Int64Chunked::from_iter_options("w1intdur".into(), raw_us.iter().copied())
+        .into_duration(TimeUnit::Microseconds)
         .into_series();
 
     let df = DataFrame::new_infer_height(vec![
@@ -116,22 +116,24 @@ fn spss_duration_over_24h_roundtrip() -> PolarsResult<()> {
 
     assert_eq!(var_meta["format_type"], 25, "SPSS format_type should be 25 (DTIME)");
     assert_eq!(var_meta["format_class"], "Duration", "format_class should be Duration");
+    assert_eq!(var_meta["format_width"], 18);
+    assert_eq!(var_meta["format_decimals"], 6);
 
     // Scan the file back and verify schema and values
     let read_df = scan_file(file_path.clone())?;
     assert_eq!(
         read_df.schema().get("w1intdur"),
-        Some(&DataType::Duration(TimeUnit::Milliseconds)),
-        "w1intdur should be Duration(ms)"
+        Some(&DataType::Duration(TimeUnit::Microseconds)),
+        "w1intdur should be Duration(us)"
     );
 
     let col = read_df.column("w1intdur")?;
     let dur_ca = col.duration()?;
-    assert_eq!(dur_ca.phys.get(0), Some(85_876_000));
-    assert_eq!(dur_ca.phys.get(1), Some(86_873_000), "Duration >= 24h must NOT be dropped");
-    assert_eq!(dur_ca.phys.get(2), Some(337_771_000), "93.8 hour duration must NOT be dropped");
+    assert_eq!(dur_ca.phys.get(0), Some(85_876_123_456));
+    assert_eq!(dur_ca.phys.get(1), Some(86_873_654_321), "Duration >= 24h must NOT be dropped");
+    assert_eq!(dur_ca.phys.get(2), Some(337_771_000_001), "93.8 hour duration must NOT be dropped");
     assert_eq!(dur_ca.phys.get(3), None, "Null duration must be preserved");
-    assert_eq!(dur_ca.phys.get(4), Some(-3_600_000), "Negative duration must be preserved");
+    assert_eq!(dur_ca.phys.get(4), Some(-3_600_123_456), "Negative duration must be preserved");
 
     let _ = fs::remove_file(&file_path);
     Ok(())
@@ -142,14 +144,14 @@ fn spss_por_duration_roundtrip() -> PolarsResult<()> {
     use polars_readstat_rs::{read_por, scan_por, write_por, PorWriteOptions};
     use std::fs;
 
-    let raw_ms = vec![
-        Some(85_876 * 1_000i64),
-        Some(86_873 * 1_000i64),
-        Some(337_771 * 1_000i64),
+    let raw_us = vec![
+        Some(85_876_123_456i64),
+        Some(86_873_654_321i64),
+        Some(337_771_000_001i64),
         None,
     ];
-    let duration_series = Int64Chunked::from_iter_options("dur".into(), raw_ms.iter().copied())
-        .into_duration(TimeUnit::Milliseconds)
+    let duration_series = Int64Chunked::from_iter_options("dur".into(), raw_us.iter().copied())
+        .into_duration(TimeUnit::Microseconds)
         .into_series();
 
     let df = DataFrame::new_infer_height(vec![
@@ -170,25 +172,24 @@ fn spss_por_duration_roundtrip() -> PolarsResult<()> {
 
     assert_eq!(
         read_df.schema().get("DUR"),
-        Some(&DataType::Duration(TimeUnit::Milliseconds)),
-        "DUR in POR should be Duration(ms)"
+        Some(&DataType::Duration(TimeUnit::Microseconds)),
+        "DUR in POR should be Duration(us)"
     );
 
     let col = read_df.column("DUR")?;
     let dur_ca = col.duration()?;
-    assert_eq!(dur_ca.phys.get(0), Some(85_876_000));
-    assert_eq!(dur_ca.phys.get(1), Some(86_873_000), "Duration >= 24h must NOT be dropped in POR");
-    assert_eq!(dur_ca.phys.get(2), Some(337_771_000), "93.8h duration must NOT be dropped in POR");
+    assert_eq!(dur_ca.phys.get(0), Some(85_876_123_456));
+    assert_eq!(dur_ca.phys.get(1), Some(86_873_654_321), "Duration >= 24h must NOT be dropped in POR");
+    assert_eq!(dur_ca.phys.get(2), Some(337_771_000_001), "93.8h duration must NOT be dropped in POR");
     assert_eq!(dur_ca.phys.get(3), None);
 
     // Also verify scan_por
     let scanned_df = scan_por(&file_path, ScanOptions::default())?.collect()?;
     assert_eq!(
         scanned_df.schema().get("DUR"),
-        Some(&DataType::Duration(TimeUnit::Milliseconds)),
+        Some(&DataType::Duration(TimeUnit::Microseconds)),
     );
 
     let _ = fs::remove_file(&file_path);
     Ok(())
 }
-

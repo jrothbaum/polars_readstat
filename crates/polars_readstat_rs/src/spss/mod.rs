@@ -25,6 +25,47 @@ pub use writer::{
     SpssVariableMissingValues, SpssWriteColumn, SpssWriteSchema, SpssWriter,
 };
 
+const SPSS_DURATION_MICROS_PER_SECOND: f64 = 1_000_000.0;
+
+pub(crate) fn spss_duration_to_micros(seconds: f64) -> Result<i64> {
+    let micros = (seconds * SPSS_DURATION_MICROS_PER_SECOND).round();
+    let upper_exclusive = -(i64::MIN as f64);
+    if !micros.is_finite() || micros < i64::MIN as f64 || micros >= upper_exclusive {
+        return Err(Error::Unsupported(
+            "SPSS DTIME value is outside the Polars Duration(us) range".to_string(),
+        ));
+    }
+    Ok(micros as i64)
+}
+
+pub(crate) fn duration_to_spss_seconds(value: i64, unit: polars::prelude::TimeUnit) -> Result<f64> {
+    let micros = match unit {
+        polars::prelude::TimeUnit::Milliseconds => value.checked_mul(1_000).ok_or_else(|| {
+            Error::Unsupported(
+                "duration is outside the SPSS DTIME microsecond range".to_string(),
+            )
+        })?,
+        polars::prelude::TimeUnit::Microseconds => value,
+        polars::prelude::TimeUnit::Nanoseconds => {
+            if value % 1_000 != 0 {
+                return Err(Error::Unsupported(
+                    "SPSS DTIME supports microsecond precision, not nanosecond precision"
+                        .to_string(),
+                ));
+            }
+            value / 1_000
+        }
+    };
+
+    let seconds = micros as f64 / SPSS_DURATION_MICROS_PER_SECOND;
+    if spss_duration_to_micros(seconds)? != micros {
+        return Err(Error::Unsupported(
+            "duration is too large for SPSS DTIME to preserve microsecond precision".to_string(),
+        ));
+    }
+    Ok(seconds)
+}
+
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::path::Path;
