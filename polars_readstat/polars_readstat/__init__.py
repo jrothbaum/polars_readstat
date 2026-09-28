@@ -190,7 +190,7 @@ class ScanReadstat:
         valid_files = [".sas7bdat", ".dta", ".sav", ".zsav", ".xpt", ".xpt5", ".xpt8", ".por"]
         is_valid = False
         for fi in valid_files:
-            is_valid = is_valid or path.endswith(fi)
+            is_valid = is_valid or path.lower().endswith(fi)
 
         if not is_valid:
             message = f"{path} is not a valid file for polars_readstat. It must be one of these: {valid_files}"
