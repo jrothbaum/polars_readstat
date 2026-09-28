@@ -1,6 +1,9 @@
 use crate::stata::types::Endian;
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 
+const MISSING_FLOAT_STEP: u32 = 0x800;
+const MISSING_DOUBLE_STEP: u64 = 1_u64 << 40;
+
 #[derive(Debug, Clone, Copy)]
 pub struct MissingRules {
     pub max_int8: i8,
@@ -104,11 +107,7 @@ pub fn read_f32(buf: &[u8], endian: Endian, rules: MissingRules) -> Option<f32> 
     let v = f32::from_bits(bits);
     let sign = (bits & 0x8000_0000) != 0;
     if !sign && bits > rules.max_float {
-        if bits == rules.missing_float {
-            None
-        } else {
-            Some(f32::NAN)
-        }
+        None
     } else {
         Some(v)
     }
@@ -123,11 +122,7 @@ pub fn read_f64(buf: &[u8], endian: Endian, rules: MissingRules) -> Option<f64> 
     let v = f64::from_bits(bits);
     let sign = (bits & 0x8000_0000_0000_0000) != 0;
     if !sign && bits > rules.max_double {
-        if bits == rules.missing_double {
-            None
-        } else {
-            Some(f64::NAN)
-        }
+        None
     } else {
         Some(v)
     }
@@ -283,13 +278,11 @@ pub fn read_f32_tagged(
         let offset = if bits == rules.missing_float {
             None // system missing
         } else {
-            // The offset is stored in bits above the system-missing pattern.
-            // For Stata floats: missing_float = 0x7f000000, .a = 0x7f080000, etc.
-            // Each user-missing increments by 0x00080000.
+            // For Stata floats, each user-missing increments by 0x800.
             let diff = bits.wrapping_sub(rules.missing_float);
-            let k = (diff / 0x0008_0000) as u8;
-            if k >= 1 && k <= 26 {
-                Some(k)
+            let k = diff / MISSING_FLOAT_STEP;
+            if diff % MISSING_FLOAT_STEP == 0 && (1..=26).contains(&k) {
+                Some(k as u8)
             } else {
                 None
             }
@@ -319,14 +312,14 @@ pub fn read_f64_tagged(
     let v = f64::from_bits(bits);
     let sign = (bits & 0x8000_0000_0000_0000) != 0;
     if !sign && bits > rules.max_double {
-        // Stata double missing: missing_double = 0x7fe0000000000000 (system missing).
-        // .a = 0x7fe0000000000001, .b = 0x7fe0000000000002, etc. — each increments by 1.
+        // For Stata doubles, each user-missing increments by 2^40.
         let offset = if bits == rules.missing_double {
             None // system missing
         } else {
-            let diff = bits.wrapping_sub(rules.missing_double) as u8;
-            if diff >= 1 && diff <= 26 {
-                Some(diff)
+            let diff = bits.wrapping_sub(rules.missing_double);
+            let k = diff / MISSING_DOUBLE_STEP;
+            if diff % MISSING_DOUBLE_STEP == 0 && (1..=26).contains(&k) {
+                Some(k as u8)
             } else {
                 None
             }
@@ -347,3 +340,57 @@ pub fn offset_to_stata_label(offset: u8) -> String {
 }
 
 // Stata numeric values are stored in two's complement in practice.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn untagged_float_readers_convert_extended_missing_values_to_null() {
+        let rules = missing_rules(118);
+
+        for offset in [1, 26] {
+            let float_bits = rules.missing_float + offset * MISSING_FLOAT_STEP;
+            assert_eq!(
+                read_f32(&float_bits.to_le_bytes(), Endian::Little, rules),
+                None
+            );
+
+            let double_bits = rules.missing_double + (offset as u64) * MISSING_DOUBLE_STEP;
+            assert_eq!(
+                read_f64(&double_bits.to_le_bytes(), Endian::Little, rules),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn tagged_float_readers_decode_extended_missing_offsets() {
+        let rules = missing_rules(118);
+
+        for offset in [1_u8, 26] {
+            let float_bits = rules.missing_float + u32::from(offset) * MISSING_FLOAT_STEP;
+            assert_eq!(
+                read_f32_tagged(&float_bits.to_le_bytes(), Endian::Little, rules),
+                (None, Some(offset))
+            );
+
+            let double_bits = rules.missing_double + u64::from(offset) * MISSING_DOUBLE_STEP;
+            assert_eq!(
+                read_f64_tagged(&double_bits.to_le_bytes(), Endian::Little, rules),
+                (None, Some(offset))
+            );
+        }
+
+        let invalid_float = rules.missing_float + 1;
+        assert_eq!(
+            read_f32_tagged(&invalid_float.to_le_bytes(), Endian::Little, rules),
+            (None, None)
+        );
+        let invalid_double = rules.missing_double + 1;
+        assert_eq!(
+            read_f64_tagged(&invalid_double.to_le_bytes(), Endian::Little, rules),
+            (None, None)
+        );
+    }
+}

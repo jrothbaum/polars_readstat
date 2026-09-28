@@ -1,8 +1,8 @@
+use crate::source::ReadSource;
 use crate::stata::data::{
     build_shared_decode, read_data_frame_range, read_data_frame_range_with_indicators,
     read_data_frame_streaming, SharedDecode,
 };
-use crate::source::ReadSource;
 use crate::stata::reader::StataReader;
 use crate::stata::types::{Endian, Metadata, NumericType, VarType};
 use polars::prelude::*;
@@ -404,8 +404,14 @@ pub(crate) fn stata_batch_iter_with_reader(
         let formats = Arc::new(time_formats);
         let missing_null = missing_string_as_null;
         let labels_as_strings = value_labels_as_strings;
-        let shared = build_shared_decode(source.as_ref(), &metadata, endian, version, labels_as_strings)
-            .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+        let shared = build_shared_decode(
+            source.as_ref(),
+            &metadata,
+            endian,
+            version,
+            labels_as_strings,
+        )
+        .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
         let shared = Arc::new(shared);
 
         let ranges = split_batch_ranges(total_chunks, n_workers);
@@ -529,8 +535,15 @@ pub(crate) fn stata_batch_iter_with_reader(
             crate::InformativeNullMode::SeparateColumn { suffix } => suffix.clone(),
             _ => "_null".to_string(),
         };
-        let shared = build_shared_decode(source.as_ref(), &metadata, endian, version, labels)
-            .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+        let load_value_labels = labels || null_opts.use_value_labels;
+        let shared = build_shared_decode(
+            source.as_ref(),
+            &metadata,
+            endian,
+            version,
+            load_value_labels,
+        )
+        .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
         return Ok(Box::new(SerialStataBatchIter {
             source,
             metadata,

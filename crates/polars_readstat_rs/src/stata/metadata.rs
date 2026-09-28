@@ -514,8 +514,6 @@ fn read_value_labels<R: Read + Seek>(
     }
 
     let mut labels = Vec::new();
-    let rules = crate::stata::value::missing_rules(header.version);
-
     loop {
         let len = if layout.value_label_table_len_len == 2 {
             let mut buf = [0u8; 2];
@@ -598,10 +596,13 @@ fn read_value_labels<R: Read + Seek>(
                 }
                 let label = read_string(&txt[offset..], metadata.encoding);
                 let val_bytes = &vals[i * 4..i * 4 + 4];
-                if let Some(v) = crate::stata::value::read_i32(val_bytes, header.endian, rules) {
-                    mapping.push((ValueLabelKey::Integer(v), label.clone()));
-                    mapping.push((ValueLabelKey::Double(v as f64), label));
-                }
+                let mut val_cursor = std::io::Cursor::new(val_bytes);
+                let v = match header.endian {
+                    Endian::Little => val_cursor.read_i32::<LittleEndian>()?,
+                    Endian::Big => val_cursor.read_i32::<BigEndian>()?,
+                };
+                mapping.push((ValueLabelKey::Integer(v), label.clone()));
+                mapping.push((ValueLabelKey::Double(v as f64), label));
             }
             labels.push(ValueLabel {
                 name: labname,

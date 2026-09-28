@@ -49,6 +49,14 @@ def stata_missing(rs_tests_root: Path) -> Path:
 
 
 @pytest.fixture(scope="session")
+def stata_float_missing(rs_tests_root: Path) -> Path:
+    path = rs_tests_root / "stata/data/missing_test.dta"
+    if not path.exists():
+        pytest.skip(f"Missing Stata float-missing fixture: {path}")
+    return path
+
+
+@pytest.fixture(scope="session")
 def spss_simple_alltypes(rs_tests_root: Path) -> Path:
     # discrete missing {7.0, 8.0, 99.0} on x, range missing on z
     path = rs_tests_root / "spss/data/simple_alltypes.sav"
@@ -280,6 +288,40 @@ def test_stata_indicator_cols_have_non_null_values(stata_missing: Path) -> None:
     df = prs.read_readstat(str(stata_missing), informative_nulls={"columns": "all"})
     inds = _indicator_cols(df)
     assert _total_non_null(df, inds) > 0, "stata8_115.dta should have user-missing indicators"
+
+
+def test_stata_float_missing_indicators_and_labels(stata_float_missing: Path) -> None:
+    native = prs.read_readstat(
+        str(stata_float_missing),
+        value_labels_as_strings=False,
+        informative_nulls={"columns": "all", "use_value_labels": False},
+    )
+    assert native.select([f"var{i}_null" for i in range(1, 7)]).row(0) == (
+        ".a",
+        ".b",
+        ".c",
+        ".x",
+        ".y",
+        ".z",
+    )
+    assert native.select("var7_null", "var8_null").row(0) == (None, None)
+
+    labeled_numeric = prs.read_readstat(
+        str(stata_float_missing),
+        value_labels_as_strings=False,
+        informative_nulls={"columns": "all"},
+    )
+    assert labeled_numeric["var1"].to_list() == [None]
+    assert labeled_numeric["var1_null"].to_list() == ["missing"]
+
+    labeled = prs.read_readstat(
+        str(stata_float_missing),
+        value_labels_as_strings=True,
+        informative_nulls={"columns": "all"},
+    )
+    assert labeled["var1"].to_list() == [None]
+    assert labeled["var1_null"].to_list() == ["missing"]
+    assert labeled["var2_null"].to_list() == [".b"]
 
 
 def test_stata_read_and_scan_agree(stata_missing: Path) -> None:

@@ -192,6 +192,38 @@ fn test_sas_informative_nulls_no_indicators_without_option() -> PolarsResult<()>
 // ───────────────────────────── Stata ───────────────────────────────────────
 
 #[test]
+fn test_stata_default_read_converts_all_missing_values_to_null() -> PolarsResult<()> {
+    let path = test_data("stata", "missing_test.dta");
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let df = scan_dta(
+        &path,
+        ScanOptions {
+            value_labels_as_strings: Some(false),
+            ..Default::default()
+        },
+    )?
+    .collect()?;
+
+    // var1-var6 contain extended missings (.a-.z), while var7-var8 contain
+    // system missings. The default path must expose both kinds as null.
+    for name in [
+        "var1", "var2", "var3", "var4", "var5", "var6", "var7", "var8",
+    ] {
+        assert_eq!(
+            df.column(name)?.null_count(),
+            1,
+            "{name} should contain one null"
+        );
+    }
+    assert_eq!(df.column("var9")?.null_count(), 0);
+
+    Ok(())
+}
+
+#[test]
 fn test_stata_informative_nulls_schema_grows() -> PolarsResult<()> {
     let path = test_data("stata", "missing_test.dta");
     if !path.exists() {
@@ -250,6 +282,77 @@ fn test_stata_informative_nulls_indicators_are_string_type() -> PolarsResult<()>
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn test_stata_informative_nulls_preserve_float_tags_and_labels() -> PolarsResult<()> {
+    let path = test_data("stata", "missing_test.dta");
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let mut native_opts = InformativeNullOpts::new(InformativeNullColumns::All);
+    native_opts.use_value_labels = false;
+    let native = scan_dta(
+        &path,
+        ScanOptions {
+            informative_nulls: Some(native_opts),
+            value_labels_as_strings: Some(false),
+            ..Default::default()
+        },
+    )?
+    .collect()?;
+
+    for (name, expected) in [
+        ("var1_null", ".a"),
+        ("var2_null", ".b"),
+        ("var3_null", ".c"),
+        ("var4_null", ".x"),
+        ("var5_null", ".y"),
+        ("var6_null", ".z"),
+    ] {
+        assert_eq!(native.column(name)?.str()?.get(0), Some(expected));
+    }
+    assert_eq!(native.column("var7_null")?.str()?.get(0), None);
+    assert_eq!(native.column("var8_null")?.str()?.get(0), None);
+
+    let labeled_numeric = scan_dta(
+        &path,
+        ScanOptions {
+            informative_nulls: Some(InformativeNullOpts::new(InformativeNullColumns::All)),
+            value_labels_as_strings: Some(false),
+            ..Default::default()
+        },
+    )?
+    .collect()?;
+
+    assert_eq!(labeled_numeric.column("var1")?.f32()?.get(0), None);
+    assert_eq!(
+        labeled_numeric.column("var1_null")?.str()?.get(0),
+        Some("missing")
+    );
+
+    let labeled_string = scan_dta(
+        &path,
+        ScanOptions {
+            informative_nulls: Some(InformativeNullOpts::new(InformativeNullColumns::All)),
+            value_labels_as_strings: Some(true),
+            ..Default::default()
+        },
+    )?
+    .collect()?;
+
+    assert_eq!(labeled_string.column("var1")?.str()?.get(0), None);
+    assert_eq!(
+        labeled_string.column("var1_null")?.str()?.get(0),
+        Some("missing")
+    );
+    assert_eq!(
+        labeled_string.column("var2_null")?.str()?.get(0),
+        Some(".b")
+    );
+
     Ok(())
 }
 
