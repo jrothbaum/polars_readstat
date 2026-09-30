@@ -32,6 +32,8 @@ pub struct XptColumn {
     pub format: String,
     pub col_type: XptColumnType,
     pub storage_width: usize,
+    /// Byte offset of this column within a row of the full (unprojected) file.
+    pub row_offset: usize,
 }
 
 #[derive(Debug)]
@@ -171,6 +173,7 @@ fn parse_namestr(buf: &[u8], version: u8) -> XptColumn {
         format,
         col_type,
         storage_width: nlng,
+        row_offset: 0,
     }
 }
 
@@ -324,6 +327,11 @@ pub fn read_xpt_metadata_from_source(source: &dyn ReadSource) -> PolarsResult<Xp
     let mut columns: Vec<XptColumn> = (0..var_count)
         .map(|i| parse_namestr(&namestr_buf[i * NAMESTR_SIZE..], version))
         .collect();
+    let mut running_offset = 0usize;
+    for c in columns.iter_mut() {
+        c.row_offset = running_offset;
+        running_offset += c.storage_width;
+    }
 
     // 10. OBS / LABEL header (v8 may have label records before OBS)
     if version >= 8 {
@@ -615,16 +623,14 @@ impl XptBatchBuilder {
     }
 
     fn push_row(&mut self, row: &[u8]) {
-        let mut offset = 0usize;
         for (i, (col, kind)) in self.columns.iter().enumerate() {
             let w = col.storage_width;
+            let offset = col.row_offset;
             let field = if offset + w <= row.len() {
                 &row[offset..offset + w]
             } else {
                 &[][..]
             };
-            offset += w;
-
             let buf = &mut self.buffers[i];
             match kind {
                 ColKind::Character => {
@@ -1197,4 +1203,25 @@ pub fn xpt_metadata_json_from_source(source: &dyn ReadSource) -> PolarsResult<St
         "columns": columns,
     });
     Ok(v.to_string())
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    fn read(path: &Path, cols: Option<Vec<String>>) -> DataFrame {
+        let src: Arc<dyn ReadSource> = Arc::new(crate::source::LocalFileSource::new(path));
+        let mut it = xpt_batch_iter(src, Some(1), true, None, true, None, cols, 0, None).unwrap();
+        it.next().unwrap().unwrap()
+    }
+
+    #[test]
+    fn projected_columns_match_full_read() {
+        let path = Path::new("tests/sas/data/xpt/sample.xpt");
+        let full = read(path, None);
+        for name in full.get_column_names() {
+            let one = read(path, Some(vec![name.to_string()]));
+            assert_eq!(one.column(name).unwrap(), full.column(name).unwrap(), "{name}");
+        }
+    }
 }
