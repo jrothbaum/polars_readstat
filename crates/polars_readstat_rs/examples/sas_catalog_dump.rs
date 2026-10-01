@@ -26,8 +26,8 @@ fn main() {
                 CatalogKey::Text(s) => {
                     json!({"key_type": "text", "key": s, "label": label})
                 }
-                CatalogKey::Missing => {
-                    json!({"key_type": "missing", "key": null, "label": label})
+                CatalogKey::Missing(tag) => {
+                    json!({"key_type": "missing", "key": tag.map(|c| c.to_string()), "label": label})
                 }
             })
             .collect();

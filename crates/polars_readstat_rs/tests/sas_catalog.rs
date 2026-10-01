@@ -44,7 +44,29 @@ fn test_read_catalog_large() {
     )));
 
     // A format that assigns a label to missing/tagged-missing values (`.`, `.A`-`.Z`)
-    // should surface it as CatalogKey::Missing rather than silently dropping it.
+    // should surface it as CatalogKey::Missing(None) rather than silently dropping it.
     let p445f = catalog.get("P445F").expect("P445F format present");
-    assert!(p445f.contains(&(CatalogKey::Missing, "Valid Skip".to_string())));
+    assert!(p445f.contains(&(CatalogKey::Missing(None), "Valid Skip".to_string())));
+}
+
+/// haven's tagged-na fixture: format XFMT labels `.A` "Apple" and `.Z` "Zebra".
+/// pyreadstat reports `{'A': 'Apple', 'Z': 'Zebra'}`.
+#[test]
+fn test_read_catalog_tagged_missing() {
+    let path = PathBuf::from("tests/sas/data/haven/tagged-na.sas7bcat");
+    let catalog = read_sas7bcat(&path).expect("catalog should parse");
+    assert_eq!(
+        catalog.get("XFMT").expect("XFMT format present"),
+        &vec![
+            (CatalogKey::Missing(Some('A')), "Apple".to_string()),
+            (CatalogKey::Missing(Some('Z')), "Zebra".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn test_read_catalog_haven_formats() {
+    let path = PathBuf::from("tests/sas/data/haven/formats.sas7bcat");
+    let catalog = read_sas7bcat(&path).expect("catalog should parse");
+    assert_eq!(catalog.len(), 2);
 }

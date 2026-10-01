@@ -15,15 +15,14 @@ Finds all .sas7bcat files in tests/sas/data/, reads each with:
   2) polars_readstat_rs (Rust, via the sas_catalog_dump example -> JSON)
 and compares the parsed format_name -> [(key, label), ...] maps.
 
-`nan`-keyed pyreadstat entries (the catch-all label a format assigns to
-missing/tagged-missing values) are compared against the Rust reader's
-`CatalogKey::Missing` entries by label text only, since NaN has no stable
-identity to compare structurally and pyreadstat itself collapses all
-missing/tagged-missing keys for a format into a single `nan` entry.
+pyreadstat keys tagged missings (.A-.Z, ._) by their tag letter and
+system-missing (`.`) as `nan`; the Rust reader's `Missing(Some(tag))` /
+`Missing(None)` keys are compared the same way.
 """
 
 import json
 import math
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -33,6 +32,8 @@ import pyreadstat
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEST_DATA_DIR = PROJECT_ROOT / "tests" / "sas" / "data"
 SCRATCH_DIR = Path("/tmp/polars_readstat_catalog_compare")
+# Release by default; set CATALOG_COMPARE_DEBUG=1 to reuse a cached debug build.
+PROFILE_ARGS = [] if os.environ.get("CATALOG_COMPARE_DEBUG") else ["--release"]
 
 
 def normalize_pyreadstat(value_labels: dict) -> dict:
@@ -60,8 +61,8 @@ def normalize_rust(dump: dict) -> dict:
                 bucket[round(entry["key"], 6)] = entry["label"]
             elif entry["key_type"] == "text":
                 bucket[entry["key"]] = entry["label"]
-            else:  # missing
-                bucket[None] = entry["label"]
+            else:  # missing: tag letter, or None for system-missing
+                bucket[entry["key"]] = entry["label"]
     return out
 
 
@@ -80,7 +81,7 @@ def compare_file(cat_file: Path) -> int:
     dump_path = SCRATCH_DIR / (cat_file.stem + ".json")
     result = subprocess.run(
         [
-            "cargo", "run", "--release", "--example", "sas_catalog_dump",
+            "cargo", "run", *PROFILE_ARGS, "--example", "sas_catalog_dump",
             "--", str(cat_file), str(dump_path),
         ],
         capture_output=True, text=True, cwd=PROJECT_ROOT,
@@ -125,14 +126,16 @@ def main() -> None:
 
     print("Building sas_catalog_dump (release)...")
     build = subprocess.run(
-        ["cargo", "build", "--release", "--example", "sas_catalog_dump"],
+        ["cargo", "build", *PROFILE_ARGS, "--example", "sas_catalog_dump"],
         capture_output=True, text=True, cwd=PROJECT_ROOT,
     )
     if build.returncode != 0:
         print(f"Build failed:\n{build.stderr}")
         sys.exit(1)
 
-    cat_files = sorted(TEST_DATA_DIR.glob("**/*.sas7bcat"))
+    cat_files = [Path(a).resolve() for a in sys.argv[1:]] or sorted(
+        TEST_DATA_DIR.glob("**/*.sas7bcat")
+    )
     if not cat_files:
         print("No .sas7bcat test files found!")
         sys.exit(1)

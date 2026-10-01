@@ -45,32 +45,13 @@ class ScanReadstat:
         Parameters
         ----------
         path : str
-            Path to the file, or a cloud URL — ``s3://bucket/key`` (AWS S3,
-            or an S3-compatible service like MinIO via
-            ``storage_options={"aws_endpoint_url": ...}``), ``gs://bucket/key``
-            (Google Cloud Storage), or ``az://container/key``
-            (Azure Blob Storage) — same three providers and URL schemes
-            Polars documents for ``scan_parquet``/``scan_csv``. When `data`
-            is given, this is only used as a filename-shaped hint for
-            format detection (e.g. "buffer.dta") — it does not need to
-            exist on disk or in the bucket/container.
+            Path to the file, or a cloud URL (``s3://``, ``gs://``, ``az://``).
+            When `data` is given, `path` is only used to detect the format
+            from its extension.
         data : bytes, optional
-            Read from these bytes instead of opening `path` (e.g. an object
-            already fetched some other way). `path` is still required,
-            purely to determine the format from its extension. Takes
-            precedence over `storage_options` if both are given.
+            Read from these bytes instead of opening `path`.
         storage_options : dict[str, str], optional
-            Only used when `path` is a cloud URL — same shape and key names
-            as Polars' own ``storage_options`` for
-            ``scan_parquet``/``scan_csv``: for S3, ``aws_access_key_id``,
-            ``aws_secret_access_key``, ``aws_region``, ``aws_endpoint_url``
-            (for an S3-compatible service), ``aws_session_token``,
-            ``aws_allow_http``, ...; for GCS, ``service_account``,
-            ``service_account_key``, ...; for Azure, ``account_name``,
-            ``account_key``, ``sas_token``, ``tenant_id``, ``client_id``,
-            ``client_secret``, .... May be omitted (or left empty) when
-            credentials are already available from the environment or an
-            instance/task role.
+            Credentials and settings for a cloud `path`; see `scan_readstat`.
         """
         self.path = str(path)
         self._validation_check(self.path)
@@ -434,15 +415,11 @@ def _stamp_informative_null_indicator(
     schema: pl.Schema,
     informative_nulls: "InformativeNullOpts | None",
 ) -> pl.DataFrame:
-    """Record which indicator column pairs with each variable when scanning with
-    ``informative_nulls`` in ``"separate_column"`` mode, so ``write_readstat(...,
-    merge_informative_nulls=True)`` can reconstruct raw missing values on a plain
-    scan -> edit -> write roundtrip without the caller re-specifying the pairing
-    (and without guessing it from column-name patterns, which risks merging an
-    unrelated column that happens to share the naming convention).
+    """Record which indicator column pairs with each variable in
+    ``"separate_column"`` mode, so ``write_readstat(..., merge_informative_nulls=True)``
+    can reconstruct raw missing values on a scan -> edit -> write roundtrip.
 
-    Struct mode needs no such column — it's self-describing at write time. Merged-string
-    mode is never reconstructible, so it's left alone too.
+    Struct and merged-string modes need no pairing and are returned unchanged.
     """
     if informative_nulls is None or informative_nulls.mode != "separate_column":
         return metadata_df
@@ -483,12 +460,11 @@ def read_sas7bcat(
     ----------
     path : str or Path
         Path to the ``.sas7bcat`` file, or a cloud URL (``s3://``, ``gs://``,
-        ``az://`` — see `scan_readstat`). When `data` is given, only used as
-        a filename-shaped hint (not actually opened).
+        ``az://``). Not opened when `data` is given.
     data : bytes, optional
         Read from these bytes instead of opening `path`.
     storage_options : dict[str, str], optional
-        Only used when `path` is a cloud URL — see `scan_readstat`.
+        Credentials and settings for a cloud `path`; see `scan_readstat`.
 
     Returns
     -------
@@ -621,14 +597,9 @@ def scan_readstat(
     Parameters
     ----------
     path : str
-        Path to the file, or a cloud URL — ``s3://bucket/key`` (AWS S3, or
-        an S3-compatible service like MinIO via
-        ``storage_options={"aws_endpoint_url": ...}``), ``gs://bucket/key``
-        (Google Cloud Storage), or ``az://container/key`` (Azure Blob
-        Storage) — same three providers and URL schemes Polars documents.
-        When `data` is given, this is only used as a filename-shaped hint
-        for format detection (e.g. "buffer.sas7bdat") — it does not need to
-        exist on disk or in the bucket/container.
+        Path to the file, or a cloud URL (``s3://``, ``gs://``, ``az://``).
+        When `data` is given, `path` is only used to detect the format from
+        its extension.
     threads : int, optional
         Number of threads to use.
     missing_string_as_null : bool, optional
@@ -653,20 +624,11 @@ def scan_readstat(
     batch_size : int, optional
         Number of rows per batch used by the scan source.
     data : bytes, optional
-        Read from these bytes instead of opening `path` (e.g. an object
-        already fetched some other way). Takes precedence over
-        `storage_options` if both are given.
+        Read from these bytes instead of opening `path`.
     storage_options : dict[str, str], optional
-        Only used when `path` is a cloud URL — same shape and key names as
-        Polars' own ``storage_options`` for ``scan_parquet``/``scan_csv``:
-        for S3, ``aws_access_key_id``, ``aws_secret_access_key``,
-        ``aws_region``, ``aws_endpoint_url`` (for an S3-compatible
-        service), ``aws_session_token``, ``aws_allow_http``, ...; for GCS,
-        ``service_account``, ``service_account_key``, ...; for Azure,
-        ``account_name``, ``account_key``, ``sas_token``, ``tenant_id``,
-        ``client_id``, ``client_secret``, .... May be omitted (or left
-        empty) when credentials are already available from the environment
-        or an instance/task role.
+        Credentials and settings for a cloud `path`, in the same form as
+        Polars' ``storage_options`` for ``scan_parquet``. Not needed when
+        credentials come from the environment or an instance/task role.
     """
     path = str(path)
     compress = _normalize_compress_opts(compress)
@@ -710,53 +672,9 @@ def scan_readstat(
         preserve_order_opts
     )
 
-    # Resolve schema_overrides: if informative_nulls mode is "struct", auto-wrap
-    # non-struct overrides so users can write schema_overrides={"x": pl.Int64}
-    # instead of {"x": pl.Struct({"x": pl.Int64, "null_indicator": pl.String})}.
     effective_overrides = _resolve_struct_mode_overrides(
         schema_overrides, reader.schema, informative_nulls
     )
-
-    # if return_batches:
-    #     warnings.warn(
-    #         "scan_readstat(..., return_batches=True) is deprecated; return_batches is for internal/backward-compat use only.",
-    #         DeprecationWarning,
-    #         stacklevel=2,
-    #     )
-    #     def source_generator_batches() -> Iterator[pl.DataFrame]:
-    #         if batch_size is None:
-    #             bs = 100_000
-    #         else:
-    #             bs = batch_size
-    #         if bs <= 0:
-    #             raise ValueError("batch_size must be > 0")
-
-    #         src = PyPolarsReadstat(
-    #             path=path,
-    #             size_hint=bs,
-    #             n_rows=None,
-    #             threads=reader.threads,
-    #             missing_string_as_null=reader.missing_string_as_null,
-    #             value_labels_as_strings=reader.value_labels_as_strings,
-    #             preserve_order=reader.preserve_order,
-    #             compress=compress.to_dict() if compress is not None else None,
-    #         )
-    #         if columns is not None:
-    #             cols = [c for c in columns if c]
-    #             if cols:
-    #                 src.set_with_columns(cols)
-
-    #         while (out := src.next()) is not None:
-    #             if schema_overrides:
-    #                 cols_to_cast = {
-    #                     col: dtype
-    #                     for col, dtype in schema_overrides.items()
-    #                     if col in out.columns
-    #                 }
-    #                 if cols_to_cast:
-    #                     out = out.cast(cols_to_cast)
-    #             yield out
-    #     return source_generator_batches()
 
     def schema_generator() -> pl.Schema:
         return reader.schema
@@ -861,12 +779,7 @@ def write_readstat(
     df : polars.DataFrame or polars.LazyFrame
         Data to write.
     path : str
-        Output path, or a cloud URL — ``s3://bucket/key`` (AWS S3, or an
-        S3-compatible service like MinIO via
-        ``storage_options={"aws_endpoint_url": ...}``), ``gs://bucket/key``
-        (Google Cloud Storage), or ``az://container/key`` (Azure Blob
-        Storage) — same three providers and URL schemes Polars documents for
-        ``scan_parquet``/``scan_csv``.
+        Output path, or a cloud URL (``s3://``, ``gs://``, ``az://``).
     format : str, optional
         One of "dta" (Stata) or "sav"/"zsav" (SPSS). If omitted, inferred
         from the file extension.
@@ -876,22 +789,9 @@ def write_readstat(
         are extracted automatically. Explicit kwargs take precedence over
         anything derived from metadata.
     storage_options : dict[str, str], optional
-        Only used when `path` is a cloud URL — same shape and key names as
-        Polars' own ``storage_options`` for ``scan_parquet``/``scan_csv``:
-        for S3, ``aws_access_key_id``, ``aws_secret_access_key``,
-        ``aws_region``, ``aws_endpoint_url`` (for an S3-compatible
-        service), ``aws_session_token``, ``aws_allow_http``, ...; for GCS,
-        ``service_account``, ``service_account_key``, ...; for Azure,
-        ``account_name``, ``account_key``, ``sas_token``, ``tenant_id``,
-        ``client_id``, ``client_secret``, .... May be omitted (or left
-        empty) when credentials are already available from the environment
-        or an instance/task role. Not supported for `write_sas_csv_import`,
-        which remains local files only. The streaming Stata sink
-        (``sink_stata``) does support it, but since it can't finalize its
-        header until the last row is written — and a cloud upload can't be
-        rewritten mid-stream — it buffers the full output through a local
-        temp file first and uploads that once writing finishes, rather than
-        streaming directly.
+        Credentials and settings for a cloud `path`; see `scan_readstat`.
+        ``sink_stata`` buffers the output in a local temp file and uploads
+        it once writing finishes.
     **kwargs : Any
         Stata supports `compress` (bool), `threads` (int),
         `value_labels` (dict[str, dict[int, str]]), `variable_labels` (dict[str, str]),
@@ -1646,7 +1546,7 @@ def write_xpt(
         use 3–8 bytes (default 8). Character columns default to the maximum
         observed string length.
     storage_options : dict[str, str], optional
-        Only used when `path` is a cloud URL (see `write_readstat`).
+        Credentials and settings for a cloud `path`; see `scan_readstat`.
     """
     df = _prepare_write_df(df)
     _write_xpt_rs(
@@ -1685,7 +1585,7 @@ def write_por(
     variable_labels : dict, optional
         Mapping of column name to variable label text.
     storage_options : dict[str, str], optional
-        Only used when `path` is a cloud URL (see `write_readstat`).
+        Credentials and settings for a cloud `path`; see `scan_readstat`.
     """
     df = _prepare_write_df(df)
     _write_por_rs(
@@ -1714,16 +1614,9 @@ def write_sas_csv_import(
     This does not produce a binary ``.sas7bdat`` file. Run the generated ``.sas``
     script in SAS to load the data.
 
-    Local paths only — unlike `write_readstat`/`write_xpt`/`write_por`, this
-    does not accept a cloud URL. The generated script's ``infile`` statement
-    embeds a plain filesystem path that SAS's DATA step reads directly; SAS
-    has no native ``s3://``/``gs://``/``az://`` support, so uploading the
-    output to a cloud path would leave the script pointing at a location SAS
-    can't open. (Base SAS can read plain HTTPS URLs via ``FILENAME ... URL``,
-    which every provider could support through a presigned link — but that
-    URL would expire and requires the SAS process to have outbound internet
-    access, a different and more fragile contract than a script you can run
-    anytime; not implemented.)
+    Local paths only: unlike `write_readstat`/`write_xpt`/`write_por`, this
+    does not accept a cloud URL, because the generated script refers to the
+    CSV by a filesystem path that SAS must be able to open.
 
     Parameters
     ----------

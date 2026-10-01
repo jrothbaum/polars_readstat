@@ -544,7 +544,8 @@ fn read_sas7bcat_rs(
             let py_key: Py<PyAny> = match key {
                 CatalogKey::Numeric(v) => v.into_pyobject(py).map_err(|e| PyRuntimeError::new_err(e.to_string()))?.into(),
                 CatalogKey::Text(s) => s.into_pyobject(py).map_err(|e| PyRuntimeError::new_err(e.to_string()))?.into(),
-                CatalogKey::Missing => f64::NAN.into_pyobject(py).map_err(|e| PyRuntimeError::new_err(e.to_string()))?.into(),
+                CatalogKey::Missing(Some(tag)) => tag.to_string().into_pyobject(py).map_err(|e| PyRuntimeError::new_err(e.to_string()))?.into(),
+                CatalogKey::Missing(None) => f64::NAN.into_pyobject(py).map_err(|e| PyRuntimeError::new_err(e.to_string()))?.into(),
             };
             inner.set_item(py_key, label)?;
         }

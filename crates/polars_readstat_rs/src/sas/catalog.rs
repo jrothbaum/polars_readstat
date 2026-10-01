@@ -17,17 +17,27 @@ pub const CATALOG_MAGIC_NUMBER: &[u8; 32] = &[
 const CATALOG_FIRST_INDEX_PAGE: i64 = 1;
 const CATALOG_USELESS_PAGES: i64 = 3;
 
-/// A SAS value-label key: a numeric code, a character string, or the
-/// catch-all label a format assigns to missing/tagged-missing values
-/// (`.`, `.A`-`.Z`, `._`). Catalog blocks encode missing values with a
-/// distinct sentinel bit pattern that doesn't carry which specific tag it
-/// was (readstat's own catalog reader collapses these to a single "NaN"
-/// entry too), so `Missing` isn't tag-specific.
+/// A SAS value-label key: a numeric code, a character string, or the label a
+/// format assigns to a missing value. `Missing(None)` is the system-missing
+/// `.`; `Missing(Some(c))` is a tagged missing, `.A`-`.Z` (`'A'`-`'Z'`) or
+/// `._` (`'_'`), matching what ReadStat's catalog reader reports.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CatalogKey {
     Numeric(f64),
     Text(String),
-    Missing,
+    Missing(Option<char>),
+}
+
+/// Decode the tag byte (bits 40-47) of a missing-value key, as ReadStat's
+/// `sas_assign_tag` does: 0 is `_`, 2..=27 is `A`..`Z`, otherwise the byte is
+/// taken as ASCII. Anything that isn't `_` or `A`-`Z` is system-missing.
+fn missing_tag(tag: u8) -> Option<char> {
+    let c = match tag {
+        0 => '_',
+        2..=27 => (b'A' + (tag - 2)) as char,
+        t => t as char,
+    };
+    (c == '_' || c.is_ascii_uppercase()).then_some(c)
 }
 
 /// Parsed SAS format catalog: format_name → [(code, label)]
@@ -254,7 +264,7 @@ fn parse_value_labels(
             let bits = raw_val.to_bits();
             // SAS missing/tag values: lower 40 bits are all 1, upper 24 bits 0
             if (bits | 0xFF_0000_0000_00) == 0xFF_FFFF_FFFF_FF {
-                CatalogKey::Missing
+                CatalogKey::Missing(missing_tag((bits >> 40) as u8))
             } else {
                 CatalogKey::Numeric(raw_val * -1.0)
             }
@@ -336,7 +346,7 @@ fn parse_block(data: &[u8], ctx: &Ctx) -> Option<(String, Vec<(CatalogKey, Strin
 ///
 /// Format names are normalised: trailing `.` stripped, uppercased.
 /// Numeric codes have the SAS negation already reversed (`code * -1`).
-/// SAS missing-value tags are silently skipped.
+/// Missing-value keys are `Missing(None)` (`.`) or `Missing(Some(tag))` (`.A`-`.Z`, `._`).
 pub fn read_sas7bcat(path: &Path) -> Result<CatalogMap> {
     read_sas7bcat_from_source(&LocalFileSource::new(path))
 }
