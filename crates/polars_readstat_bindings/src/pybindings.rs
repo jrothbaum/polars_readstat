@@ -1808,7 +1808,8 @@ fn write_xpt_from_df_rs(
     value_labels=None,
     variable_labels=None,
     library=None,
-    delete_csv_on_import=false
+    delete_csv_on_import=false,
+    gzip=false
 ))]
 fn write_sas_csv_import(
     df: PyDataFrame,
@@ -1818,6 +1819,7 @@ fn write_sas_csv_import(
     variable_labels: Option<&Bound<PyDict>>,
     library: Option<String>,
     delete_csv_on_import: bool,
+    gzip: bool,
 ) -> PyResult<(String, String)> {
     let mut writer = SasWriter::new(path);
     if let Some(name) = dataset_name {
@@ -1828,6 +1830,9 @@ fn write_sas_csv_import(
     }
     if delete_csv_on_import {
         writer = writer.with_delete_csv_on_import(true);
+    }
+    if gzip {
+        writer = writer.with_gzip(true);
     }
     if let Some(labels) = value_labels {
         writer = writer.with_value_labels(parse_sas_value_labels(labels)?);

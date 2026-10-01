@@ -8,7 +8,7 @@ Supported formats:
 - SPSS: `.sav`, `.zsav`
 - SPSS Portable: `.por` (via `write_readstat` or `write_por`)
 - SAS Transport: `.xpt` (via `write_xpt`)
-- SAS CSV import bundle: `.csv` + `.sas` script via `write_sas_csv_import` (not binary `.sas7bdat`)
+- SAS CSV import bundle: `.csv` (or `.csv.gz`) + `.sas` script via `write_sas_csv_import` (not binary `.sas7bdat`). See [SAS CSV import bundle](#sas-csv-import-bundle-write_sas_csv_import).
 
 ```python
 from polars_readstat import write_readstat, write_xpt, write_por, write_sas_csv_import
@@ -122,6 +122,68 @@ write_por(df, "/path/out.por", file_label="My dataset", variable_labels={"ID": "
 
 Parameters: `file_label`, `variable_labels`. Also callable as `write_readstat(df, "out.por")`. Variable names are uppercased and truncated to 8 characters.
 
+## SAS CSV import bundle (`write_sas_csv_import`)
+
+Binary `.sas7bdat` writing is not supported. Instead, `write_sas_csv_import` writes two files: a CSV with the data, and a `.sas` script that you run in SAS to load it with the right types, formats, and labels.
+
+```python
+from polars_readstat import write_sas_csv_import
+
+csv_path, sas_path = write_sas_csv_import(
+    df,
+    "/path/out",                      # directory, or a file path (extension ignored)
+    dataset_name="my_data",
+    value_labels={"sex": {1: "Male", 2: "Female"}},
+    variable_labels={"sex": "Respondent sex"},
+)
+```
+
+Then in SAS:
+
+```sas
+%include "/path/out/my_data.sas";
+```
+
+### Parameters
+
+| Parameter | Notes |
+| --- | --- |
+| `df` | A Polars `DataFrame` or `LazyFrame`. |
+| `path` | Output directory or file path. For a directory, files are `<dataset_name>.csv` and `<dataset_name>.sas`. For a file path, its stem is used for both files and the extension is ignored. Local paths only: cloud URLs are not accepted, because the script refers to the CSV by a filesystem path that SAS must open. |
+| `dataset_name` | SAS dataset name used in the `DATA` step. Defaults to the stem of `path`. Names are sanitized to SAS rules: letters, digits and underscores only, starting with a letter, at most 32 characters. Column names are sanitized the same way, with duplicates given a numeric suffix. |
+| `value_labels` | `{column: {code: label}}`. Builds a `PROC FORMAT` block. Numeric and string codes are both supported. |
+| `variable_labels` | `{column: label}`. Written as a `LABEL` statement. |
+| `library` | SAS library name. When set, the script adds `libname <library> "<output dir>";` and writes `<library>.<dataset_name>`, so the dataset is saved permanently next to the files. When omitted, the dataset goes to `WORK`. |
+| `delete_csv_on_import` | `True` makes the script delete the data file after importing it. Defaults to `False`. |
+| `gzip` | `True` writes `<dataset_name>.csv.gz` and the script reads it with `FILENAME ... ZIP ... GZIP`. Needs SAS 9.4 Maintenance 5 or later. Defaults to `False`. |
+
+The function returns `(csv_path, sas_script_path)`. With `gzip=True`, the first path is the `.csv.gz` file.
+
+### Smaller files with `gzip`
+
+```python
+write_sas_csv_import(df, "/path/out", dataset_name="my_data", gzip=True, delete_csv_on_import=True)
+```
+
+The compressed file is much smaller on disk and to transfer. Compressing and reading it back takes some extra time. With `delete_csv_on_import=True`, the script deletes the `.csv.gz` after the import, so it only needs to exist while SAS reads it. The generated script uses a `filename ... zip ... gzip` reference, so it needs no external `gzip` program and does not depend on `XCMD` being enabled. On SAS versions before 9.4 M5, leave `gzip` off.
+
+### How types are written
+
+Values are converted to something SAS can read from plain CSV:
+
+| Polars type | In the CSV | In the script |
+| --- | --- | --- |
+| Boolean | `0` / `1` | `length <col> 3` |
+| Date | Days since 1960-01-01 | `format <col> yymmdd10.` |
+| Datetime | Seconds since 1960-01-01 00:00:00. Sub-second precision is lost. | `format <col> datetime19.` |
+| Time | Seconds since midnight. Sub-second precision is lost. | `format <col> time8.` |
+| String | As is | `length <col> $<n>`, where `n` is the longest value in bytes |
+| Numeric | As is | `best32.` informat, plus a `length` statement for narrow types |
+
+Numeric storage lengths in SAS: `Int8`/`UInt8` get 3, `Int16`/`UInt16` get 4, `Int32` gets 5, `UInt32` gets 6, `Float32` gets 4. `Int64`, `UInt64` and `Float64` use the SAS default of 8.
+
+Missing values are written as empty fields. The script reads the file with `dsd`, comma-delimited, UTF-8, skipping the header row.
+
 ## SPSS durations
 
 Polars `Duration("ms")` and `Duration("us")` columns are written as SPSS
@@ -230,4 +292,4 @@ write_readstat(df, "out.sav", metadata=mdf)
 Notes:
 
 - `write_readstat(..., format="sas")` is intentionally unsupported because it implies binary `.sas7bdat` output.
-- Use `write_sas_csv_import(...)` to generate a SAS-ingestible bundle (`.csv` + `.sas` import script).
+- Use `write_sas_csv_import(...)` to generate a SAS-ingestible bundle (`.csv` or `.csv.gz` plus a `.sas` import script).

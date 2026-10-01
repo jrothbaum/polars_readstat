@@ -29,7 +29,8 @@ pub type SasVariableLabels = HashMap<String, String>;
 
 /// Writes a CSV + SAS program pair that reconstructs a dataset with types and labels.
 ///
-/// This does not produce a SAS7BDAT file. The output is a `.csv` data file and a
+/// This does not produce a SAS7BDAT file. The output is a `.csv` (or `.csv.gz` with
+/// [`SasWriter::with_gzip`]) data file and a
 /// companion `.sas` script containing `PROC FORMAT`, a `DATA` step with `LENGTH`,
 /// `FORMAT`, `LABEL`, and `INPUT` statements. Running the script in SAS loads the
 /// data with the correct types and metadata.
@@ -66,6 +67,7 @@ pub struct SasWriter {
     dataset_name: Option<String>,
     library: Option<String>,
     delete_csv_on_import: bool,
+    gzip: bool,
     value_labels: Option<SasValueLabels>,
     variable_labels: Option<SasVariableLabels>,
 }
@@ -81,6 +83,7 @@ impl SasWriter {
             dataset_name: None,
             library: None,
             delete_csv_on_import: false,
+            gzip: false,
             value_labels: None,
             variable_labels: None,
         }
@@ -109,6 +112,13 @@ impl SasWriter {
         self
     }
 
+    /// When true, the CSV is written gzip-compressed as `<dataset>.csv.gz` and the
+    /// generated script reads it with `FILENAME ... ZIP ... GZIP` (SAS 9.4 M5 or later).
+    pub fn with_gzip(mut self, enabled: bool) -> Self {
+        self.gzip = enabled;
+        self
+    }
+
     /// Attach value labels for columns (used to build `PROC FORMAT`).
     pub fn with_value_labels(mut self, labels: SasValueLabels) -> Self {
         self.value_labels = Some(labels);
@@ -131,7 +141,7 @@ impl SasWriter {
             .unwrap_or("data");
         let dataset = sanitize_sas_name(raw_name);
 
-        let (csv_path, sas_path) = resolve_paths(&self.base_path, &dataset)?;
+        let (csv_path, sas_path) = resolve_paths(&self.base_path, &dataset, self.gzip)?;
 
         let (df_renamed, name_map) = sas_rename_df(df)?;
         let value_labels = self
@@ -145,10 +155,24 @@ impl SasWriter {
 
         let mut df_out = prepare_df_for_csv(&df_renamed)?;
 
-        let mut file = BufWriter::new(File::create(&csv_path)?);
-        CsvWriter::new(&mut file)
-            .include_header(true)
-            .finish(&mut df_out)
+        let csv_options = CsvWriterOptions {
+            include_header: true,
+            compression: if self.gzip {
+                ExternalCompression::Gzip { level: None }
+            } else {
+                ExternalCompression::Uncompressed
+            },
+            ..Default::default()
+        };
+        let target = SinkTarget::Path(PlRefPath::new(csv_path.to_string_lossy().as_ref()));
+        df_out
+            .lazy()
+            .sink(
+                SinkDestination::File { target },
+                FileWriteFormat::Csv(csv_options),
+                UnifiedSinkArgs::default(),
+            )
+            .and_then(|lf| lf.collect())
             .map_err(|e| Error::ParseError(e.to_string()))?;
 
         let output_dir = csv_path.parent();
@@ -161,6 +185,7 @@ impl SasWriter {
             self.library.as_deref(),
             output_dir,
             self.delete_csv_on_import,
+            self.gzip,
         )?;
         let mut sas_file = BufWriter::new(File::create(&sas_path)?);
         sas_file.write_all(script.as_bytes())?;
@@ -168,9 +193,10 @@ impl SasWriter {
     }
 }
 
-fn resolve_paths(base: &Path, dataset: &str) -> Result<(PathBuf, PathBuf)> {
+fn resolve_paths(base: &Path, dataset: &str, gzip: bool) -> Result<(PathBuf, PathBuf)> {
+    let csv_ext = if gzip { "csv.gz" } else { "csv" };
     if base.is_dir() {
-        let csv = base.join(format!("{dataset}.csv"));
+        let csv = base.join(format!("{dataset}.{csv_ext}"));
         let sas = base.join(format!("{dataset}.sas"));
         return Ok((csv, sas));
     }
@@ -179,7 +205,7 @@ fn resolve_paths(base: &Path, dataset: &str) -> Result<(PathBuf, PathBuf)> {
     } else {
         base.to_path_buf()
     };
-    Ok((stem.with_extension("csv"), stem.with_extension("sas")))
+    Ok((stem.with_extension(csv_ext), stem.with_extension("sas")))
 }
 
 fn sanitize_sas_name(name: &str) -> String {
@@ -342,6 +368,7 @@ fn build_sas_script(
     library: Option<&str>,
     output_dir: Option<&Path>,
     delete_csv_on_import: bool,
+    gzip: bool,
 ) -> Result<String> {
     let mut script = String::new();
 
@@ -382,10 +409,21 @@ fn build_sas_script(
         Some(lib) => format!("{}.{}", lib, dataset),
         None => dataset.to_string(),
     };
+    if gzip {
+        script.push_str(&format!(
+            "filename _prsgz zip \"{}\" gzip;\n",
+            csv_path.display()
+        ));
+    }
     script.push_str(&format!("data {};\n", data_target));
+    let infile_ref = if gzip {
+        "_prsgz".to_string()
+    } else {
+        format!("\"{}\"", csv_path.display())
+    };
     script.push_str(&format!(
-        "  infile \"{}\" dsd dlm=',' firstobs=2 truncover encoding='utf-8';\n",
-        csv_path.display()
+        "  infile {} dsd dlm=',' firstobs=2 truncover encoding='utf-8';\n",
+        infile_ref
     ));
 
     // Length for string columns
@@ -463,6 +501,10 @@ fn build_sas_script(
         script.push_str(&format!("    {} : {}\n", series.name(), informat));
     }
     script.push_str("  ;\nrun;\n");
+
+    if gzip {
+        script.push_str("\nfilename _prsgz clear;\n");
+    }
 
     if delete_csv_on_import {
         script.push_str(&format!(

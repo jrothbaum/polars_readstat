@@ -91,7 +91,7 @@ write_sas_csv_import(df, "/path/out/sas_bundle", dataset_name="my_data")
 ```
 
 `write_readstat` supports Stata (`dta`) and SPSS (`sav`).  
-Use `write_sas_csv_import` for SAS-ingestible output (`.csv` + `.sas` import script). Binary `.sas7bdat` writing is not currently supported.
+Use `write_sas_csv_import` for SAS-ingestible output (`.csv`, or `.csv.gz` with `gzip=True`, plus a `.sas` import script; see [docs/write.md](docs/write.md)). Binary `.sas7bdat` writing is not currently supported.
 
 ### 4) <a id="sink"></a>You just want to get the data into parquet (or any other polars-supported file type):
 

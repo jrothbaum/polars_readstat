@@ -179,3 +179,49 @@ fn test_sas_writer_numeric_lengths() {
     let _ = fs::remove_file(&sas_path);
     let _ = fs::remove_dir_all(&out_dir);
 }
+
+#[test]
+fn test_sas_writer_gzip_matches_plain_csv() {
+    use std::io::Read;
+
+    let df = DataFrame::new_infer_height(vec![
+        Series::new("num".into(), &[Some(1.5f64), None, Some(3.0)]).into_column(),
+        Series::new("str".into(), &[Some("a,b"), Some("q\"uote"), None]).into_column(),
+    ])
+    .unwrap();
+
+    let plain_dir = temp_dir("sas_writer_plain");
+    let (plain_csv, _) = SasWriter::new(&plain_dir)
+        .with_dataset_name("demo")
+        .write_df(&df)
+        .unwrap();
+
+    let gz_dir = temp_dir("sas_writer_gz");
+    let (gz_csv, gz_sas) = SasWriter::new(&gz_dir)
+        .with_dataset_name("demo")
+        .with_gzip(true)
+        .with_delete_csv_on_import(true)
+        .write_df(&df)
+        .unwrap();
+
+    assert_eq!(gz_csv.file_name().unwrap(), "demo.csv.gz");
+
+    let mut decoded = String::new();
+    flate2::read::GzDecoder::new(fs::File::open(&gz_csv).unwrap())
+        .read_to_string(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, fs::read_to_string(&plain_csv).unwrap());
+
+    let sas = fs::read_to_string(&gz_sas).unwrap();
+    assert!(
+        sas.contains(&format!("filename _prsgz zip \"{}\" gzip;", gz_csv.display())),
+        "missing gzip filename statement:\n{sas}"
+    );
+    assert!(sas.contains("infile _prsgz dsd"), "infile should use the fileref");
+    assert!(sas.contains("filename _prsgz clear;"), "fileref should be cleared");
+    // The cleanup deletes the compressed file that was actually written.
+    assert!(sas.contains(&format!("filename _prscsv \"{}\";", gz_csv.display())));
+
+    let _ = fs::remove_dir_all(&plain_dir);
+    let _ = fs::remove_dir_all(&gz_dir);
+}

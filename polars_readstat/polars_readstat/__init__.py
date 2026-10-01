@@ -1606,6 +1606,7 @@ def write_sas_csv_import(
     variable_labels: dict[str, str] | None = None,
     library: str | None = None,
     delete_csv_on_import: bool = False,
+    gzip: bool = False,
 ) -> tuple[str, str]:
     """
     Write a SAS-import bundle: a CSV data file plus a companion ``.sas`` script
@@ -1646,6 +1647,11 @@ def write_sas_csv_import(
     delete_csv_on_import : bool, optional
         If ``True``, the generated SAS script deletes the CSV after importing
         it using ``%sysfunc(fdelete(...))``. Defaults to ``False``.
+    gzip : bool, optional
+        If ``True``, write the data as ``<dataset_name>.csv.gz`` and have the
+        script read it with ``FILENAME ... ZIP ... GZIP``, which needs SAS 9.4
+        Maintenance 5 or later. Reduces disk use and transfer size. Defaults
+        to ``False``.
 
     Returns
     -------
@@ -1690,6 +1696,7 @@ def write_sas_csv_import(
         variable_labels=variable_labels,
         library=library,
         delete_csv_on_import=delete_csv_on_import,
+        gzip=gzip,
     )
 
 
