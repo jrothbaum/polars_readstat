@@ -60,6 +60,20 @@ pub fn readstat_batch_iter(
     n_rows: Option<usize>,
     batch_size: Option<usize>,
 ) -> PolarsResult<ReadstatBatchIter> {
+    readstat_batch_iter_with_offset(path, opts, format, columns, 0, n_rows, batch_size)
+}
+
+/// Same as [`readstat_batch_iter`] but starts at row `offset`. `n_rows` is the
+/// number of rows to return *after* the offset (not an absolute end row).
+pub fn readstat_batch_iter_with_offset(
+    path: impl AsRef<Path>,
+    opts: Option<ScanOptions>,
+    format: Option<ReadStatFormat>,
+    columns: Option<Vec<String>>,
+    offset: usize,
+    n_rows: Option<usize>,
+    batch_size: Option<usize>,
+) -> PolarsResult<ReadstatBatchIter> {
     let path = path.as_ref();
     let opts = opts.unwrap_or_default();
     let format = format
@@ -94,7 +108,7 @@ pub fn readstat_batch_iter(
                 missing_string_as_null,
                 chunk_size,
                 col_indices,
-                0,
+                offset,
                 n_rows,
                 preserve_order,
                 row_index_name.clone(),
@@ -103,19 +117,17 @@ pub fn readstat_batch_iter(
             )?;
             Box::new(iter)
         }
-        ReadStatFormat::SasXpt => {
-            crate::sas::xpt::xpt_batch_iter(
-                std::sync::Arc::new(crate::source::LocalFileSource::new(path)),
-                opts.threads,
-                missing_string_as_null,
-                chunk_size,
-                preserve_order,
-                row_index_name.clone(),
-                columns,
-                0,
-                n_rows,
-            )?
-        }
+        ReadStatFormat::SasXpt => crate::sas::xpt::xpt_batch_iter(
+            std::sync::Arc::new(crate::source::LocalFileSource::new(path)),
+            opts.threads,
+            missing_string_as_null,
+            chunk_size,
+            preserve_order,
+            row_index_name.clone(),
+            columns,
+            offset,
+            n_rows,
+        )?,
         ReadStatFormat::Stata => {
             let iter = stata_batch_iter(
                 path.to_path_buf(),
@@ -126,7 +138,7 @@ pub fn readstat_batch_iter(
                 preserve_order,
                 row_index_name.clone(),
                 columns,
-                0,
+                offset,
                 n_rows,
                 opts.informative_nulls.clone(),
             )?;
@@ -142,7 +154,7 @@ pub fn readstat_batch_iter(
                 preserve_order,
                 row_index_name.clone(),
                 columns,
-                0,
+                offset,
                 n_rows,
                 opts.informative_nulls.clone(),
             )?;
@@ -177,6 +189,21 @@ pub fn readstat_batch_iter_from_source(
     n_rows: Option<usize>,
     batch_size: Option<usize>,
 ) -> PolarsResult<ReadstatBatchIter> {
+    readstat_batch_iter_from_source_with_offset(
+        source, format, opts, columns, 0, n_rows, batch_size,
+    )
+}
+
+/// Same as [`readstat_batch_iter_from_source`] but starts at row `offset`.
+pub fn readstat_batch_iter_from_source_with_offset(
+    source: Arc<dyn ReadSource>,
+    format: ReadStatFormat,
+    opts: Option<ScanOptions>,
+    columns: Option<Vec<String>>,
+    offset: usize,
+    n_rows: Option<usize>,
+    batch_size: Option<usize>,
+) -> PolarsResult<ReadstatBatchIter> {
     let opts = opts.unwrap_or_default();
 
     let row_index_name = opts.row_index_name.clone();
@@ -207,7 +234,7 @@ pub fn readstat_batch_iter_from_source(
                 missing_string_as_null,
                 chunk_size,
                 col_indices,
-                0,
+                offset,
                 n_rows,
                 preserve_order,
                 row_index_name.clone(),
@@ -216,19 +243,17 @@ pub fn readstat_batch_iter_from_source(
             )?;
             Box::new(iter)
         }
-        ReadStatFormat::SasXpt => {
-            crate::sas::xpt::xpt_batch_iter(
-                source,
-                opts.threads,
-                missing_string_as_null,
-                chunk_size,
-                preserve_order,
-                row_index_name.clone(),
-                columns,
-                0,
-                n_rows,
-            )?
-        }
+        ReadStatFormat::SasXpt => crate::sas::xpt::xpt_batch_iter(
+            source,
+            opts.threads,
+            missing_string_as_null,
+            chunk_size,
+            preserve_order,
+            row_index_name.clone(),
+            columns,
+            offset,
+            n_rows,
+        )?,
         ReadStatFormat::Stata => {
             let reader = crate::stata::reader::StataReader::open_source(source)
                 .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
@@ -242,7 +267,7 @@ pub fn readstat_batch_iter_from_source(
                 preserve_order,
                 row_index_name.clone(),
                 columns,
-                0,
+                offset,
                 n_rows,
                 opts.informative_nulls.clone(),
             )?;
@@ -261,7 +286,7 @@ pub fn readstat_batch_iter_from_source(
                 preserve_order,
                 row_index_name.clone(),
                 columns,
-                0,
+                offset,
                 n_rows,
                 opts.informative_nulls.clone(),
             )?;

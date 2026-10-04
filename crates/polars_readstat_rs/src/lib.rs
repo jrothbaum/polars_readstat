@@ -18,16 +18,16 @@ pub mod spss;
 pub mod stata;
 pub(crate) mod text_utils;
 
-pub use source::{InMemorySource, LocalFileSource, ReadSeek, ReadSource};
+#[cfg(feature = "cloud")]
+pub use cloud_destination::CloudWriteTarget;
 #[cfg(feature = "cloud")]
 pub use cloud_source::ObjectStoreSource;
 pub use destination::{DestinationWriter, WriteTarget};
-#[cfg(feature = "cloud")]
-pub use cloud_destination::CloudWriteTarget;
+pub use source::{InMemorySource, LocalFileSource, ReadSeek, ReadSource};
 
-pub use sas::catalog::{read_sas7bcat, read_sas7bcat_from_source, CatalogKey, CatalogMap};
 pub use sas::arrow_output as sas_arrow_output;
 pub(crate) use sas::buffer;
+pub use sas::catalog::{read_sas7bcat, read_sas7bcat_from_source, CatalogKey, CatalogMap};
 pub(crate) use sas::constants;
 pub(crate) use sas::data;
 pub(crate) use sas::decompressor;
@@ -47,24 +47,27 @@ pub use sas::header;
 pub use sas::metadata;
 pub use sas::reader;
 
-pub use sas::{Compression, Endian, Format, Platform, Header as SasHeader, Metadata as SasMetadata};
-pub use sas::{Error, Result, Sas7bdatReader};
 pub use sas::metadata_json_from_meta as sas_metadata_json_from_meta;
+pub use sas::{
+    read_xpt_metadata, read_xpt_metadata_from_source, schema_from_xpt_metadata, XptMetadata,
+    XptStorageWidths, XptVariableFormats, XptVariableLabels, XptWriter,
+};
+pub use sas::{
+    Compression, Endian, Format, Header as SasHeader, Metadata as SasMetadata, Platform,
+};
+pub use sas::{Error, Result, Sas7bdatReader};
 pub use sas::{SasValueLabelKey, SasValueLabelMap, SasValueLabels, SasVariableLabels, SasWriter};
-pub use sas::{read_xpt_metadata, read_xpt_metadata_from_source, schema_from_xpt_metadata, XptMetadata, XptVariableFormats, XptVariableLabels, XptStorageWidths, XptWriter};
 
 pub use readstat_stream::{
-    readstat_batch_iter, readstat_batch_iter_from_source, ReadstatBatchIter, ReadstatBatchStream,
+    readstat_batch_iter, readstat_batch_iter_from_source,
+    readstat_batch_iter_from_source_with_offset, readstat_batch_iter_with_offset,
+    ReadstatBatchIter, ReadstatBatchStream,
 };
 
 #[cfg(feature = "row_reader")]
 pub use sas::row_reader::{sas_row_readers, SasColumnInfo, SasColumnKind, SasRowReader};
 pub use sas::scan_sas7bdat;
 
-pub use spss::{
-    scan_sav, Alignment as SpssAlignment, Error as SpssError, Header as SpssHeader,
-    Measure as SpssMeasure, Metadata as SpssMetadata, Result as SpssResult, SpssReader,
-};
 pub use spss::metadata_json_from_meta as spss_metadata_json_from_meta;
 pub use spss::{
     merge_informative_null_columns, SpssMissingValue, SpssStringWidths, SpssValueLabelKey,
@@ -77,13 +80,17 @@ pub use spss::{
     read_por, read_por_from_source, scan_por, schema_from_por_metadata, write_por,
     write_por_to_destination, PorMetadata, PorVariable, PorWriteOptions,
 };
-pub use stata::{
-    compress_df, pandas_make_stata_column_names, pandas_prepare_df_for_stata, pandas_rename_df,
-    scan_dta, CompressOptions, Error as StataError, Header as StataHeader, Metadata as StataMetadata,
-    Result as StataResult, StataReader, StataWriteColumn, StataWriteSchema, StataWriter,
-    ValueLabelMap, ValueLabels, VariableFormats, VariableLabels,
+pub use spss::{
+    scan_sav, Alignment as SpssAlignment, Error as SpssError, Header as SpssHeader,
+    Measure as SpssMeasure, Metadata as SpssMetadata, Result as SpssResult, SpssReader,
 };
 pub use stata::metadata_json_from_meta as stata_metadata_json_from_meta;
+pub use stata::{
+    compress_df, pandas_make_stata_column_names, pandas_prepare_df_for_stata, pandas_rename_df,
+    scan_dta, CompressOptions, Error as StataError, Header as StataHeader,
+    Metadata as StataMetadata, Result as StataResult, StataReader, StataWriteColumn,
+    StataWriteSchema, StataWriter, ValueLabelMap, ValueLabels, VariableFormats, VariableLabels,
+};
 
 use polars::prelude::DataFrame;
 use polars_core::runtime::THREAD_POOL as POOL;
@@ -512,9 +519,7 @@ pub fn readstat_metadata_json(
         .ok_or("unknown file extension".to_string())?;
     match format {
         ReadStatFormat::Sas => sas::metadata_json(path).map_err(|e| e.to_string()),
-        ReadStatFormat::SasXpt => {
-            sas::xpt::xpt_metadata_json(path).map_err(|e| e.to_string())
-        }
+        ReadStatFormat::SasXpt => sas::xpt::xpt_metadata_json(path).map_err(|e| e.to_string()),
         ReadStatFormat::Stata => stata::metadata_json(path).map_err(|e| e.to_string()),
         ReadStatFormat::Spss => spss::metadata_json(path).map_err(|e| e.to_string()),
     }
