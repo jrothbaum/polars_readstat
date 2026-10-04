@@ -144,6 +144,11 @@ pub fn read_metadata<R: Read + Seek>(reader: &mut R, header: &Header) -> Result<
 
     let mut last_var_index: Option<usize> = None;
     let mut label_set_index = 0usize;
+    // Very-long-string continuation records (found via subtype 14). Older writers gave
+    // these names that can collide with real short names, so name lookups must skip them.
+    let mut ghosts: Vec<bool> = Vec::new();
+    // Subtype 13 (long names) is applied after subtype 14 so ghosts are known first.
+    let mut pending_long_names: Option<Vec<u8>> = None;
     let mut current_offset = 0usize;
     let mut offset_to_idx: std::collections::HashMap<usize, usize> =
         std::collections::HashMap::new();
@@ -218,16 +223,19 @@ pub fn read_metadata<R: Read + Seek>(reader: &mut R, header: &Header) -> Result<
                 } else if subtype == SUBTYPE_VERY_LONG_STR && data_len > 0 {
                     let mut buf = vec![0u8; data_len];
                     reader.read_exact(&mut buf)?;
-                    parse_very_long_string_record(&buf, &mut variables)?;
+                    parse_very_long_string_record(&buf, &mut variables, &mut ghosts)?;
+                    flush_long_names(&mut pending_long_names, &mut variables, &mut acc, &ghosts)?;
                 } else if subtype == SUBTYPE_LONG_VAR_NAME && data_len > 0 {
                     let mut buf = vec![0u8; data_len];
                     reader.read_exact(&mut buf)?;
-                    parse_long_variable_names_record(&buf, &mut variables, &mut acc)?;
+                    pending_long_names = Some(buf);
                 } else if subtype == SUBTYPE_LONG_STRING_VALUE_LABELS && data_len > 0 {
+                    flush_long_names(&mut pending_long_names, &mut variables, &mut acc, &ghosts)?;
                     let mut buf = vec![0u8; data_len];
                     reader.read_exact(&mut buf)?;
                     parse_long_string_value_labels(&buf, header, encoding, &mut variables, &mut acc, &mut value_labels_out, &mut label_set_index)?;
                 } else if subtype == SUBTYPE_LONG_STRING_MISSING_VALUES && data_len > 0 {
+                    flush_long_names(&mut pending_long_names, &mut variables, &mut acc, &ghosts)?;
                     let mut buf = vec![0u8; data_len];
                     reader.read_exact(&mut buf)?;
                     parse_long_string_missing_values(&buf, header, encoding, &mut variables)?;
@@ -236,6 +244,7 @@ pub fn read_metadata<R: Read + Seek>(reader: &mut R, header: &Header) -> Result<
                 }
             }
             REC_TYPE_DICT_TERMINATION => {
+                flush_long_names(&mut pending_long_names, &mut variables, &mut acc, &ghosts)?;
                 let _filler = read_u32(reader, header.endian)?;
                 data_offset = Some(reader.stream_position()?);
                 break;
@@ -650,17 +659,16 @@ fn redecode_all(
     }
 }
 
-fn parse_very_long_string_record(data: &[u8], variables: &mut Vec<ColumnPlan>) -> Result<()> {
-    let mut key_to_idx: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
-    for (i, v) in variables.iter().enumerate() {
-        key_to_idx
-            .entry(v.short_name.to_ascii_lowercase())
-            .or_insert(i);
-        key_to_idx
-            .entry(v.name.to_ascii_lowercase())
-            .or_insert(i);
-    }
+fn parse_very_long_string_record(
+    data: &[u8],
+    variables: &mut Vec<ColumnPlan>,
+    ghosts: &mut Vec<bool>,
+) -> Result<()> {
+    ghosts.resize(variables.len(), false);
+    // Entries are in dictionary order, so match each one at or after the previous match.
+    // This keeps continuation records whose names collide with real variables from
+    // being mistaken for them.
+    let mut cursor = 0usize;
     let mut pos = 0usize;
     while pos < data.len() {
         let end = data[pos..]
@@ -677,15 +685,47 @@ fn parse_very_long_string_record(data: &[u8], variables: &mut Vec<ColumnPlan>) -
         if entry.is_empty() {
             continue;
         }
-        if let Some(eq) = entry.iter().position(|&b| b == b'=') {
-            let key = String::from_utf8_lossy(&entry[..eq]).to_ascii_lowercase();
-            let val = String::from_utf8_lossy(&entry[eq + 1..]).trim().to_string();
-            if let Ok(len) = val.parse::<usize>() {
-                if let Some(&idx) = key_to_idx.get(&key) {
-                    variables[idx].string_len = len;
+        let Some(eq) = entry.iter().position(|&b| b == b'=') else {
+            continue;
+        };
+        let key = String::from_utf8_lossy(&entry[..eq]).to_ascii_lowercase();
+        let val = String::from_utf8_lossy(&entry[eq + 1..]).trim().to_string();
+        let Ok(len) = val.parse::<usize>() else {
+            continue;
+        };
+        let matches = |i: usize| {
+            !ghosts[i]
+                && (variables[i].short_name.eq_ignore_ascii_case(&key)
+                    || variables[i].name.eq_ignore_ascii_case(&key))
+        };
+        let found = (cursor..variables.len())
+            .find(|&i| matches(i))
+            .or_else(|| (0..cursor).find(|&i| matches(i)));
+        if let Some(idx) = found {
+            variables[idx].string_len = len;
+            let n_segments = (len + 251) / 252;
+            if len > 255 && n_segments > 1 {
+                let last = (idx + n_segments).min(variables.len());
+                for g in ghosts[idx + 1..last].iter_mut() {
+                    *g = true;
                 }
+                cursor = last;
+            } else {
+                cursor = idx + 1;
             }
         }
+    }
+    Ok(())
+}
+
+fn flush_long_names(
+    pending: &mut Option<Vec<u8>>,
+    variables: &mut Vec<ColumnPlan>,
+    acc: &mut MetadataAccumulator,
+    ghosts: &[bool],
+) -> Result<()> {
+    if let Some(buf) = pending.take() {
+        parse_long_variable_names_record(&buf, variables, acc, ghosts)?;
     }
     Ok(())
 }
@@ -694,12 +734,15 @@ fn parse_long_variable_names_record(
     data: &[u8],
     variables: &mut Vec<ColumnPlan>,
     acc: &mut MetadataAccumulator,
+    ghosts: &[bool],
 ) -> Result<()> {
-    let name_to_idx: std::collections::HashMap<String, usize> = variables
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (v.name.to_ascii_lowercase(), i))
-        .collect();
+    let mut name_to_idx: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for (i, v) in variables.iter().enumerate() {
+        if !ghosts.get(i).copied().unwrap_or(false) {
+            name_to_idx.entry(v.name.to_ascii_lowercase()).or_insert(i);
+        }
+    }
     let mut pos = 0usize;
     while pos < data.len() {
         let end = data[pos..]

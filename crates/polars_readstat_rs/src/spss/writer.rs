@@ -962,9 +962,10 @@ fn write_variable_records<W: Write>(
     columns: &[ColumnSpec],
     encoding: &'static encoding_rs::Encoding,
 ) -> Result<()> {
+    let mut used: HashSet<String> = columns.iter().map(|c| c.short_name.clone()).collect();
     for col in columns {
         if col.var_type == VarType::Str && col.string_len > 255 {
-            write_very_long_variable_records(writer, col, encoding)?;
+            write_very_long_variable_records(writer, col, encoding, &mut used)?;
         } else {
             write_variable_record(writer, col, encoding)?;
             if col.width > 1 {
@@ -981,6 +982,7 @@ fn write_very_long_variable_records<W: Write>(
     writer: &mut W,
     col: &ColumnSpec,
     encoding: &'static encoding_rs::Encoding,
+    used: &mut HashSet<String>,
 ) -> Result<()> {
     if col.missing.is_some() {
         return Err(Error::ParseError(format!(
@@ -1006,8 +1008,8 @@ fn write_very_long_variable_records<W: Write>(
     )?;
 
     let stem = &col.short_name[..col.short_name.len().min(5)];
-    for (seg_idx, seg_size) in segments.iter().enumerate().skip(1) {
-        let ghost = make_long_string_ghost_name(stem, seg_idx)?;
+    for seg_size in segments.iter().skip(1) {
+        let ghost = make_long_string_ghost_name(stem, used)?;
         write_very_long_segment_record(
             writer,
             &ghost,
@@ -1817,6 +1819,27 @@ mod tests {
     }
 
     #[test]
+    fn test_spss_very_long_strings_sharing_prefix_roundtrip() {
+        // Long names sharing a 5-char prefix (and S35r1 vs S35r11-style collisions)
+        // must not produce duplicate continuation record names.
+        let names: Vec<String> = (1..=12)
+            .map(|i| format!("S35r{i}"))
+            .chain((1..=5).map(|i| format!("Q140_Br98_Other_r1r{i}")))
+            .collect();
+        let cols: Vec<Column> = names
+            .iter()
+            .map(|n| Series::new(n.as_str().into(), &["x".repeat(1000)]).into())
+            .collect();
+        let df = DataFrame::new(1, cols).unwrap();
+        let out_path = temp_path("spss_long_prefix", "sav");
+        SpssWriter::new(&out_path).write_df(&df).unwrap();
+        let out = SpssReader::open(&out_path).unwrap().read().finish().unwrap();
+        assert_eq!(out.get_column_names(), df.get_column_names());
+        assert!(out.equals(&df), "round trip changed data");
+        let _ = std::fs::remove_file(&out_path);
+    }
+
+    #[test]
     fn test_spss_roundtrip_very_long_string_preserves_suffix() {
         let long = format!("{}{}", "x".repeat(3000), "_end");
         let col = Series::new("longstr".into(), &[long.as_str()]);
@@ -1951,23 +1974,23 @@ fn long_string_segment_sizes(string_len: usize) -> Vec<usize> {
     out
 }
 
-fn make_long_string_ghost_name(stem: &str, segment_index: usize) -> Result<String> {
-    // ReadStat convention: first 5 chars of short name + base36(segment index).
-    let idx = segment_index % 36;
-    let suffix = if idx < 10 {
-        (b'0' + (idx as u8)) as char
-    } else {
-        (b'A' + ((idx - 10) as u8)) as char
-    };
-    let mut out = String::with_capacity(6);
-    out.push_str(stem);
-    out.push(suffix);
-    if out.len() > 8 {
-        return Err(Error::ParseError(
-            "failed to build SPSS long-string ghost name".to_string(),
-        ));
+fn make_long_string_ghost_name(stem: &str, used: &mut HashSet<String>) -> Result<String> {
+    // SPSS convention: first 5 chars of the name + 3 unique base36 characters.
+    // Names must not collide with any real short name or other ghost name.
+    const DIGITS: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    for n in 0..36usize * 36 * 36 {
+        let mut out = String::with_capacity(8);
+        out.push_str(stem);
+        out.push(DIGITS[n / 1296] as char);
+        out.push(DIGITS[(n / 36) % 36] as char);
+        out.push(DIGITS[n % 36] as char);
+        if out.len() <= 8 && used.insert(out.clone()) {
+            return Ok(out);
+        }
     }
-    Ok(out)
+    Err(Error::ParseError(
+        "failed to build SPSS long-string ghost name".to_string(),
+    ))
 }
 
 fn write_spss_string_value(buf: &mut [u8], value: &[u8], declared_len: usize) {
