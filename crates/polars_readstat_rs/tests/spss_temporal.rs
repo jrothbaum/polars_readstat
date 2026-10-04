@@ -193,3 +193,24 @@ fn spss_por_duration_roundtrip() -> PolarsResult<()> {
     let _ = fs::remove_file(&file_path);
     Ok(())
 }
+
+#[test]
+fn spss_por_empty_string_roundtrip() -> PolarsResult<()> {
+    use polars_readstat_rs::{read_por, write_por, PorWriteOptions};
+
+    let df = DataFrame::new_infer_height(vec![
+        Series::new("name".into(), &["abc", "", "x y"]).into_column(),
+        Series::new("id".into(), &[1i32, 2, 3]).into_column(),
+    ])?;
+    let file_path = std::env::temp_dir().join("test_spss_empty_string.por");
+    let _ = std::fs::remove_file(&file_path);
+    write_por(&df, &file_path, PorWriteOptions::default())
+        .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+    let (_meta, out) = read_por(&file_path)
+        .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+    let vals: Vec<Option<&str>> = out.column("NAME")?.str()?.iter().collect();
+    assert_eq!(vals, vec![Some("abc"), Some(""), Some("x y")]);
+    assert_eq!(out.column("ID")?.get(2)?.try_extract::<i64>().ok(), Some(3));
+    let _ = std::fs::remove_file(&file_path);
+    Ok(())
+}

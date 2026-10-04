@@ -1178,7 +1178,7 @@ pub fn write_por_to_destination(
             match &plan.data {
                 PorWriteData::String(ca) => {
                     let s = ca.get(row_idx).unwrap_or("");
-                    w.write_string_field(if s.is_empty() { " " } else { s })?;
+                    w.write_string_field(s)?;
                 }
                 PorWriteData::Float64(ca) => w.write_double(ca.get(row_idx).unwrap_or(f64::NAN))?,
                 PorWriteData::Float32(ca) => {
