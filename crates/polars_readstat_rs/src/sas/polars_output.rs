@@ -1220,14 +1220,29 @@ pub(crate) fn sas_batch_iter_with_reader(
         return Ok(Box::new(std::iter::empty()));
     }
 
-    if let Some(ref name) = row_index_name {
-        let collision = reader.metadata().columns.iter().any(|c| c.name == *name);
-        if collision {
-            return Err(PolarsError::ComputeError(
-                format!("row_index_name '{name}' collides with existing column").into(),
-            ));
-        }
-    }
+    crate::check_row_index_collision(
+        row_index_name.as_deref(),
+        reader.metadata().columns.iter().map(|c| c.name.as_str()),
+    )?;
+
+    // Every serial fallback below builds the same iterator; only the null options differ.
+    let make_serial = |null_opts: Option<crate::InformativeNullOpts>| {
+        SerialSasBatchIter::new(
+            source.clone(),
+            reader.header().clone(),
+            reader.metadata().clone(),
+            reader.endian(),
+            reader.format(),
+            reader.initial_data_subheaders().to_vec(),
+            col_indices.clone(),
+            batch_size,
+            total,
+            missing_string_as_null,
+            null_opts,
+            offset,
+            row_index_name.clone(),
+        )
+    };
 
     // When informative nulls are requested, always use the serial path (needs row-by-row decode).
     if let Some(null_opts) = informative_nulls {
@@ -1275,26 +1290,7 @@ pub(crate) fn sas_batch_iter_with_reader(
             }
         }
 
-        let header = reader.header().clone();
-        let metadata = reader.metadata().clone();
-        let endian = reader.endian();
-        let format = reader.format();
-        let initial_data_subheaders = reader.initial_data_subheaders().to_vec();
-        let serial = SerialSasBatchIter::new(
-            source.clone(),
-            header,
-            metadata,
-            endian,
-            format,
-            initial_data_subheaders,
-            col_indices,
-            batch_size,
-            total,
-            missing_string_as_null,
-            Some(null_opts),
-            offset,
-            row_index_name,
-        )?;
+        let serial = make_serial(Some(null_opts))?;
         return Ok(Box::new(serial) as SasBatchIter);
     }
 
@@ -1319,28 +1315,37 @@ pub(crate) fn sas_batch_iter_with_reader(
         parallel_chunks.max(1),
     );
 
+    if offset > 0 {
+        // The page-count estimate can't locate an exact row for offset > 0 (variable rows per
+        // page), so read [0, offset + total) through the normal parallel path and drop the
+        // first `offset` rows. Only worthwhile when the prefix is no bigger than what we keep;
+        // for a far offset with a small limit the serial skip is cheaper.
+        if n_workers > 1 && total >= offset {
+            let inner = sas_batch_iter_with_reader(
+                reader,
+                source,
+                threads,
+                missing_string_as_null,
+                Some(batch_size),
+                col_indices,
+                0,
+                Some(offset + total),
+                true,
+                row_index_name,
+                None,
+                add_sort_tags,
+            )?;
+            return Ok(Box::new(SlicedBatchIter {
+                inner,
+                skip: offset,
+                remaining: total,
+            }) as SasBatchIter);
+        }
+        return Ok(Box::new(make_serial(None)?) as SasBatchIter);
+    }
+
     if n_workers <= 1 {
-        let header = reader.header().clone();
-        let metadata = reader.metadata().clone();
-        let endian = reader.endian();
-        let format = reader.format();
-        let initial_data_subheaders = reader.initial_data_subheaders().to_vec();
-        let serial = SerialSasBatchIter::new(
-            source.clone(),
-            header,
-            metadata,
-            endian,
-            format,
-            initial_data_subheaders,
-            col_indices,
-            batch_size,
-            total,
-            missing_string_as_null,
-            None,
-            offset,
-            row_index_name,
-        )?;
-        return Ok(Box::new(serial) as SasBatchIter);
+        return Ok(Box::new(make_serial(None)?) as SasBatchIter);
     }
     // N independent readers, each owning a non-overlapping range of pages.
     // Page byte offsets are always exact (header_length + page_num * page_length),
@@ -1405,31 +1410,8 @@ pub(crate) fn sas_batch_iter_with_reader(
     }
 
     if partial_read {
-        if offset > 0 {
-            let initial_data_subheaders = reader.initial_data_subheaders().to_vec();
-            let serial = SerialSasBatchIter::new(
-                source.clone(),
-                header,
-                metadata.as_ref().clone(),
-                endian,
-                format,
-                initial_data_subheaders,
-                col_indices,
-                batch_size,
-                total,
-                missing_string_as_null,
-                None,
-                offset,
-                row_index_name,
-            )?;
-            return Ok(Box::new(serial) as SasBatchIter);
-        }
-
-        let requested_mix_rows = if offset < mix_data_rows {
-            (mix_data_rows - offset).min(total)
-        } else {
-            0
-        };
+        // offset == 0 here: serial MIX rows first, then parallel DATA pages for the rest.
+        let requested_mix_rows = mix_data_rows.min(total);
         let mut exact_iter: SasBatchIter = if requested_mix_rows > 0 {
             let initial_subs = reader.initial_data_subheaders().to_vec();
             Box::new(SerialSasBatchIter::new(
@@ -1444,7 +1426,7 @@ pub(crate) fn sas_batch_iter_with_reader(
                 requested_mix_rows,
                 missing_string_as_null,
                 None,
-                offset,
+                0,
                 None,
             )?)
         } else {
@@ -1454,7 +1436,6 @@ pub(crate) fn sas_batch_iter_with_reader(
         let requested_data_rows = total.saturating_sub(requested_mix_rows);
         if requested_data_rows > 0 {
             let total_data_rows = reader.metadata().row_count.saturating_sub(mix_data_rows);
-            let data_offset = offset.saturating_sub(mix_data_rows);
             let est_rows_per_page = estimate_data_rows_per_page(
                 source.as_ref(),
                 &header,
@@ -1464,15 +1445,11 @@ pub(crate) fn sas_batch_iter_with_reader(
                 total_data_rows,
                 data_pages,
             );
-            let est_start_page_idx = data_offset / est_rows_per_page;
-            let lookback_pages = est_start_page_idx.min(n_workers.max(8));
-            let start_page_idx = est_start_page_idx.saturating_sub(lookback_pages);
-            let skip_in_estimate = data_offset.saturating_sub(start_page_idx * est_rows_per_page);
-            let initial_pages = (skip_in_estimate + requested_data_rows)
+            let initial_pages = requested_data_rows
                 .div_ceil(est_rows_per_page)
                 .saturating_add(1)
                 .max(n_workers)
-                .min(data_pages - start_page_idx)
+                .min(data_pages)
                 .max(1);
 
             let adaptive = AdaptivePageIter {
@@ -1485,15 +1462,15 @@ pub(crate) fn sas_batch_iter_with_reader(
                 plans: plans_arc.clone(),
                 col_indices: col_indices.clone(),
                 batch_size,
-                next_page: first_data_page + start_page_idx,
-                remaining_pages: data_pages - start_page_idx,
+                next_page: first_data_page,
+                remaining_pages: data_pages,
                 pages_per_chunk: initial_pages,
                 n_workers,
                 current: None,
             };
             let data_iter: SasBatchIter = Box::new(SlicedBatchIter {
                 inner: Box::new(adaptive),
-                skip: skip_in_estimate,
+                skip: 0,
                 remaining: requested_data_rows,
             });
             exact_iter = Box::new(exact_iter.chain(data_iter));
@@ -1503,7 +1480,7 @@ pub(crate) fn sas_batch_iter_with_reader(
             Box::new(RowIndexedIter {
                 inner: exact_iter,
                 row_index_name: name,
-                row_cursor: offset,
+                row_cursor: 0,
             }) as SasBatchIter
         } else {
             exact_iter

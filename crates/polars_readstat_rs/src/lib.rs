@@ -403,6 +403,57 @@ pub fn apply_informative_null_mode(
     }
 }
 
+/// Split `total_batches` into at most `n_workers` contiguous `(start, len)` ranges.
+pub(crate) fn split_batch_ranges(total_batches: usize, n_workers: usize) -> Vec<(usize, usize)> {
+    if total_batches == 0 || n_workers == 0 {
+        return Vec::new();
+    }
+    let n = n_workers.min(total_batches);
+    let base = total_batches / n;
+    let rem = total_batches % n;
+    let mut ranges = Vec::with_capacity(n);
+    let mut start = 0usize;
+    for i in 0..n {
+        let len = base + if i < rem { 1 } else { 0 };
+        ranges.push((start, len));
+        start += len;
+    }
+    ranges
+}
+
+/// Error if `row_index_name` matches one of the file's column names.
+pub(crate) fn check_row_index_collision<'a>(
+    row_index_name: Option<&str>,
+    mut column_names: impl Iterator<Item = &'a str>,
+) -> polars::prelude::PolarsResult<()> {
+    if let Some(name) = row_index_name {
+        if column_names.any(|c| c == name) {
+            return Err(polars::prelude::PolarsError::ComputeError(
+                format!("row_index_name '{name}' collides with existing column").into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Map requested column names to their positions in `all_names`.
+pub(crate) fn resolve_column_indices<'a>(
+    all_names: impl Iterator<Item = &'a str>,
+    cols: Option<&[String]>,
+) -> polars::prelude::PolarsResult<Option<Vec<usize>>> {
+    let Some(cols) = cols else { return Ok(None) };
+    let lookup: std::collections::HashMap<&str, usize> =
+        all_names.enumerate().map(|(i, n)| (n, i)).collect();
+    cols.iter()
+        .map(|name| {
+            lookup.get(name.as_str()).copied().ok_or_else(|| {
+                polars::prelude::PolarsError::ColumnNotFound(name.clone().into())
+            })
+        })
+        .collect::<polars::prelude::PolarsResult<Vec<_>>>()
+        .map(Some)
+}
+
 pub(crate) fn append_row_index(
     df: polars::prelude::DataFrame,
     name: &str,

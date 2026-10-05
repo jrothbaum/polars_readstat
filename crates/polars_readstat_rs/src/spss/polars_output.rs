@@ -1,4 +1,5 @@
 use crate::source::ReadSource;
+use crate::split_batch_ranges;
 use crate::spss::data::read_data_frame_streaming;
 use crate::spss::reader::SpssReader;
 use crate::spss::types::FormatClass;
@@ -85,23 +86,6 @@ mod tests {
 }
 
 pub(crate) type SpssBatchIter = Box<dyn Iterator<Item = PolarsResult<DataFrame>> + Send>;
-
-fn split_batch_ranges(total_batches: usize, n_workers: usize) -> Vec<(usize, usize)> {
-    if total_batches == 0 || n_workers == 0 {
-        return Vec::new();
-    }
-    let n = n_workers.min(total_batches);
-    let base = total_batches / n;
-    let rem = total_batches % n;
-    let mut ranges = Vec::with_capacity(n);
-    let mut start = 0usize;
-    for i in 0..n {
-        let len = base + if i < rem { 1 } else { 0 };
-        ranges.push((start, len));
-        start += len;
-    }
-    ranges
-}
 
 struct ParallelSpssBatchIter {
     rx: Receiver<(usize, PolarsResult<DataFrame>)>,
@@ -237,14 +221,10 @@ pub(crate) fn spss_batch_iter_with_reader(
         return Ok(Box::new(std::iter::empty()));
     }
 
-    if let Some(ref name) = row_index_name {
-        let collision = reader.metadata().variables.iter().any(|v| v.name == *name);
-        if collision {
-            return Err(PolarsError::ComputeError(
-                format!("row_index_name '{name}' collides with existing column").into(),
-            ));
-        }
-    }
+    crate::check_row_index_collision(
+        row_index_name.as_deref(),
+        reader.metadata().variables.iter().map(|v| v.name.as_str()),
+    )?;
 
     // Informative nulls: read once with indicators, then slice into batches in a background thread.
     if let Some(null_opts) = informative_nulls {
@@ -253,26 +233,10 @@ pub(crate) fn spss_batch_iter_with_reader(
         let endian = reader.endian();
         let compression = reader.compression();
         let bias = reader.header().bias;
-        let var_name_to_idx: std::collections::HashMap<&str, usize> = metadata
-            .variables
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (v.name.as_str(), i))
-            .collect();
-        let cols_idx = cols
-            .as_ref()
-            .map(|names| {
-                names
-                    .iter()
-                    .map(|name| {
-                        var_name_to_idx
-                            .get(name.as_str())
-                            .copied()
-                            .ok_or_else(|| PolarsError::ColumnNotFound(name.clone().into()))
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()?;
+        let cols_idx = crate::resolve_column_indices(
+            metadata.variables.iter().map(|v| v.name.as_str()),
+            cols.as_deref(),
+        )?;
         let var_names: Vec<&str> = metadata.variables.iter().map(|v| v.name.as_str()).collect();
         let eligible: Vec<&str> = metadata
             .variables
@@ -367,26 +331,10 @@ pub(crate) fn spss_batch_iter_with_reader(
         let metadata = Arc::new(reader.metadata().clone());
         let endian = reader.endian();
         let bias = reader.header().bias;
-        let var_name_to_idx: std::collections::HashMap<&str, usize> = metadata
-            .variables
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (v.name.as_str(), i))
-            .collect();
-        let cols_idx = cols
-            .as_ref()
-            .map(|names| {
-                names
-                    .iter()
-                    .map(|name| {
-                        var_name_to_idx
-                            .get(name.as_str())
-                            .copied()
-                            .ok_or_else(|| PolarsError::ColumnNotFound(name.clone().into()))
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()?;
+        let cols_idx = crate::resolve_column_indices(
+            metadata.variables.iter().map(|v| v.name.as_str()),
+            cols.as_deref(),
+        )?;
         let missing_null = missing_string_as_null;
         let labels_as_strings = value_labels_as_strings;
 
@@ -478,26 +426,10 @@ pub(crate) fn spss_batch_iter_with_reader(
         let endian = reader.endian();
         let compression = reader.compression();
         let bias = reader.header().bias;
-        let var_name_to_idx: std::collections::HashMap<&str, usize> = metadata
-            .variables
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (v.name.as_str(), i))
-            .collect();
-        let cols_idx = cols
-            .as_ref()
-            .map(|names| {
-                names
-                    .iter()
-                    .map(|name| {
-                        var_name_to_idx
-                            .get(name.as_str())
-                            .copied()
-                            .ok_or_else(|| PolarsError::ColumnNotFound(name.clone().into()))
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()?;
+        let cols_idx = crate::resolve_column_indices(
+            metadata.variables.iter().map(|v| v.name.as_str()),
+            cols.as_deref(),
+        )?;
         let missing_null = missing_string_as_null;
         let labels = value_labels_as_strings;
         let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(2);
@@ -548,26 +480,10 @@ pub(crate) fn spss_batch_iter_with_reader(
     let endian = reader.endian();
     let compression = reader.compression();
     let bias = reader.header().bias;
-    let var_name_to_idx: std::collections::HashMap<&str, usize> = metadata
-        .variables
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (v.name.as_str(), i))
-        .collect();
-    let cols_idx = cols
-        .as_ref()
-        .map(|names| {
-            names
-                .iter()
-                .map(|name| {
-                    var_name_to_idx
-                        .get(name.as_str())
-                        .copied()
-                        .ok_or_else(|| PolarsError::ColumnNotFound(name.clone().into()))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
+    let cols_idx = crate::resolve_column_indices(
+        metadata.variables.iter().map(|v| v.name.as_str()),
+        cols.as_deref(),
+    )?;
     let missing_null = missing_string_as_null;
     let labels = value_labels_as_strings;
     let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(2);

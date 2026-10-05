@@ -1,4 +1,5 @@
 use crate::sas::constants::{DATE_FORMATS, DATETIME_FORMATS, TIME_FORMATS};
+use crate::split_batch_ranges;
 use crate::source::{LocalFileSource, ReadSeek, ReadSource};
 use polars::prelude::*;
 use rayon::prelude::*;
@@ -995,23 +996,6 @@ pub fn scan_xpt(
     let path = path.into();
     let scan = Arc::new(XptScan::new(path, &opts)?);
     LazyFrame::anonymous_scan(scan, Default::default())
-}
-
-fn split_batch_ranges(total_batches: usize, n_workers: usize) -> Vec<(usize, usize)> {
-    if total_batches == 0 || n_workers == 0 {
-        return Vec::new();
-    }
-    let n = n_workers.min(total_batches);
-    let base = total_batches / n;
-    let rem = total_batches % n;
-    let mut ranges = Vec::with_capacity(n);
-    let mut start = 0usize;
-    for i in 0..n {
-        let len = base + if i < rem { 1 } else { 0 };
-        ranges.push((start, len));
-        start += len;
-    }
-    ranges
 }
 
 struct ParallelXptBatchIter {

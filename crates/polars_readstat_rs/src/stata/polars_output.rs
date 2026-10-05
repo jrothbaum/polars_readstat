@@ -1,4 +1,5 @@
 use crate::source::ReadSource;
+use crate::split_batch_ranges;
 use crate::stata::data::{
     build_shared_decode, read_data_frame_range, read_data_frame_range_with_indicators,
     read_data_frame_streaming, SharedDecode,
@@ -130,23 +131,6 @@ impl StataScan {
 }
 
 pub(crate) type StataBatchIter = Box<dyn Iterator<Item = PolarsResult<DataFrame>> + Send>;
-
-fn split_batch_ranges(total_batches: usize, n_workers: usize) -> Vec<(usize, usize)> {
-    if total_batches == 0 || n_workers == 0 {
-        return Vec::new();
-    }
-    let n = n_workers.min(total_batches);
-    let base = total_batches / n;
-    let rem = total_batches % n;
-    let mut ranges = Vec::with_capacity(n);
-    let mut start = 0usize;
-    for i in 0..n {
-        let len = base + if i < rem { 1 } else { 0 };
-        ranges.push((start, len));
-        start += len;
-    }
-    ranges
-}
 
 struct ParallelStataBatchIter {
     rx: Receiver<(usize, PolarsResult<DataFrame>)>,
@@ -350,35 +334,14 @@ pub(crate) fn stata_batch_iter_with_reader(
     let selected = cols
         .as_ref()
         .map(|c| c.iter().cloned().collect::<HashSet<_>>());
-    let var_name_to_idx: std::collections::HashMap<&str, usize> = reader
-        .metadata()
-        .variables
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (v.name.as_str(), i))
-        .collect();
-    let col_indices = cols
-        .as_ref()
-        .map(|names| {
-            names
-                .iter()
-                .map(|name| {
-                    var_name_to_idx
-                        .get(name.as_str())
-                        .copied()
-                        .ok_or_else(|| PolarsError::ColumnNotFound(name.clone().into()))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
-    if let Some(ref name) = row_index_name {
-        let collision = reader.metadata().variables.iter().any(|v| v.name == *name);
-        if collision {
-            return Err(PolarsError::ComputeError(
-                format!("row_index_name '{name}' collides with existing column").into(),
-            ));
-        }
-    }
+    let col_indices = crate::resolve_column_indices(
+        reader.metadata().variables.iter().map(|v| v.name.as_str()),
+        cols.as_deref(),
+    )?;
+    crate::check_row_index_collision(
+        row_index_name.as_deref(),
+        reader.metadata().variables.iter().map(|v| v.name.as_str()),
+    )?;
     let mut time_formats = Vec::new();
     for var in &reader.metadata().variables {
         if let Some(kind) = stata_time_format_kind(var.format.as_deref(), &var.var_type) {
