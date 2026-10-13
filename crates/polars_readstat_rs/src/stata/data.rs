@@ -236,7 +236,16 @@ pub fn read_data_frame_streaming(
 ) -> Result<()> {
     let file = source.open_reader()?;
     let data_offset = metadata.data_offset.ok_or_else(|| Error::MissingMetadata)?;
-    let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
+    let record_len = metadata
+        .storage_widths
+        .iter()
+        .map(|v| *v as usize)
+        .sum::<usize>();
+    // Parallel readers call this once per chunk; don't read 8MB ahead for a small chunk.
+    let capacity = limit
+        .saturating_mul(record_len)
+        .clamp(64 * 1024, 8 * 1024 * 1024);
+    let mut reader = BufReader::with_capacity(capacity, file);
 
     reader.seek(SeekFrom::Start(data_offset))?;
     if ds_format >= 117 {
@@ -250,13 +259,9 @@ pub fn read_data_frame_streaming(
     let end_row = (offset + limit).min(total_rows);
 
     if start_row > 0 {
-        let record_len = metadata
-            .storage_widths
-            .iter()
-            .map(|v| *v as usize)
-            .sum::<usize>();
         let byte_skip = (start_row as u64) * (record_len as u64);
-        reader.seek(SeekFrom::Current(byte_skip as i64))?;
+        // seek_relative keeps the bytes already buffered when the skip lands inside them.
+        reader.seek_relative(byte_skip as i64)?;
     }
 
     let col_indices: Vec<usize> = match columns {
@@ -273,11 +278,6 @@ pub fn read_data_frame_streaming(
             .all(|&i| matches!(metadata.variables[i].var_type, VarType::Numeric(_)))
         && shared.strls.is_none();
 
-    let record_len = metadata
-        .storage_widths
-        .iter()
-        .map(|v| *v as usize)
-        .sum::<usize>();
     let mut row_buf = vec![0u8; record_len];
 
     let mut row_idx = start_row;

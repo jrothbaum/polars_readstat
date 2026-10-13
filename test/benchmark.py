@@ -1,9 +1,7 @@
 import os
-os.environ["_RJEM_MALLOC_CONF"]="muzzy_decay_ms:0"
-os.environ["MALLOC_TRIM_THRESHOLD_"]="0"
-
 
 import sys
+import gc
 from pathlib import Path
 import pandas as pd
 import polars as pl
@@ -91,7 +89,8 @@ if __name__ == "__main__":
         ]
 
         #   Throwaway run to warm up the engines and ensure fair timings
-        _ = scan_readstat(path, threads=threads).collect()
+        df_drop = scan_readstat(path, threads=threads).head(1).collect()
+        del df_drop
         d_timings = {}
         for enginei in engines:
             print(f"Running {enginei}")
@@ -133,6 +132,7 @@ if __name__ == "__main__":
         for enginei in engines:
             print(f"     {enginei:<16}{d_timings[enginei]:.2f}")
 
+        gc.collect()
     def test(fmt: str):
         print(f"\n=== {fmt} ===")
         read_multithreaded_test(fmt, subset_columns=False, filter_rows=False)

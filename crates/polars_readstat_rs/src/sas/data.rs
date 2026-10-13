@@ -123,6 +123,12 @@ impl<R: Read + Seek> DataReader<R> {
         self.current_row = row;
     }
 
+    /// Drop the page loaded during construction, so reading resumes at the next page
+    /// (subject to the page budgets).
+    pub fn discard_current_page(&mut self) {
+        self.page_state = None;
+    }
+
     /// Total physical pages read, including any consumed during construction before the
     /// page budget was set. Used to correctly compute the remaining budget in
     /// data_reader_at_page_range.

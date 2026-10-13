@@ -1,5 +1,4 @@
 use crate::source::ReadSource;
-use crate::split_batch_ranges;
 use crate::stata::data::{
     build_shared_decode, read_data_frame_range, read_data_frame_range_with_indicators,
     read_data_frame_streaming, SharedDecode,
@@ -7,13 +6,9 @@ use crate::stata::data::{
 use crate::stata::reader::StataReader;
 use crate::stata::types::{Endian, Metadata, NumericType, VarType};
 use polars::prelude::*;
-use rayon::prelude::*;
-use rayon::ThreadPoolBuilder;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
-use std::thread::JoinHandle;
 
 pub fn scan_dta(
     path: impl Into<std::path::PathBuf>,
@@ -131,55 +126,6 @@ impl StataScan {
 }
 
 pub(crate) type StataBatchIter = Box<dyn Iterator<Item = PolarsResult<DataFrame>> + Send>;
-
-struct ParallelStataBatchIter {
-    rx: Receiver<(usize, PolarsResult<DataFrame>)>,
-    handle: Option<JoinHandle<()>>,
-    preserve_order: bool,
-    buffer: BTreeMap<usize, PolarsResult<DataFrame>>,
-    next_idx: usize,
-    total_chunks: usize,
-}
-
-impl Iterator for ParallelStataBatchIter {
-    type Item = PolarsResult<DataFrame>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if !self.preserve_order {
-            return self.rx.recv().ok().map(|(_, df)| df);
-        }
-        if self.next_idx >= self.total_chunks {
-            return None;
-        }
-        loop {
-            if let Some(item) = self.buffer.remove(&self.next_idx) {
-                self.next_idx += 1;
-                return Some(item);
-            }
-            match self.rx.recv() {
-                Ok((idx, df)) => {
-                    self.buffer.insert(idx, df);
-                }
-                Err(_) => {
-                    if let Some(item) = self.buffer.remove(&self.next_idx) {
-                        self.next_idx += 1;
-                        return Some(item);
-                    }
-                    return None;
-                }
-            }
-        }
-    }
-}
-
-impl Drop for ParallelStataBatchIter {
-    fn drop(&mut self) {
-        crate::disconnect_receiver(&mut self.rx);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
 
 struct SerialStataBatchIter {
     source: Arc<dyn ReadSource>,
@@ -320,12 +266,8 @@ pub(crate) fn stata_batch_iter_with_reader(
     let max_rows = reader.metadata().row_count.saturating_sub(offset as u64) as usize;
     let total = n_rows.unwrap_or(max_rows).min(max_rows);
     let batch_size = chunk_size.map(|n| n.max(1)).unwrap_or_else(|| {
-        let n_cols = cols
-            .as_ref()
-            .map(|v| v.len())
-            .unwrap_or(reader.metadata().variables.len())
-            .max(1);
-        (1_000_000 / n_cols).clamp(1_000, 100_000)
+        let row_bytes = reader.metadata().storage_widths.iter().map(|w| *w as usize).sum();
+        crate::default_batch_rows(row_bytes)
     });
 
     if total == 0 {
@@ -359,112 +301,65 @@ pub(crate) fn stata_batch_iter_with_reader(
     let n_threads = threads.unwrap_or(crate::default_thread_count()).max(1);
     if informative_nulls.is_none() && n_threads > 1 && total >= 1000 {
         let total_chunks = (total + batch_size - 1) / batch_size;
-        let n_workers = n_threads.min(total_chunks.max(1));
-        let (tx, rx) = mpsc::sync_channel::<(usize, PolarsResult<DataFrame>)>(n_workers);
         let metadata = Arc::new(reader.metadata().clone());
         let endian = reader.header().endian;
         let version = reader.header().version;
-        let cols_idx = col_indices;
         let formats = Arc::new(time_formats);
-        let missing_null = missing_string_as_null;
-        let labels_as_strings = value_labels_as_strings;
         let shared = build_shared_decode(
             source.as_ref(),
             &metadata,
             endian,
             version,
-            labels_as_strings,
+            value_labels_as_strings,
         )
         .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
-        let shared = Arc::new(shared);
 
-        let ranges = split_batch_ranges(total_chunks, n_workers);
+        // One job per batch: rows [start_row, start_row + batch_size).
+        let job = move |chunk: usize| -> PolarsResult<Vec<DataFrame>> {
+            let start_row = offset + chunk * batch_size;
+            let rows = batch_size.min(offset + total - start_row);
+            let mut batches = Vec::with_capacity(1);
+            read_data_frame_streaming(
+                source.as_ref(),
+                &metadata,
+                endian,
+                version,
+                col_indices.as_deref(),
+                start_row,
+                rows,
+                missing_string_as_null,
+                value_labels_as_strings,
+                &shared,
+                batch_size,
+                &mut |df| {
+                    batches.push(df);
+                    true
+                },
+            )
+            .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+            let mut row_start = start_row;
+            batches
+                .into_iter()
+                .map(|mut df| {
+                    apply_stata_time_formats(&mut df, &formats)
+                        .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
+                    let height = df.height();
+                    let df = match row_index_name.as_deref() {
+                        Some(name) => crate::append_row_index(df, name, row_start)?,
+                        None => df,
+                    };
+                    row_start += height;
+                    Ok(df)
+                })
+                .collect()
+        };
 
-        let handle = std::thread::spawn(move || {
-            let pool = match ThreadPoolBuilder::new().num_threads(n_workers).build() {
-                Ok(pool) => pool,
-                Err(e) => {
-                    let _ = tx.send((0, Err(PolarsError::ComputeError(e.to_string().into()))));
-                    return;
-                }
-            };
-            pool.install(|| {
-                ranges
-                    .into_par_iter()
-                    .for_each_with(tx, |sender, (batch_start, batch_count)| {
-                        if batch_count == 0 {
-                            return;
-                        }
-                        let start_row = offset + batch_start * batch_size;
-                        if start_row >= offset + total {
-                            return;
-                        }
-                        let range_rows =
-                            (batch_count * batch_size).min(total - batch_start * batch_size);
-                        let mut local_idx = 0usize;
-                        let row_index_name = row_index_name.clone();
-                        let mut next_row = start_row;
-                        let mut on_batch = |mut df: DataFrame| -> bool {
-                            if let Err(e) = apply_stata_time_formats(&mut df, &formats) {
-                                let _ = sender.send((
-                                    batch_start + local_idx,
-                                    Err(PolarsError::ComputeError(e.to_string().into())),
-                                ));
-                                return false;
-                            }
-                            if let Some(ref name) = row_index_name {
-                                let row_start = next_row;
-                                next_row = next_row.saturating_add(df.height());
-                                match crate::append_row_index(df, name.as_str(), row_start) {
-                                    Ok(with_idx) => df = with_idx,
-                                    Err(e) => {
-                                        let _ = sender.send((
-                                            batch_start + local_idx,
-                                            Err(PolarsError::ComputeError(e.to_string().into())),
-                                        ));
-                                        return false;
-                                    }
-                                }
-                            } else {
-                                next_row = next_row.saturating_add(df.height());
-                            }
-                            let idx = batch_start + local_idx;
-                            local_idx += 1;
-                            sender.send((idx, Ok(df))).is_ok()
-                        };
-
-                        let result = read_data_frame_streaming(
-                            source.as_ref(),
-                            &metadata,
-                            endian,
-                            version,
-                            cols_idx.as_deref(),
-                            start_row,
-                            range_rows,
-                            missing_null,
-                            labels_as_strings,
-                            &shared,
-                            batch_size,
-                            &mut on_batch,
-                        );
-                        if let Err(e) = result {
-                            let _ = sender.send((
-                                batch_start + local_idx,
-                                Err(PolarsError::ComputeError(e.to_string().into())),
-                            ));
-                        }
-                    });
-            });
-        });
-
-        return Ok(Box::new(ParallelStataBatchIter {
-            rx,
-            handle: Some(handle),
-            preserve_order,
-            buffer: BTreeMap::new(),
-            next_idx: 0,
+        return Ok(Box::new(crate::parallel::ParallelBatches::new(
             total_chunks,
-        }));
+            n_threads,
+            preserve_order,
+            Arc::new(job),
+        )));
     }
 
     let _ = preserve_order;

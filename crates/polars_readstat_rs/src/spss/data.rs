@@ -93,7 +93,6 @@ pub fn read_data_frame_streaming(
     on_batch: &mut dyn FnMut(DataFrame) -> bool,
 ) -> Result<()> {
     let file = source.open_reader()?;
-    let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
     let data_offset = metadata
         .data_offset
         .ok_or_else(|| Error::ParseError("missing data offset".to_string()))?;
@@ -102,6 +101,16 @@ pub fn read_data_frame_streaming(
         .iter()
         .map(|v| v.width * 8)
         .sum::<usize>();
+    // Uncompressed parallel reads call this once per chunk; don't read 8MB ahead for a
+    // small chunk. Compressed data is read in one sequential pass, so keep the big buffer.
+    let capacity = if compression == 0 {
+        limit
+            .saturating_mul(record_len)
+            .clamp(64 * 1024, 8 * 1024 * 1024)
+    } else {
+        8 * 1024 * 1024
+    };
+    let mut reader = BufReader::with_capacity(capacity, file);
     reader.seek(SeekFrom::Start(data_offset))?;
 
     let total_rows = metadata.row_count as usize;

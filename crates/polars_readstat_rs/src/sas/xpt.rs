@@ -1,15 +1,9 @@
 use crate::sas::constants::{DATE_FORMATS, DATETIME_FORMATS, TIME_FORMATS};
-use crate::split_batch_ranges;
 use crate::source::{LocalFileSource, ReadSeek, ReadSource};
 use polars::prelude::*;
-use rayon::prelude::*;
-use rayon::ThreadPoolBuilder;
-use std::collections::BTreeMap;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
-use std::thread::JoinHandle;
 
 const LINE_LEN: usize = 80;
 const NAMESTR_SIZE: usize = 140;
@@ -724,36 +718,17 @@ impl XptBatchIter {
         let file = source
             .open_reader()
             .map_err(|e| PolarsError::ComputeError(format!("XPT open: {e}").into()))?;
-        let mut reader = BufReader::new(file);
-        reader
-            .seek(SeekFrom::Start(meta.data_offset))
-            .map_err(|e| PolarsError::ComputeError(format!("XPT seek: {e}").into()))?;
-
         let row_length = meta.row_length;
         let blank_row = vec![b' '; row_length];
 
-        // Skip rows if needed (read and discard, respecting blank-row logic)
-        let mut pending_blanks = 0usize;
-        let mut skipped = 0usize;
-        let mut row_buf = vec![0u8; row_length];
-        while skipped < skip {
-            match reader.read_exact(&mut row_buf) {
-                Ok(()) => {}
-                Err(_) => break,
-            }
-            if row_buf.iter().all(|&b| b == b' ') {
-                pending_blanks += 1;
-            } else {
-                // flush buffered blanks
-                let flush = pending_blanks.min(skip - skipped);
-                skipped += flush;
-                pending_blanks = 0;
-                if skipped < skip {
-                    skipped += 1; // count this non-blank row
-                }
-            }
-        }
-        // Any remaining pending_blanks are discarded (they would have been padding).
+        // Seek straight to row `skip`. All-blank rows are only dropped as padding at the
+        // very end of the file, so physical row `skip` is always logical row `skip`.
+        let mut reader = BufReader::new(file);
+        reader
+            .seek(SeekFrom::Start(
+                meta.data_offset + (skip as u64) * (row_length as u64),
+            ))
+            .map_err(|e| PolarsError::ComputeError(format!("XPT seek: {e}").into()))?;
 
         let remaining = if let Some(n) = n_rows { n } else { usize::MAX };
 
@@ -998,54 +973,6 @@ pub fn scan_xpt(
     LazyFrame::anonymous_scan(scan, Default::default())
 }
 
-struct ParallelXptBatchIter {
-    rx: Receiver<(usize, PolarsResult<DataFrame>)>,
-    handle: Option<JoinHandle<()>>,
-    preserve_order: bool,
-    buffer: BTreeMap<usize, PolarsResult<DataFrame>>,
-    next_idx: usize,
-    total_chunks: usize,
-}
-
-impl Iterator for ParallelXptBatchIter {
-    type Item = PolarsResult<DataFrame>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if !self.preserve_order {
-            return self.rx.recv().ok().map(|(_, df)| df);
-        }
-        if self.next_idx >= self.total_chunks {
-            return None;
-        }
-        loop {
-            if let Some(item) = self.buffer.remove(&self.next_idx) {
-                self.next_idx += 1;
-                return Some(item);
-            }
-            match self.rx.recv() {
-                Ok((idx, df)) => {
-                    self.buffer.insert(idx, df);
-                }
-                Err(_) => {
-                    return self.buffer.remove(&self.next_idx).map(|item| {
-                        self.next_idx += 1;
-                        item
-                    });
-                }
-            }
-        }
-    }
-}
-
-impl Drop for ParallelXptBatchIter {
-    fn drop(&mut self) {
-        crate::disconnect_receiver(&mut self.rx);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
-    }
-}
-
 /// Batch iterator for XPT files (used by readstat_batch_iter).
 pub fn xpt_batch_iter(
     source: Arc<dyn ReadSource>,
@@ -1063,7 +990,9 @@ pub fn xpt_batch_iter(
 
     let max_rows = meta.row_count.saturating_sub(skip);
     let total = n_rows.unwrap_or(max_rows).min(max_rows);
-    let batch_size = chunk_size.unwrap_or(8192).max(1);
+    let batch_size = chunk_size
+        .unwrap_or_else(|| crate::default_batch_rows(meta.row_length))
+        .max(1);
 
     if total == 0 {
         return Ok(Box::new(std::iter::empty()));
@@ -1072,69 +1001,31 @@ pub fn xpt_batch_iter(
     let n_threads = threads.unwrap_or(crate::default_thread_count()).max(1);
     if n_threads > 1 && total >= 1000 {
         let total_chunks = total.div_ceil(batch_size);
-        let n_workers = n_threads.min(total_chunks);
-        let (tx, rx) = mpsc::sync_channel::<(usize, PolarsResult<DataFrame>)>(n_workers);
-
         let meta = Arc::new(meta);
-        let col_plan = Arc::new(col_plan);
-        let ranges = split_batch_ranges(total_chunks, n_workers);
 
-        let handle = std::thread::spawn(move || {
-            let pool = match ThreadPoolBuilder::new().num_threads(n_workers).build() {
-                Ok(p) => p,
-                Err(e) => {
-                    let _ = tx.send((0, Err(PolarsError::ComputeError(e.to_string().into()))));
-                    return;
-                }
-            };
-            pool.install(|| {
-                ranges.into_par_iter().for_each_with(
-                    tx,
-                    |sender, (batch_start, batch_count)| {
-                        if batch_count == 0 {
-                            return;
-                        }
-                        let worker_skip = skip + batch_start * batch_size;
-                        let worker_rows = (batch_count * batch_size).min(total - batch_start * batch_size);
-                        let row_index_name = row_index_name.clone();
+        // One job per batch: rows [start_row, start_row + batch_size).
+        let job = move |chunk: usize| -> PolarsResult<Vec<DataFrame>> {
+            let start_row = skip + chunk * batch_size;
+            let rows = batch_size.min(total - chunk * batch_size);
+            XptBatchIter::new(
+                source.as_ref(),
+                &meta,
+                col_plan.clone(),
+                batch_size,
+                start_row,
+                Some(rows),
+                missing_string_as_null,
+                row_index_name.clone(),
+            )?
+            .collect()
+        };
 
-                        let iter = match XptBatchIter::new(
-                            source.as_ref(),
-                            &meta,
-                            (*col_plan).clone(),
-                            batch_size,
-                            worker_skip,
-                            Some(worker_rows),
-                            missing_string_as_null,
-                            row_index_name,
-                        ) {
-                            Ok(it) => it,
-                            Err(e) => {
-                                let _ = sender.send((batch_start, Err(e)));
-                                return;
-                            }
-                        };
-
-                        let mut local_idx = 0usize;
-                        for batch in iter {
-                            if sender.send((batch_start + local_idx, batch)).is_err() {
-                                return;
-                            }
-                            local_idx += 1;
-                        }
-                    },
-                );
-            });
-        });
-
-        return Ok(Box::new(ParallelXptBatchIter {
-            rx,
-            handle: Some(handle),
-            preserve_order,
-            buffer: BTreeMap::new(),
-            next_idx: 0,
+        return Ok(Box::new(crate::parallel::ParallelBatches::new(
             total_chunks,
-        }));
+            n_threads,
+            preserve_order,
+            Arc::new(job),
+        )));
     }
 
     // Serial path

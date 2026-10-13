@@ -12,9 +12,7 @@ use polars::prelude::*;
 use std::cmp::min;
 use std::io::{BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
-use std::sync::mpsc;
 use std::sync::Arc;
-use std::thread::JoinHandle;
 
 
 /// Build a Polars DataFrame from rows of parsed values
@@ -556,143 +554,6 @@ impl Iterator for RowIndexedIter {
     }
 }
 
-struct AdaptivePageIter {
-    source: Arc<dyn ReadSource>,
-    header: Header,
-    metadata: Arc<Metadata>,
-    row_length: usize,
-    endian: Endian,
-    format: Format,
-    plans: Arc<Vec<ColumnPlan>>,
-    col_indices: Option<Vec<usize>>,
-    batch_size: usize,
-    next_page: usize,
-    remaining_pages: usize,
-    pages_per_chunk: usize,
-    n_workers: usize,
-    current: Option<SasBatchIter>,
-}
-
-impl Iterator for AdaptivePageIter {
-    type Item = PolarsResult<DataFrame>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if let Some(current) = self.current.as_mut() {
-                if let Some(batch) = current.next() {
-                    return Some(batch);
-                }
-                self.current = None;
-            }
-
-            if self.remaining_pages == 0 {
-                return None;
-            }
-
-            let page_count = self.pages_per_chunk.min(self.remaining_pages);
-            self.current = Some(ordered_parallel_page_iter(
-                self.source.clone(),
-                self.header.clone(),
-                self.metadata.clone(),
-                self.row_length,
-                self.endian,
-                self.format,
-                self.plans.clone(),
-                self.col_indices.clone(),
-                self.batch_size,
-                self.next_page,
-                page_count,
-                self.n_workers,
-            ));
-            self.next_page += page_count;
-            self.remaining_pages -= page_count;
-        }
-    }
-}
-
-// Unordered: all workers share one channel; batches arrive in completion order.
-struct UnorderedParallelIter {
-    rx: Option<mpsc::Receiver<PolarsResult<DataFrame>>>,
-    handles: Vec<JoinHandle<()>>,
-    row_index_name: Option<String>,
-    row_cursor: usize,
-}
-
-impl Iterator for UnorderedParallelIter {
-    type Item = PolarsResult<DataFrame>;
-    fn next(&mut self) -> Option<Self::Item> {
-        let df = self.rx.as_ref()?.recv().ok()?;
-        Some(df.and_then(|df| {
-            if let Some(ref name) = self.row_index_name {
-                let n = df.height();
-                let result = crate::append_row_index(df, name.as_str(), self.row_cursor);
-                self.row_cursor += n;
-                result
-            } else {
-                Ok(df)
-            }
-        }))
-    }
-}
-
-impl Drop for UnorderedParallelIter {
-    fn drop(&mut self) {
-        self.rx.take();
-        for h in self.handles.drain(..) {
-            let _ = h.join();
-        }
-    }
-}
-
-// Ordered: each worker has its own channel; consumer drains worker 0, then 1, etc.
-struct OrderedParallelIter {
-    channels: std::collections::VecDeque<mpsc::Receiver<PolarsResult<DataFrame>>>,
-    handles: Vec<JoinHandle<()>>,
-    row_index_name: Option<String>,
-    row_cursor: usize,
-}
-
-impl Iterator for OrderedParallelIter {
-    type Item = PolarsResult<DataFrame>;
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if self.channels.is_empty() {
-                return None;
-            }
-
-            let recv_result = self.channels.front().unwrap().recv();
-            match recv_result {
-                Ok(Ok(df)) => {
-                    let n = df.height();
-                    let result = if let Some(ref name) = self.row_index_name {
-                        let r = crate::append_row_index(df, name.as_str(), self.row_cursor);
-                        self.row_cursor += n;
-                        r
-                    } else {
-                        Ok(df)
-                    };
-                    return Some(result);
-                }
-                Ok(Err(e)) => {
-                    return Some(Err(e));
-                }
-                Err(_) => {
-                    self.channels.pop_front();
-                }
-            }
-        }
-    }
-}
-
-impl Drop for OrderedParallelIter {
-    fn drop(&mut self) {
-        self.channels.clear();
-        for h in self.handles.drain(..) {
-            let _ = h.join();
-        }
-    }
-}
-
 fn estimate_data_rows_per_page(
     source: &dyn ReadSource,
     header: &Header,
@@ -728,183 +589,139 @@ fn estimate_data_rows_per_page(
     block_count.max(1).min(avg)
 }
 
-fn spawn_page_worker(
-    tx: mpsc::SyncSender<PolarsResult<DataFrame>>,
+/// Decode pages `[page_start, page_start + page_count)` into batches of at most
+/// `batch_size` rows. With `sort_tag`, each row is tagged with `_polars_rs_thread_` =
+/// tag and a `_polars_rs_row_` counter so a file-order row index can be rebuilt after
+/// unordered collection (see `assign_row_index_from_tags`).
+fn decode_page_range(
+    source: &dyn ReadSource,
+    header: &Header,
+    metadata: &Metadata,
+    endian: Endian,
+    format: Format,
+    plans: &[ColumnPlan],
+    col_indices: Option<&[usize]>,
+    batch_size: usize,
+    page_start: usize,
+    page_count: usize,
+    sort_tag: Option<u32>,
+) -> PolarsResult<Vec<DataFrame>> {
+    let to_polars = |e: crate::Error| PolarsError::ComputeError(e.to_string().into());
+    let row_length = metadata.row_length;
+    let mut data_reader = data_reader_at_page_range(
+        source, header, metadata, endian, format, page_start, page_count, 0,
+    )
+    .map_err(to_polars)?;
+
+    let mut batches = Vec::new();
+    let mut row_cursor: u32 = 0;
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        let n_read = {
+            let _t = crate::sas::profile::stage(&crate::sas::profile::STAGE_TIMERS.io_decompress_ns);
+            data_reader
+                .read_rows_bulk(batch_size, &mut buf)
+                .map_err(to_polars)?
+        };
+        if n_read == 0 {
+            break;
+        }
+        let mut builder = match col_indices {
+            Some(ci) => DataFrameBuilder::new_with_columns(metadata, ci, n_read),
+            None => DataFrameBuilder::new(metadata, n_read),
+        };
+        if crate::sas::profile::enabled() {
+            let numeric_plans: Vec<ColumnPlan> = plans
+                .iter()
+                .filter(|p| !matches!(p.kind, ColumnKind::Character))
+                .cloned()
+                .collect();
+            let string_plans: Vec<ColumnPlan> = plans
+                .iter()
+                .filter(|p| matches!(p.kind, ColumnKind::Character))
+                .cloned()
+                .collect();
+            {
+                let _t = crate::sas::profile::stage(&crate::sas::profile::STAGE_TIMERS.numeric_parse_ns);
+                for i in 0..n_read {
+                    let rs = i * row_length;
+                    builder.add_row_raw(&buf[rs..rs + row_length], &numeric_plans);
+                }
+            }
+            {
+                let _t = crate::sas::profile::stage(&crate::sas::profile::STAGE_TIMERS.string_parse_ns);
+                for i in 0..n_read {
+                    let rs = i * row_length;
+                    builder.add_row_raw(&buf[rs..rs + row_length], &string_plans);
+                }
+            }
+        } else {
+            for i in 0..n_read {
+                let rs = i * row_length;
+                builder.add_row_raw(&buf[rs..rs + row_length], plans);
+            }
+        }
+        let mut df = {
+            let _t = crate::sas::profile::stage(&crate::sas::profile::STAGE_TIMERS.df_build_ns);
+            builder.build().map_err(to_polars)?
+        };
+        if let Some(tag) = sort_tag {
+            let n = df.height();
+            df.with_column(Column::from(Series::new(
+                "_polars_rs_thread_".into(),
+                vec![tag; n],
+            )))?;
+            df.with_column(Column::from(Series::new(
+                "_polars_rs_row_".into(),
+                (row_cursor..row_cursor + n as u32).collect::<Vec<u32>>(),
+            )))?;
+            row_cursor += n as u32;
+        }
+        batches.push(df);
+    }
+    Ok(batches)
+}
+
+/// Decode pages `[first_page, total_pages)` on the shared pool, `pages_per_job` pages per
+/// job. Page byte offsets are exact (header_length + page_num * page_length) whatever the
+/// page type, and each row decompresses independently, so jobs share no state. With
+/// `sort_tags`, rows are tagged with their job index (which follows file order).
+fn page_jobs(
     source: Arc<dyn ReadSource>,
     header: Header,
     metadata: Arc<Metadata>,
-    row_length: usize,
     endian: Endian,
     format: Format,
     plans: Arc<Vec<ColumnPlan>>,
     col_indices: Option<Vec<usize>>,
     batch_size: usize,
-    worker_page_start: usize,
-    worker_page_count: usize,
-    sort_tag: Option<u32>,
-) -> JoinHandle<()> {
-    std::thread::spawn(move || {
-        let mut data_reader = match data_reader_at_page_range(
+    first_page: usize,
+    total_pages: usize,
+    pages_per_job: usize,
+    max_running: usize,
+    ordered: bool,
+    sort_tags: bool,
+) -> crate::parallel::ParallelBatches {
+    let pages_per_job = pages_per_job.max(1);
+    let n_jobs = total_pages.saturating_sub(first_page).div_ceil(pages_per_job);
+    let job = move |j: usize| {
+        let page_start = first_page + j * pages_per_job;
+        decode_page_range(
             source.as_ref(),
             &header,
             &metadata,
             endian,
             format,
-            worker_page_start,
-            worker_page_count,
-            0,
-        ) {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
-                return;
-            }
-        };
-
-        let mut row_cursor: u32 = 0;
-
-        loop {
-            let mut buf = Vec::new();
-            let n_read = {
-                let _t = crate::sas::profile::stage(&crate::sas::profile::STAGE_TIMERS.io_decompress_ns);
-                match data_reader.read_rows_bulk(batch_size, &mut buf) {
-                    Ok(n) => n,
-                    Err(e) => {
-                        let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
-                        return;
-                    }
-                }
-            };
-            if n_read == 0 {
-                break;
-            }
-            let mut builder = match col_indices.as_deref() {
-                Some(ci) => DataFrameBuilder::new_with_columns(&metadata, ci, n_read),
-                None => DataFrameBuilder::new(&metadata, n_read),
-            };
-            if crate::sas::profile::enabled() {
-                let numeric_plans: Vec<ColumnPlan> = plans
-                    .iter()
-                    .filter(|p| !matches!(p.kind, ColumnKind::Character))
-                    .cloned()
-                    .collect();
-                let string_plans: Vec<ColumnPlan> = plans
-                    .iter()
-                    .filter(|p| matches!(p.kind, ColumnKind::Character))
-                    .cloned()
-                    .collect();
-                {
-                    let _t = crate::sas::profile::stage(&crate::sas::profile::STAGE_TIMERS.numeric_parse_ns);
-                    for i in 0..n_read {
-                        let rs = i * row_length;
-                        builder.add_row_raw(&buf[rs..rs + row_length], &numeric_plans);
-                    }
-                }
-                {
-                    let _t = crate::sas::profile::stage(&crate::sas::profile::STAGE_TIMERS.string_parse_ns);
-                    for i in 0..n_read {
-                        let rs = i * row_length;
-                        builder.add_row_raw(&buf[rs..rs + row_length], &string_plans);
-                    }
-                }
-            } else {
-                for i in 0..n_read {
-                    let rs = i * row_length;
-                    builder.add_row_raw(&buf[rs..rs + row_length], &plans);
-                }
-            }
-            let built = {
-                let _t = crate::sas::profile::stage(&crate::sas::profile::STAGE_TIMERS.df_build_ns);
-                builder.build()
-            };
-            match built {
-                Ok(df) => {
-                    let df = if let Some(thread_id) = sort_tag {
-                        let n = df.height();
-                        let thread_col: Column =
-                            Series::new("_polars_rs_thread_".into(), vec![thread_id; n]).into();
-                        let row_col: Column = Series::new(
-                            "_polars_rs_row_".into(),
-                            (row_cursor..row_cursor + n as u32).collect::<Vec<u32>>(),
-                        )
-                        .into();
-                        row_cursor += n as u32;
-                        let mut df = df;
-                        if let Err(e) = df.with_column(thread_col) {
-                            let _ = tx.send(Err(e));
-                            return;
-                        }
-                        if let Err(e) = df.with_column(row_col) {
-                            let _ = tx.send(Err(e));
-                            return;
-                        }
-                        df
-                    } else {
-                        df
-                    };
-                    if tx.send(Ok(df)).is_err() {
-                        return;
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(PolarsError::ComputeError(e.to_string().into())));
-                    return;
-                }
-            }
-        }
-    })
-}
-
-fn ordered_parallel_page_iter(
-    source: Arc<dyn ReadSource>,
-    header: Header,
-    metadata: Arc<Metadata>,
-    row_length: usize,
-    endian: Endian,
-    format: Format,
-    plans: Arc<Vec<ColumnPlan>>,
-    col_indices: Option<Vec<usize>>,
-    batch_size: usize,
-    page_start: usize,
-    page_count: usize,
-    n_workers: usize,
-) -> SasBatchIter {
-    let worker_count = min(n_workers.max(1), page_count.max(1));
-    let pages_per_worker = page_count.div_ceil(worker_count);
-    let mut channels = std::collections::VecDeque::with_capacity(worker_count);
-    let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(worker_count);
-
-    for worker_idx in 0..worker_count {
-        let worker_page_start = page_start + worker_idx * pages_per_worker;
-        if worker_page_start >= page_start + page_count {
-            break;
-        }
-        let worker_page_count = pages_per_worker.min(page_start + page_count - worker_page_start);
-        let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(4);
-        channels.push_back(rx);
-        handles.push(spawn_page_worker(
-            tx,
-            source.clone(),
-            header.clone(),
-            metadata.clone(),
-            row_length,
-            endian,
-            format,
-            plans.clone(),
-            col_indices.clone(),
+            &plans,
+            col_indices.as_deref(),
             batch_size,
-            worker_page_start,
-            worker_page_count,
-            None,
-        ));
-    }
-
-    Box::new(OrderedParallelIter {
-        channels,
-        handles,
-        row_index_name: None,
-        row_cursor: 0,
-    })
+            page_start,
+            pages_per_job.min(total_pages - page_start),
+            sort_tags.then_some(j as u32),
+        )
+    };
+    crate::parallel::ParallelBatches::new(n_jobs, max_running, ordered, Arc::new(job))
 }
 
 pub(crate) struct SerialSasBatchIter {
@@ -1205,14 +1022,9 @@ pub(crate) fn sas_batch_iter_with_reader(
 ) -> PolarsResult<SasBatchIter> {
     let max_rows = reader.metadata().row_count.saturating_sub(offset);
     let total = n_rows.unwrap_or(max_rows).min(max_rows);
-    let batch_size = chunk_size.map(|n| n.max(1)).unwrap_or_else(|| {
-        let n_cols = col_indices
-            .as_ref()
-            .map(|v| v.len())
-            .unwrap_or(reader.metadata().columns.len())
-            .max(1);
-        (1_000_000 / n_cols).clamp(8_192, 32_768)
-    });
+    let batch_size = chunk_size
+        .map(|n| n.max(1))
+        .unwrap_or_else(|| crate::default_batch_rows(reader.metadata().row_length));
     let total_chunks = total.div_ceil(batch_size);
     let partial_read = offset > 0 || total < reader.metadata().row_count;
 
@@ -1347,16 +1159,12 @@ pub(crate) fn sas_batch_iter_with_reader(
     if n_workers <= 1 {
         return Ok(Box::new(make_serial(None)?) as SasBatchIter);
     }
-    // N independent readers, each owning a non-overlapping range of pages.
-    // Page byte offsets are always exact (header_length + page_num * page_length),
-    // so seeking is reliable regardless of page type (DATA, MIX, or compressed META).
-    // For compressed files, first_data_page is the first META page with data subheaders;
-    // each row decompresses independently so workers need no cross-page state.
-    // Workers emit variable-size batches (≤ batch_size rows); the consumer reassembles.
+    // Parallel jobs each decode a non-overlapping range of pages (see `page_jobs`).
+    // For compressed files, first_data_page is the first META page with data subheaders.
+    // Jobs emit variable-size batches (≤ batch_size rows); the consumer reassembles.
 
     let header = reader.header().clone();
     let metadata = Arc::new(reader.metadata().clone());
-    let row_length = metadata.row_length;
     let endian = reader.endian();
     let format = reader.format();
 
@@ -1409,6 +1217,18 @@ pub(crate) fn sas_batch_iter_with_reader(
         });
     }
 
+    // Size jobs to roughly one batch each.
+    let est_rows_per_page = estimate_data_rows_per_page(
+        source.as_ref(),
+        &header,
+        endian,
+        format,
+        first_data_page,
+        reader.metadata().row_count.saturating_sub(mix_data_rows),
+        data_pages,
+    );
+    let pages_per_job = (batch_size / est_rows_per_page.max(1)).max(1);
+
     if partial_read {
         // offset == 0 here: serial MIX rows first, then parallel DATA pages for the rest.
         let requested_mix_rows = mix_data_rows.min(total);
@@ -1435,41 +1255,30 @@ pub(crate) fn sas_batch_iter_with_reader(
 
         let requested_data_rows = total.saturating_sub(requested_mix_rows);
         if requested_data_rows > 0 {
-            let total_data_rows = reader.metadata().row_count.saturating_sub(mix_data_rows);
-            let est_rows_per_page = estimate_data_rows_per_page(
-                source.as_ref(),
-                &header,
+            // Jobs are handed out lazily and the slice stops pulling once it has enough
+            // rows; capping concurrency at the estimated job count keeps a small `n_rows`
+            // from decoding `n_workers` jobs' worth of pages.
+            let jobs_needed = requested_data_rows
+                .div_ceil(est_rows_per_page.max(1) * pages_per_job)
+                .saturating_add(1);
+            let jobs = page_jobs(
+                source.clone(),
+                header.clone(),
+                metadata.clone(),
                 endian,
                 format,
-                first_data_page,
-                total_data_rows,
-                data_pages,
-            );
-            let initial_pages = requested_data_rows
-                .div_ceil(est_rows_per_page)
-                .saturating_add(1)
-                .max(n_workers)
-                .min(data_pages)
-                .max(1);
-
-            let adaptive = AdaptivePageIter {
-                source: source.clone(),
-                header: header.clone(),
-                metadata: metadata.clone(),
-                row_length,
-                endian,
-                format,
-                plans: plans_arc.clone(),
-                col_indices: col_indices.clone(),
+                plans_arc.clone(),
+                col_indices.clone(),
                 batch_size,
-                next_page: first_data_page,
-                remaining_pages: data_pages,
-                pages_per_chunk: initial_pages,
-                n_workers,
-                current: None,
-            };
+                first_data_page,
+                total_pages,
+                pages_per_job,
+                n_workers.min(jobs_needed),
+                true,
+                false,
+            );
             let data_iter: SasBatchIter = Box::new(SlicedBatchIter {
-                inner: Box::new(adaptive),
+                inner: Box::new(jobs),
                 skip: 0,
                 remaining: requested_data_rows,
             });
@@ -1487,119 +1296,52 @@ pub(crate) fn sas_batch_iter_with_reader(
         });
     }
 
-    // Phase 2: parallel workers for DATA pages only (starting at first_data_page).
-    // row_start is 0 per worker — page budget is the sole stopping condition.
-    let pages_per_worker = data_pages.div_ceil(n_workers);
-    let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(n_workers);
-
-    // Helper: spawn one worker thread that reads pages [page_start, page_start+page_count)
-    // and sends each batch (≤ batch_size rows) down `tx`.
-    // Row index assignment happens in the iterator, not in workers, so the counter
-    // is always exact based on realized row counts rather than geometry estimates.
-    let row_index_start = mix_data_rows;
-
+    // Phase 2: parallel jobs for DATA pages only (starting at first_data_page).
     // Row index, partial reads, and compressed files all require file-order output.
     // Compressed files need ordering so that the row-count cap (applied below) always
-    // trims the same trailing phantom rows rather than random worker tails.
-    // When add_sort_tags is true, row index assignment happens post-collection via thread/row
+    // trims the same trailing phantom rows rather than random job tails.
+    // When add_sort_tags is true, row index assignment happens post-collection via job/row
     // tags, so row_index_name alone no longer forces ordered mode.
     let is_compressed = reader.metadata().compression != crate::Compression::None;
     let use_ordered = preserve_order
         || (row_index_name.is_some() && !add_sort_tags)
         || partial_read
         || is_compressed;
-    let base_iter: SasBatchIter = if use_ordered {
-        let mut channels: std::collections::VecDeque<mpsc::Receiver<PolarsResult<DataFrame>>> =
-            std::collections::VecDeque::with_capacity(n_workers);
-        for worker_idx in 0..n_workers {
-            let wp_start = first_data_page + worker_idx * pages_per_worker;
-            if wp_start >= total_pages {
-                break;
-            }
-            let wp_count = pages_per_worker.min(total_pages - wp_start);
-            let (tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(4);
-            channels.push_back(rx);
-            handles.push(spawn_page_worker(
-                tx,
-                source.clone(),
-                header.clone(),
-                metadata.clone(),
-                row_length,
-                endian,
-                format,
-                plans_arc.clone(),
-                col_indices.clone(),
-                batch_size,
-                wp_start,
-                wp_count,
-                None,
-            ));
-        }
-        let parallel = OrderedParallelIter {
-            channels,
-            handles,
-            row_index_name: row_index_name.clone(),
-            row_cursor: row_index_start,
-        };
-        match mix_iter {
-            Some(mix) => Box::new(mix.chain(parallel)) as SasBatchIter,
-            None => Box::new(parallel) as SasBatchIter,
-        }
-    } else {
-        let (shared_tx, rx) = mpsc::sync_channel::<PolarsResult<DataFrame>>(n_workers * 4);
-        for worker_idx in 0..n_workers {
-            let wp_start = first_data_page + worker_idx * pages_per_worker;
-            if wp_start >= total_pages {
-                break;
-            }
-            let wp_count = pages_per_worker.min(total_pages - wp_start);
-            handles.push(spawn_page_worker(
-                shared_tx.clone(),
-                source.clone(),
-                header.clone(),
-                metadata.clone(),
-                row_length,
-                endian,
-                format,
-                plans_arc.clone(),
-                col_indices.clone(),
-                batch_size,
-                wp_start,
-                wp_count,
-                if add_sort_tags {
-                    Some(worker_idx as u32)
-                } else {
-                    None
-                },
-            ));
-        }
-        drop(shared_tx);
-        let parallel = UnorderedParallelIter {
-            rx: Some(rx),
-            handles,
-            row_index_name: if add_sort_tags {
-                None
-            } else {
-                row_index_name.clone()
-            },
-            row_cursor: row_index_start,
-        };
-        let base: SasBatchIter = match mix_iter {
-            Some(mix) => Box::new(mix.chain(parallel)) as SasBatchIter,
-            None => Box::new(parallel) as SasBatchIter,
-        };
-        if add_sort_tags {
-            if let Some(name) = row_index_name.clone() {
-                Box::new(SortIndexCollectorIter {
-                    inner: Some(base),
-                    row_index_name: name,
-                }) as SasBatchIter
-            } else {
-                base
-            }
-        } else {
-            base
-        }
+    let jobs = page_jobs(
+        source.clone(),
+        header.clone(),
+        metadata.clone(),
+        endian,
+        format,
+        plans_arc.clone(),
+        col_indices.clone(),
+        batch_size,
+        first_data_page,
+        total_pages,
+        pages_per_job,
+        n_workers,
+        use_ordered,
+        add_sort_tags,
+    );
+    // The row index is assigned here, from realized row counts, rather than in the jobs.
+    let parallel: SasBatchIter = match row_index_name.clone() {
+        Some(name) if !add_sort_tags => Box::new(RowIndexedIter {
+            inner: Box::new(jobs),
+            row_index_name: name,
+            row_cursor: mix_data_rows,
+        }),
+        _ => Box::new(jobs),
+    };
+    let base: SasBatchIter = match mix_iter {
+        Some(mix) => Box::new(mix.chain(parallel)),
+        None => parallel,
+    };
+    let base_iter: SasBatchIter = match row_index_name.clone() {
+        Some(name) if add_sort_tags => Box::new(SortIndexCollectorIter {
+            inner: Some(base),
+            row_index_name: name,
+        }),
+        _ => base,
     };
 
     if partial_read {
@@ -1910,3 +1652,4 @@ mod tests {
         assert!(rows <= 25);
     }
 }
+

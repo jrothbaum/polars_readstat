@@ -589,7 +589,8 @@ pub struct PyPolarsReadstat {
     /// `readstat_batch_iter`), which do their own `File::open`/`fs::metadata`
     /// on the literal path string.
     uses_custom_source: bool,
-    batch_size: usize,
+    /// Rows per batch; `None` lets the reader pick a size from the file's row width.
+    batch_size: Option<usize>,
     threads: usize,
     missing_string_as_null: bool,
     value_labels_as_strings: bool,
@@ -613,7 +614,7 @@ impl PyPolarsReadstat {
     #[allow(clippy::too_many_arguments)]
     fn new_source(
         path: String,
-        size_hint: usize,
+        size_hint: Option<usize>,
         n_rows: Option<usize>,
         threads: Option<usize>,
         missing_string_as_null: bool,
@@ -652,7 +653,7 @@ impl PyPolarsReadstat {
         // disk in that case.
         let format = detect_format(&path)?;
         let (source, uses_custom_source) = build_source(&path, data, storage_options)?;
-        let batch_size = size_hint.max(1);
+        let batch_size = size_hint.map(|n| n.max(1));
         let parsed_compress = parse_compress_opts(compress)?;
         let parsed_informative_nulls = parse_informative_null_opts(informative_nulls)?;
 
@@ -698,7 +699,7 @@ impl PyPolarsReadstat {
 
         let opts = ScanOptions {
             threads: Some(self.threads),
-            chunk_size: Some(self.batch_size),
+            chunk_size: self.batch_size,
             missing_string_as_null: Some(self.missing_string_as_null),
             value_labels_as_strings: Some(self.value_labels_as_strings),
             preserve_order: Some(self.preserve_order),
@@ -857,7 +858,7 @@ impl PyPolarsReadstat {
     fn start_stream(&mut self) -> PyResult<()> {
         let opts = ScanOptions {
             threads: Some(self.threads),
-            chunk_size: Some(self.batch_size),
+            chunk_size: self.batch_size,
             missing_string_as_null: Some(self.missing_string_as_null),
             value_labels_as_strings: Some(self.value_labels_as_strings),
             preserve_order: Some(self.preserve_order),
@@ -877,7 +878,7 @@ impl PyPolarsReadstat {
                 Some(opts),
                 self.with_columns.clone(),
                 self.n_rows,
-                Some(self.batch_size),
+                self.batch_size,
             )
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         } else {
@@ -887,7 +888,7 @@ impl PyPolarsReadstat {
                 None, // auto-detect from file extension
                 self.with_columns.clone(),
                 self.n_rows,
-                Some(self.batch_size),
+                self.batch_size,
             )
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         };

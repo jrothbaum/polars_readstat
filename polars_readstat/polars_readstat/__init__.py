@@ -268,44 +268,6 @@ def _normalize_preserve_order_opts(
     )
 
 
-def _infer_default_batch_size(
-    reader: ScanReadstat,
-    n_rows: int | None,
-    with_columns: list[str] | None,
-) -> int:
-    min_rows_floor = 1_000
-    min_rows_cap = 10_000
-    max_rows = 100_000
-    target_cells = 2_000_000
-    min_cells = 250_000
-
-    if with_columns:
-        n_cols = max(1, len(with_columns))
-    else:
-        n_cols = max(1, len(reader.schema))
-
-    by_cols = max(1, target_cells // n_cols)
-    batch = min(max_rows, by_cols)
-
-    total_rows = n_rows
-    if total_rows is None:
-        try:
-            total_rows = reader.metadata.get("row_count")
-        except Exception:
-            total_rows = None
-
-    if isinstance(total_rows, int) and total_rows > 0:
-        batch = min(batch, total_rows)
-        min_rows_by_rows = max(min_rows_floor, min(min_rows_cap, total_rows // 10))
-    else:
-        min_rows_by_rows = min_rows_cap
-
-    min_rows_by_cols = max(min_rows_floor, min(min_rows_cap, (min_cells + n_cols - 1) // n_cols))
-    min_rows = min(min_rows_by_rows, min_rows_by_cols)
-
-    return max(min_rows, batch)
-
-
 def _resolve_preserve_order_opts(
     preserve_order: PreserveOrderOpts | None,
 ) -> tuple[bool, str | None, bool]:
@@ -685,14 +647,12 @@ def scan_readstat(
         n_rows: int | None,
         batch_size: int | None = None,
     ) -> Iterator[pl.DataFrame]:
-        if batch_size is None:
-            batch_size = reader.batch_size
-        if batch_size is None:
-            batch_size = _infer_default_batch_size(reader, n_rows, with_columns)
-
+        # Polars' batch_size hint is ignored: the streaming engine asks for 100k rows,
+        # which for a wide file means a few huge batches all decoded at once. Without an
+        # explicit `batch_size`, the reader sizes batches from the file's row width.
         src = PyPolarsReadstat(
             path=path,
-            size_hint=batch_size,
+            size_hint=reader.batch_size,
             n_rows=n_rows,
             threads=reader.threads,
             missing_string_as_null=reader.missing_string_as_null,

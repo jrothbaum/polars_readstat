@@ -10,6 +10,7 @@ pub mod cloud_destination;
 pub mod cloud_source;
 pub mod destination;
 pub mod metadata_df;
+pub(crate) mod parallel;
 mod readstat_stream;
 pub mod sas;
 pub(crate) mod scan_prefetch;
@@ -102,6 +103,17 @@ use std::path::Path;
 /// channel open and the join waits forever on a worker stuck on a full channel.
 pub(crate) fn disconnect_receiver<T>(rx: &mut std::sync::mpsc::Receiver<T>) {
     *rx = std::sync::mpsc::channel().1;
+}
+
+/// Default rows per batch for rows of `row_bytes` raw bytes: about 4MB of row data, the
+/// range where batches were both fastest and lightest. Very wide rows still get batches
+/// of up to ~32MB rather than one or two rows, whose per-column overhead dominates.
+pub(crate) fn default_batch_rows(row_bytes: usize) -> usize {
+    const TARGET_BYTES: usize = 4 << 20;
+    const MAX_BYTES: usize = 32 << 20;
+    let row_bytes = row_bytes.max(1);
+    let min_rows = (MAX_BYTES / row_bytes).clamp(1, 1_000);
+    (TARGET_BYTES / row_bytes).clamp(min_rows, 100_000)
 }
 
 pub(crate) fn default_thread_count() -> usize {
@@ -409,24 +421,6 @@ pub fn apply_informative_null_mode(
                 .collect()
         }
     }
-}
-
-/// Split `total_batches` into at most `n_workers` contiguous `(start, len)` ranges.
-pub(crate) fn split_batch_ranges(total_batches: usize, n_workers: usize) -> Vec<(usize, usize)> {
-    if total_batches == 0 || n_workers == 0 {
-        return Vec::new();
-    }
-    let n = n_workers.min(total_batches);
-    let base = total_batches / n;
-    let rem = total_batches % n;
-    let mut ranges = Vec::with_capacity(n);
-    let mut start = 0usize;
-    for i in 0..n {
-        let len = base + if i < rem { 1 } else { 0 };
-        ranges.push((start, len));
-        start += len;
-    }
-    ranges
 }
 
 /// Error if `row_index_name` matches one of the file's column names.

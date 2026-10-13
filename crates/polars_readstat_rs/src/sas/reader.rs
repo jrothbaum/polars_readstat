@@ -317,10 +317,17 @@ pub(crate) fn data_reader_at_page_range(
     // first page(s) of this worker's range are non-data-bearing (e.g. AMD pages, pure-metadata
     // META pages).  Using the actual count prevents the worker from reading into the next
     // worker's range when construction skipped over one or more non-data pages.
-    if metadata.compression != Compression::None {
-        let consumed = data_reader.physical_pages_consumed();
-        data_reader.set_max_physical_pages(page_count.saturating_sub(consumed));
-    } else {
+    let consumed = data_reader.physical_pages_consumed();
+    if consumed > page_count {
+        // Construction skipped non-data pages past the end of this range before the
+        // budget was set; the page it stopped on belongs to the next range.
+        data_reader.discard_current_page();
+    }
+    data_reader.set_max_physical_pages(page_count.saturating_sub(consumed));
+    if metadata.compression == Compression::None {
+        // The physical budget alone keeps the reader inside its range (a non-data page in
+        // the range would otherwise let the data-page budget run into the next range).
+        // The data-page budget is what lifts the `row_count` guard for uncompressed reads.
         data_reader.set_max_pages(page_count.saturating_sub(1));
     }
     data_reader.set_current_row(row_start);
