@@ -96,6 +96,14 @@ use polars::prelude::DataFrame;
 use polars_core::runtime::THREAD_POOL as POOL;
 use std::path::Path;
 
+/// Drop `rx` (disconnecting it) so workers blocked in `send` wake with an error.
+/// Call this in `Drop` *before* joining worker threads: struct fields are only
+/// dropped after `Drop::drop` returns, so a receiver left in place keeps the
+/// channel open and the join waits forever on a worker stuck on a full channel.
+pub(crate) fn disconnect_receiver<T>(rx: &mut std::sync::mpsc::Receiver<T>) {
+    *rx = std::sync::mpsc::channel().1;
+}
+
 pub(crate) fn default_thread_count() -> usize {
     let polars_threads = POOL.current_num_threads().max(1);
     let physical = num_cpus::get_physical().max(1);

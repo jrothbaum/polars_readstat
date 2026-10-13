@@ -174,6 +174,7 @@ impl Iterator for ParallelStataBatchIter {
 
 impl Drop for ParallelStataBatchIter {
     fn drop(&mut self) {
+        crate::disconnect_receiver(&mut self.rx);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }

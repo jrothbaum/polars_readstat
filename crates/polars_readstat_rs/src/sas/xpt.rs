@@ -1039,6 +1039,7 @@ impl Iterator for ParallelXptBatchIter {
 
 impl Drop for ParallelXptBatchIter {
     fn drop(&mut self) {
+        crate::disconnect_receiver(&mut self.rx);
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }

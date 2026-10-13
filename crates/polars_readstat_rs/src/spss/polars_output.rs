@@ -129,6 +129,7 @@ impl Iterator for ParallelSpssBatchIter {
 
 impl Drop for ParallelSpssBatchIter {
     fn drop(&mut self) {
+        crate::disconnect_receiver(&mut self.rx);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -153,6 +154,7 @@ impl Iterator for SpssBackgroundIter {
 
 impl Drop for SpssBackgroundIter {
     fn drop(&mut self) {
+        crate::disconnect_receiver(&mut self.rx);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }

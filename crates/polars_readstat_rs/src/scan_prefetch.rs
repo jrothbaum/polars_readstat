@@ -26,6 +26,7 @@ impl Prefetcher {
 
 impl Drop for Prefetcher {
     fn drop(&mut self) {
+        crate::disconnect_receiver(&mut self.rx);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -49,4 +50,26 @@ where
         }
     });
     Prefetcher::new(rx, Some(handle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn drop_before_exhausted_does_not_hang() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // Endless producer: it is always blocked on the full channel when we drop.
+            let iter = std::iter::repeat_with(|| Ok(DataFrame::empty()));
+            let prefetch = spawn_prefetcher(iter);
+            prefetch.next().unwrap();
+            drop(prefetch);
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("dropping a partially consumed Prefetcher hung");
+    }
 }
