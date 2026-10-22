@@ -43,3 +43,6 @@ tmp
 
 # Generated rustdoc output
 /doc/
+
+# real-AWS test env
+test/aws/env.local

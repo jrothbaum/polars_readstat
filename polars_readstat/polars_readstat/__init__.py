@@ -72,7 +72,7 @@ class ScanReadstat:
         self.schema_overrides = schema_overrides
         self.batch_size = batch_size
         self.informative_nulls = _normalize_informative_null_opts(informative_nulls)
-        self.catalog = _normalize_catalog(catalog)
+        self.catalog = _normalize_catalog(catalog, storage_options)
 
     @property
     def schema(self) -> pl.Schema:
@@ -481,14 +481,15 @@ def _por_schema_and_metadata(
 
 def _normalize_catalog(
     catalog: "CatalogInput",
+    storage_options: Dict[str, str] | None = None,
 ) -> "dict[str, dict[float | str, str]] | None":
-    """Accept a pre-built dict or a path to a .sas7bcat file."""
+    """Accept a pre-built dict or a path (or cloud URL) to a .sas7bcat file."""
     if catalog is None:
         return None
     if isinstance(catalog, dict):
         return {k.rstrip(".").upper(): v for k, v in catalog.items()}
     if isinstance(catalog, (str, Path)):
-        raw = _read_sas7bcat_rs(str(catalog))
+        raw = _read_sas7bcat_rs(str(catalog), storage_options=storage_options)
         return {k.rstrip(".").upper(): v for k, v in raw.items()}
     raise TypeError(f"catalog must be a dict or path-like, got {type(catalog)}")
 
@@ -596,7 +597,7 @@ def scan_readstat(
     compress = _normalize_compress_opts(compress)
     informative_nulls = _normalize_informative_null_opts(informative_nulls)
     preserve_order_opts = _normalize_preserve_order_opts(preserve_order)
-    catalog = _normalize_catalog(catalog)
+    catalog = _normalize_catalog(catalog, storage_options)
 
     if path.lower().endswith(".por"):
         return _scan_por_rs(path, data=data, storage_options=storage_options).lazy()
