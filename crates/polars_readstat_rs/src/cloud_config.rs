@@ -4,10 +4,11 @@
 //! For `s3://`, lowest to highest precedence:
 //! 1. `AWS_*` environment variables (as `AmazonS3Builder::from_env`),
 //! 2. `~/.aws/config` (region) and `~/.aws/credentials` (access key, secret, session
-//!    token) — read exactly as polars-io does: those two fixed paths, and the *first*
+//!    token) — read as polars-io does: those two fixed paths, and the *first*
 //!    occurrence of each key anywhere in the file, regardless of profile
 //!    (`AWS_PROFILE`, `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` are not
-//!    consulted). Keys already set by the environment are left alone,
+//!    consulted), except that commented-out lines (`#`, `;`) are ignored. Keys
+//!    already set by the environment are left alone,
 //! 3. the explicit `storage_options` passed by the caller.
 //!
 //! If no region results and no custom endpoint is set, the bucket's region is looked
@@ -170,18 +171,23 @@ fn read_config(
 
 /// The value of the first `name <ws>* = <ws>* value` in `text`, up to the end of that
 /// line — the match polars-io's regex `name\s*=\s*([^\r\n]*)` finds (case-sensitive,
-/// not anchored to a line start, not section-aware). Surrounding whitespace is trimmed.
+/// not anchored to a line start, not section-aware), except that occurrences on a
+/// comment line (`#` or `;`) are skipped, which polars-io's regex does not do.
+/// Surrounding whitespace is trimmed.
 fn first_value<'a>(text: &'a str, name: &str) -> Option<&'a str> {
     let mut from = 0;
     while let Some(i) = text[from..].find(name) {
-        let after = &text[from + i + name.len()..];
-        let rest = after.trim_start();
-        if let Some(rest) = rest.strip_prefix('=') {
-            let rest = rest.trim_start();
-            let line = rest.split(['\r', '\n']).next().unwrap_or("");
+        let start = from + i;
+        let end = start + name.len();
+        from = end;
+        let line_start = text[..start].rfind(['\r', '\n']).map_or(0, |n| n + 1);
+        if matches!(text[line_start..start].trim_start().chars().next(), Some('#' | ';')) {
+            continue;
+        }
+        if let Some(rest) = text[end..].trim_start().strip_prefix('=') {
+            let line = rest.trim_start().split(['\r', '\n']).next().unwrap_or("");
             return Some(line.trim());
         }
-        from += i + name.len();
     }
     None
 }
@@ -289,12 +295,29 @@ region = eu-west-1
     }
 
     #[test]
-    fn first_value_matches_the_polars_regex() {
+    fn commented_out_credentials_are_not_used() {
+        let home = TempHome::new(
+            "commented",
+            Some("[default]\n# aws_access_key_id = COMMENTEDKEY\n; aws_secret_access_key = COMMENTEDSECRET\naws_access_key_id = REALKEY\naws_secret_access_key = REALSECRET\n"),
+            Some("# region = us-west-1\n[default]\nregion = us-east-2\n"),
+        );
+        let b = s3_builder(&url(), &[], Vec::new(), Some(&home.0));
+        assert_eq!(get(&b, AmazonS3ConfigKey::AccessKeyId).as_deref(), Some("REALKEY"));
+        assert_eq!(get(&b, AmazonS3ConfigKey::SecretAccessKey).as_deref(), Some("REALSECRET"));
+        assert_eq!(get(&b, AmazonS3ConfigKey::Region).as_deref(), Some("us-east-2"));
+    }
+
+    #[test]
+    fn first_value_follows_the_polars_regex_but_skips_comments() {
         assert_eq!(first_value("region = us-east-1\n", "region"), Some("us-east-1"));
         assert_eq!(first_value("region=us-east-1", "region"), Some("us-east-1"));
         assert_eq!(first_value("a\n  region  =  r1  \r\nregion = r2", "region"), Some("r1"));
-        // Not section-aware or line-anchored: a commented-out entry still matches.
-        assert_eq!(first_value("# region = r0\nregion = r1", "region"), Some("r0"));
+        // Commented-out entries are skipped (polars-io's regex would take them).
+        assert_eq!(first_value("# region = r0\nregion = r1", "region"), Some("r1"));
+        assert_eq!(first_value("  ; region = r0\n\t# region = r00\nregion = r1", "region"), Some("r1"));
+        assert_eq!(first_value("# region = r0\n", "region"), None);
+        // Not section-aware: the first uncommented entry wins whatever profile it is under.
+        assert_eq!(first_value("[a]\nregion = ra\n[b]\nregion = rb", "region"), Some("ra"));
         assert_eq!(first_value("region_name = x\nregion = r1", "region"), Some("r1"));
         assert_eq!(first_value("no such key", "region"), None);
         // Case-sensitive, like the regex.

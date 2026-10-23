@@ -593,9 +593,10 @@ def scan_readstat(
         Polars' ``storage_options`` for ``scan_parquet``. Anything not given
         is resolved the way Polars does it: for ``s3://``, the ``AWS_*``
         environment variables, then the first region and credentials found
-        in ``~/.aws/config`` and ``~/.aws/credentials``, with the bucket's
-        region looked up if none is set (``gs://`` and ``az://`` use their
-        ``GOOGLE_*`` / ``AZURE_*`` environment variables). Explicit options
+        in ``~/.aws/config`` and ``~/.aws/credentials`` (ignoring commented-out
+        lines), with the bucket's region looked up if none is set (``gs://``
+        and ``az://`` use their ``GOOGLE_*`` / ``AZURE_*`` environment
+        variables). Explicit options
         override all of these. SSO / ``aws login`` profiles are not read;
         export their credentials as ``AWS_*`` variables instead.
     """
