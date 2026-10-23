@@ -26,12 +26,10 @@
 //! polars-io's own umbrella feature for the same thing.
 
 use crate::source::{ReadSeek, ReadSource};
-use object_store::buffered::BufReader as ObjectStoreBufReader;
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectMeta, ObjectStore, ObjectStoreExt};
 use std::io::{Error as IoError, ErrorKind, Read, Result as IoResult, Seek, SeekFrom};
 use std::sync::{Arc, OnceLock};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::runtime::Runtime;
 use url::Url;
 
@@ -53,8 +51,8 @@ pub(crate) fn shared_runtime() -> &'static Runtime {
 }
 
 /// A [`ReadSource`] backed by any [`object_store::ObjectStore`]. Each
-/// `open_reader()` call gets its own independent, chunked, range-fetching
-/// reader ([`object_store::buffered::BufReader`]) so parallel workers can
+/// `open_reader()` call gets its own independent, window-caching,
+/// range-fetching reader ([`BlockingObjectReader`]) so parallel workers can
 /// each seek to and read their own byte range without interfering with one
 /// another — exactly like `LocalFileSource`/`InMemorySource`, just backed by
 /// ranged GET requests instead of local I/O.
@@ -121,8 +119,10 @@ where
 
 impl ReadSource for ObjectStoreSource {
     fn open_reader(&self) -> IoResult<Box<dyn ReadSeek>> {
-        let inner = ObjectStoreBufReader::new(self.store.clone(), &self.meta);
-        Ok(Box::new(BlockingObjectReader { inner }))
+        Ok(Box::new(BlockingObjectReader::new(
+            self.store.clone(),
+            self.meta.clone(),
+        )))
     }
 
     fn len(&self) -> IoResult<u64> {
@@ -131,27 +131,99 @@ impl ReadSource for ObjectStoreSource {
     }
 }
 
-/// Adapts `object_store`'s async, chunked, range-fetching `BufReader` to
-/// `std::io::{Read, Seek}` by blocking on the shared background runtime.
+/// Smallest range fetched on a cache miss — a sequential reader pays one
+/// request per this many bytes.
+const MIN_FETCH: u64 = 1 << 20;
+/// Largest range fetched for one miss, however big the caller's read buffer is.
+const MAX_FETCH: u64 = 8 << 20;
+
+/// `std::io::{Read, Seek}` over a cloud object, by blocking on the shared
+/// background runtime.
+///
+/// It keeps one window of bytes. A read inside the window is a copy; a read
+/// outside it fetches a single range starting at the current position, sized to
+/// the caller's buffer (between [`MIN_FETCH`] and [`MAX_FETCH`]). `seek` only
+/// moves the position and never does I/O, so the many small relative seeks that
+/// header/label parsers make (e.g. between Stata value-label tables) stay
+/// inside the window instead of each costing a network round trip — which is
+/// what `object_store`'s own `BufReader` did, since it drops its buffer on any
+/// seek.
 struct BlockingObjectReader {
-    inner: ObjectStoreBufReader,
+    store: Arc<dyn ObjectStore>,
+    meta: ObjectMeta,
+    pos: u64,
+    window_start: u64,
+    window: Vec<u8>,
+    /// Number of range requests issued (for tests).
+    fetches: usize,
+}
+
+impl BlockingObjectReader {
+    fn new(store: Arc<dyn ObjectStore>, meta: ObjectMeta) -> Self {
+        Self {
+            store,
+            meta,
+            pos: 0,
+            window_start: 0,
+            window: Vec::new(),
+            fetches: 0,
+        }
+    }
+
+    fn window_end(&self) -> u64 {
+        self.window_start + self.window.len() as u64
+    }
 }
 
 impl Read for BlockingObjectReader {
     fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
-        shared_runtime().block_on(self.inner.read(buf))
+        if buf.is_empty() || self.pos >= self.meta.size {
+            return Ok(0);
+        }
+        if self.pos < self.window_start || self.pos >= self.window_end() {
+            let want = (buf.len() as u64).clamp(MIN_FETCH, MAX_FETCH);
+            let end = (self.pos + want).min(self.meta.size);
+            let bytes = shared_runtime()
+                .block_on(self.store.get_range(&self.meta.location, self.pos..end))
+                .map_err(IoError::other)?;
+            self.fetches += 1;
+            self.window_start = self.pos;
+            self.window = bytes.to_vec();
+            if self.window.is_empty() {
+                return Ok(0);
+            }
+        }
+        let off = (self.pos - self.window_start) as usize;
+        let n = buf.len().min(self.window.len() - off);
+        buf[..n].copy_from_slice(&self.window[off..off + n]);
+        self.pos += n as u64;
+        Ok(n)
     }
 }
 
 impl Seek for BlockingObjectReader {
     fn seek(&mut self, pos: SeekFrom) -> IoResult<u64> {
-        shared_runtime().block_on(self.inner.seek(pos))
+        let new = match pos {
+            SeekFrom::Start(p) => Some(p),
+            SeekFrom::End(d) => self.meta.size.checked_add_signed(d),
+            SeekFrom::Current(d) => self.pos.checked_add_signed(d),
+        };
+        match new {
+            Some(p) => {
+                self.pos = p;
+                Ok(p)
+            }
+            None => Err(IoError::new(
+                ErrorKind::InvalidInput,
+                "invalid seek to a negative or overflowing position",
+            )),
+        }
     }
 }
 
 // `BlockingObjectReader` is only ever handed out as `Box<dyn ReadSeek>`
-// (which requires `Send`); `ObjectStoreBufReader` itself is `Send`, so this
-// is automatic — no unsafe impl needed.
+// (which requires `Send`); all its fields are `Send`, so this is automatic —
+// no unsafe impl needed.
 
 #[cfg(test)]
 mod tests {
@@ -368,5 +440,51 @@ mod tests {
             df_parallel.equals_missing(&df_path),
             "ObjectStoreSource read diverged from path-backed read"
         );
+    }
+
+    #[test]
+    fn small_seeks_inside_the_window_do_not_refetch() {
+        // 3 MiB object: bigger than MIN_FETCH so a miss is bounded, small enough to
+        // keep the test quick. Content is position-dependent so wrong reads show up.
+        let data: Vec<u8> = (0..3u32 << 20).map(|i| (i % 251) as u8).collect();
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let path = ObjectPath::from("window.bin");
+        shared_runtime()
+            .block_on(store.put(&path, PutPayload::from(data.clone())))
+            .unwrap();
+        let meta = shared_runtime().block_on(store.head(&path)).unwrap();
+        let mut r = BlockingObjectReader::new(store, meta);
+
+        // Label-table-like pattern: read a little, skip a few bytes, repeat.
+        let mut pos = 100usize;
+        r.seek(SeekFrom::Start(pos as u64)).unwrap();
+        for _ in 0..1000 {
+            let mut b = [0u8; 40];
+            r.read_exact(&mut b).unwrap();
+            assert_eq!(&b[..], &data[pos..pos + 40]);
+            pos += 40;
+            r.seek(SeekFrom::Current(3)).unwrap();
+            pos += 3;
+        }
+        assert_eq!(r.fetches, 1, "seeks within the window must not refetch");
+
+        // A jump outside the window refetches once; seeking back inside it is free.
+        r.seek(SeekFrom::Start(2 << 20)).unwrap();
+        let mut b = [0u8; 8];
+        r.read_exact(&mut b).unwrap();
+        assert_eq!(&b[..], &data[2 << 20..(2 << 20) + 8]);
+        assert_eq!(r.fetches, 2);
+        r.seek(SeekFrom::Current(-8)).unwrap();
+        r.read_exact(&mut b).unwrap();
+        assert_eq!(&b[..], &data[2 << 20..(2 << 20) + 8]);
+        assert_eq!(r.fetches, 2);
+
+        // Reading to and past the end, and seeking from the end, behave like a file.
+        r.seek(SeekFrom::End(-4)).unwrap();
+        let mut tail = Vec::new();
+        r.read_to_end(&mut tail).unwrap();
+        assert_eq!(tail, &data[data.len() - 4..]);
+        assert_eq!(r.read(&mut b).unwrap(), 0);
+        assert!(r.seek(SeekFrom::Current(-(1 << 40))).is_err());
     }
 }

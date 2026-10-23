@@ -62,10 +62,7 @@ pub fn read_data_frame_range(
     let data_offset = metadata.data_offset.ok_or_else(|| Error::MissingMetadata)?;
     let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
 
-    reader.seek(SeekFrom::Start(data_offset))?;
-    if ds_format >= 117 {
-        read_tag(&mut reader, b"<data>")?;
-    }
+    seek_to_data(&mut reader, data_offset, ds_format, offset == 0)?;
 
     let label_maps = shared.label_maps.as_ref();
 
@@ -242,15 +239,15 @@ pub fn read_data_frame_streaming(
         .map(|v| *v as usize)
         .sum::<usize>();
     // Parallel readers call this once per chunk; don't read 8MB ahead for a small chunk.
+    // The extra `<data>` tag length covers the first chunk, whose buffer starts at the tag:
+    // without it the last row spills a few bytes past the buffer and costs a second full fill.
     let capacity = limit
         .saturating_mul(record_len)
+        .saturating_add(DATA_TAG_LEN)
         .clamp(64 * 1024, 8 * 1024 * 1024);
     let mut reader = BufReader::with_capacity(capacity, file);
 
-    reader.seek(SeekFrom::Start(data_offset))?;
-    if ds_format >= 117 {
-        read_tag(&mut reader, b"<data>")?;
-    }
+    seek_to_data(&mut reader, data_offset, ds_format, offset == 0)?;
 
     let label_maps = shared.label_maps.as_ref();
     let rules = missing_rules(ds_format);
@@ -857,6 +854,33 @@ impl StringScratch {
     }
 }
 
+const DATA_TAG_LEN: usize = b"<data>".len();
+
+/// Positions `reader` at the start of the row data (just past the `<data>`
+/// tag in 117+ files).
+///
+/// The tag is only read when `check_tag` is set (the chunk starting at row 0).
+/// Reading it fills the `BufReader`'s whole buffer from the *start* of the data
+/// section; a later chunk would then seek past that buffer and throw it away,
+/// costing a wasted read of up to the buffer size per chunk — free from a local
+/// page cache, but a full extra ranged GET per chunk against object storage.
+fn seek_to_data<R: Read + Seek>(
+    reader: &mut R,
+    data_offset: u64,
+    ds_format: u16,
+    check_tag: bool,
+) -> Result<()> {
+    if ds_format < 117 {
+        reader.seek(SeekFrom::Start(data_offset))?;
+    } else if check_tag {
+        reader.seek(SeekFrom::Start(data_offset))?;
+        read_tag(reader, b"<data>")?;
+    } else {
+        reader.seek(SeekFrom::Start(data_offset + DATA_TAG_LEN as u64))?;
+    }
+    Ok(())
+}
+
 fn read_tag<R: Read>(reader: &mut R, tag: &[u8]) -> Result<()> {
     let mut buf = vec![0u8; tag.len()];
     reader.read_exact(&mut buf)?;
@@ -1138,10 +1162,7 @@ pub fn read_data_frame_range_with_indicators(
     let data_offset = metadata.data_offset.ok_or_else(|| Error::MissingMetadata)?;
     let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
 
-    reader.seek(SeekFrom::Start(data_offset))?;
-    if ds_format >= 117 {
-        read_tag(&mut reader, b"<data>")?;
-    }
+    seek_to_data(&mut reader, data_offset, ds_format, offset == 0)?;
 
     let label_maps = shared.label_maps.as_ref();
     let rules = missing_rules(ds_format);
