@@ -42,6 +42,15 @@ df = (
 )
 ```
 
+### Cloud paths
+
+```python
+lf = scan_readstat("s3://my-bucket/path/file.sas7bdat")   # also gs:// and az://
+```
+
+Credentials come from the usual `AWS_*` / `GOOGLE_*` / `AZURE_*` environment variables, `~/.aws` files, or
+`storage_options`, the same as for Polars. See [Cloud storage](docs/read.md#cloud-storage).
+
 ### 2) Getting metadata
 ```python
 from polars_readstat import ScanReadstat

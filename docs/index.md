@@ -22,6 +22,15 @@ df = lf.select(["SERIALNO", "AGEP"]).filter(pl.col("AGEP") >= 18).collect()
 ```
 
 
+### Reading from S3, GCS or Azure
+
+```python
+lf = scan_readstat("s3://my-bucket/path/file.sas7bdat")   # also gs:// and az://
+```
+
+Credentials come from the usual `AWS_*` / `GOOGLE_*` / `AZURE_*` environment variables, `~/.aws` files, or
+`storage_options`, the same as for Polars. See [Cloud storage](read.md#cloud-storage).
+
 ### Getting metadata from the file
 
 ```python

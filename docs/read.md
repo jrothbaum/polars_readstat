@@ -13,7 +13,7 @@ df = lf.collect()
 
 Because `scan_readstat` returns a `LazyFrame`, Polars can push operations into the reader before data is loaded:
 
-- **Column selection** — only the selected columns are read from disk:
+- **Column selection** — only the selected columns are decoded and kept (for cloud paths the whole file is still downloaded; see [Cloud storage](#cloud-storage)):
   ```python
   df = scan_readstat("file.sav").select(["id", "age"]).collect()
   ```
@@ -39,6 +39,54 @@ Key parameters:
 | `threads` | `None` | Number of threads. Defaults to the Polars thread pool size. |
 | `compress` | `None` | Optional type compression after scan. |
 | `catalog` | `None` | SAS catalog for value labels. See [SAS catalog](#sas-catalog). |
+| `storage_options` | `None` | Credentials and settings for a cloud `path` (`s3://`, `gs://`, `az://`). See [Cloud storage](#cloud-storage). |
+
+## Cloud storage
+
+`path` can be a cloud URL: `s3://`, `gs://` or `az://`. S3-compatible servers can be used by setting
+`aws_endpoint_url` in `storage_options`. It works the same way for every format and for `scan_readstat`,
+`ScanReadstat`, `read_readstat`, `read_sas7bcat`, and the `catalog=` argument.
+
+```python
+from polars_readstat import scan_readstat
+
+lf = scan_readstat("s3://my-bucket/path/file.sas7bdat")
+df = lf.select(["id", "age"]).collect()
+
+# S3-compatible server (plain HTTP shown for a local test server)
+lf = scan_readstat("s3://bucket/file.dta", storage_options={
+    "aws_endpoint_url": "http://127.0.0.1:9000",
+    "aws_allow_http": "true",
+    "aws_access_key_id": "...",
+    "aws_secret_access_key": "...",
+})
+
+# A catalog can be a cloud URL too
+lf = scan_readstat("s3://bucket/file.sas7bdat", catalog="s3://bucket/formats.sas7bcat")
+```
+
+**Credentials and region** are resolved the way Polars resolves them for `scan_parquet`, so the same
+setup works for both. For `s3://`, from lowest to highest precedence:
+
+1. the `AWS_*` environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+   `AWS_SESSION_TOKEN`, `AWS_REGION`, ...);
+2. the region in `~/.aws/config` and the keys in `~/.aws/credentials`: the first value found in each
+   file (commented-out lines are ignored). `AWS_PROFILE` is **not** consulted, so with several profiles
+   export the one you want as `AWS_*` variables;
+3. `storage_options`, which override everything above. The keys are the ones Polars documents
+   (`aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`, `aws_region`,
+   `aws_endpoint_url`, `aws_allow_http`, ...).
+
+If no region is set (and no custom endpoint), the bucket's region is looked up once. For `gs://` and
+`az://`, the usual `GOOGLE_*` / `AZURE_*` environment variables are read first, then `storage_options`.
+SSO, `aws login` and assume-role profiles are not read; export their credentials as environment
+variables instead, e.g. `eval "$(aws configure export-credentials --format env)"`.
+
+**What is downloaded.** The readers fetch the file in large ranges, and every byte is fetched about once
+(roughly 1.0 to 1.1 times the file size). These formats store whole rows together, so
+`select(...)` / `filter(...)` do **not** reduce the download; they only reduce what is kept in memory.
+`head(n)` / `limit(n)` do: only the first range or two (about 10 to 20 MB) is fetched. In our tests
+download speed was limited by the network link, not the reader.
 
 ## Compression options
 

@@ -24,6 +24,7 @@ write_xpt(df, "/path/out.xpt")
 | Parameter | Notes |
 | --- | --- |
 | `format` | Override format detection. Accepted values: `"dta"` or `"stata"` for Stata; `"sav"`, `"zsav"`, or `"spss"` for SPSS; `"por"` or `"spss_por"` for SPSS Portable. Inferred from the file extension if omitted. |
+| `storage_options` | Credentials and settings when `path` is a cloud URL (`s3://`, `gs://`, `az://`). See [Writing to cloud storage](#writing-to-cloud-storage). |
 | `metadata` | Metadata from `ScanReadstat(...).metadata` (dict) or `ScanReadstat(...).metadata_df` (Polars DataFrame, faster for very wide files). Extracts variable labels, value labels, and formats automatically. See [Preserving metadata](#preserving-metadata-from-a-source-file). Explicit kwargs take precedence. |
 
 ## Stata parameters (`.dta`)
@@ -121,6 +122,21 @@ write_por(df, "/path/out.por", file_label="My dataset", variable_labels={"ID": "
 ```
 
 Parameters: `file_label`, `variable_labels`. Also callable as `write_readstat(df, "out.por")`. Variable names are uppercased and truncated to 8 characters.
+
+## Writing to cloud storage
+
+`write_readstat`, `write_xpt` and `write_por` accept a cloud URL as `path` (`s3://`, `gs://`, `az://`)
+and a `storage_options` dict. Credentials and region are resolved exactly as for reading; see
+[Cloud storage](read.md#cloud-storage).
+
+```python
+write_readstat(df, "s3://my-bucket/out/data.dta")
+write_readstat(df, "s3://bucket/out.sav", storage_options={"aws_region": "us-east-2"})
+```
+
+Large files are uploaded in parts as they are produced. Writing a `LazyFrame` to Stata (`sink_stata`)
+first builds the file in a local temporary file and uploads it when finished, so it needs free local disk
+space for the whole file. `write_sas_csv_import` writes to local paths only.
 
 ## SAS CSV import bundle (`write_sas_csv_import`)
 
