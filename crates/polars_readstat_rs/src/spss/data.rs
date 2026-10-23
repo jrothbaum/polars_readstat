@@ -294,18 +294,7 @@ pub fn read_data_frame_streaming(
         // trailer index), but SavRowStream state is maintained across blocks because
         // rows can span block boundaries. Process blocks one at a time and emit a
         // batch whenever batch_size rows have been accumulated.
-        let zheader_ofs = reader.stream_position()?;
-        let zheader = read_zheader(&mut reader, endian)?;
-        if zheader.zheader_ofs != zheader_ofs {
-            return Err(Error::ParseError("invalid zsav header offset".to_string()));
-        }
-        reader.seek(SeekFrom::Start(zheader.ztrailer_ofs))?;
-        let ztrailer = read_ztrailer(&mut reader, endian)?;
-        let n_blocks = ztrailer.n_blocks as usize;
-        let mut entries = Vec::with_capacity(n_blocks);
-        for _ in 0..n_blocks {
-            entries.push(read_ztrailer_entry(&mut reader, endian)?);
-        }
+        let entries = read_zsav_index(&mut reader, endian)?;
 
         let mut stream = SavRowStream::new(endian, bias);
         let mut row_idx = 0usize;
@@ -1264,8 +1253,8 @@ fn append_row_with_indicators(
 }
 
 /// Like `read_zsav_data` but routes rows through `append_row_with_indicators`.
-fn read_zsav_data_with_indicators<R: Read + Seek>(
-    reader: &mut R,
+fn read_zsav_data_with_indicators(
+    reader: &mut BufReader<Box<dyn ReadSeek>>,
     endian: Endian,
     bias: f64,
     start_row: usize,
@@ -1276,20 +1265,7 @@ fn read_zsav_data_with_indicators<R: Read + Seek>(
     row_buf: &mut [u8],
     encoding: &'static encoding_rs::Encoding,
 ) -> Result<()> {
-    let zheader_ofs = reader.stream_position()?;
-    let zheader = read_zheader(reader, endian)?;
-    if zheader.zheader_ofs != zheader_ofs {
-        return Err(Error::ParseError("invalid zsav header offset".to_string()));
-    }
-
-    reader.seek(SeekFrom::Start(zheader.ztrailer_ofs))?;
-    let ztrailer = read_ztrailer(reader, endian)?;
-    let n_blocks = ztrailer.n_blocks as usize;
-
-    let mut entries = Vec::with_capacity(n_blocks);
-    for _ in 0..n_blocks {
-        entries.push(read_ztrailer_entry(reader, endian)?);
-    }
+    let entries = read_zsav_index(reader, endian)?;
 
     let mut stream = SavRowStream::new(endian, bias);
     let mut row_idx = 0usize;
@@ -1929,8 +1905,8 @@ impl SavRowStream {
     }
 }
 
-fn read_zsav_data<R: Read + Seek>(
-    reader: &mut R,
+fn read_zsav_data(
+    reader: &mut BufReader<Box<dyn ReadSeek>>,
     endian: Endian,
     bias: f64,
     _record_len: usize,
@@ -1942,20 +1918,7 @@ fn read_zsav_data<R: Read + Seek>(
     row_buf: &mut [u8],
     encoding: &'static encoding_rs::Encoding,
 ) -> Result<()> {
-    let zheader_ofs = reader.stream_position()?;
-    let zheader = read_zheader(reader, endian)?;
-    if zheader.zheader_ofs != zheader_ofs {
-        return Err(Error::ParseError("invalid zsav header offset".to_string()));
-    }
-
-    reader.seek(SeekFrom::Start(zheader.ztrailer_ofs))?;
-    let ztrailer = read_ztrailer(reader, endian)?;
-    let n_blocks = ztrailer.n_blocks as usize;
-
-    let mut entries = Vec::with_capacity(n_blocks);
-    for _ in 0..n_blocks {
-        entries.push(read_ztrailer_entry(reader, endian)?);
-    }
+    let entries = read_zsav_index(reader, endian)?;
 
     let mut stream = SavRowStream::new(endian, bias);
     let mut row_idx = 0usize;
@@ -2026,6 +1989,43 @@ struct ZTrailerEntry {
     compressed_ofs: i64,
     uncompressed_size: i32,
     compressed_size: i32,
+}
+
+/// Reads the zsav header and its block index (the trailer at the end of the file)
+/// and returns the block entries. `reader` must be positioned at the zheader, with
+/// nothing buffered (i.e. just after a `seek`).
+///
+/// Goes through the `BufReader`'s inner handle: its buffer would otherwise be filled
+/// from the zheader for a 24-byte read, then discarded by the jump to the trailer —
+/// a wasted 8MB fetch against an object store. The whole index is read in one call.
+fn read_zsav_index(
+    reader: &mut BufReader<Box<dyn ReadSeek>>,
+    endian: Endian,
+) -> Result<Vec<ZTrailerEntry>> {
+    const TRAILER_LEN: usize = 24;
+    const ENTRY_LEN: usize = 24;
+    let file = reader.get_mut();
+    let zheader_ofs = file.stream_position()?;
+    let zheader = read_zheader(file, endian)?;
+    if zheader.zheader_ofs != zheader_ofs {
+        return Err(Error::ParseError("invalid zsav header offset".to_string()));
+    }
+
+    file.seek(SeekFrom::Start(zheader.ztrailer_ofs))?;
+    let mut fixed = [0u8; TRAILER_LEN];
+    file.read_exact(&mut fixed)?;
+    let ztrailer = read_ztrailer(&mut &fixed[..], endian)?;
+    let n_blocks = usize::try_from(ztrailer.n_blocks)
+        .map_err(|_| Error::ParseError("negative zsav block count".to_string()))?;
+
+    let mut raw = vec![0u8; n_blocks * ENTRY_LEN];
+    file.read_exact(&mut raw)?;
+    let mut cursor = &raw[..];
+    let mut entries = Vec::with_capacity(n_blocks);
+    for _ in 0..n_blocks {
+        entries.push(read_ztrailer_entry(&mut cursor, endian)?);
+    }
+    Ok(entries)
 }
 
 fn read_zheader<R: Read>(reader: &mut R, endian: Endian) -> Result<ZHeader> {
