@@ -1,6 +1,7 @@
 """One timed read in its own process (so peak RSS is per-measurement).
 
 Usage: python bench_s3_read.py <local|s3> <full|select> <path_or_url> [region]
+Set PRS_ENDPOINT=http://host:port to read from an S3-compatible server instead of AWS.
 Needs only polars + polars-readstat. S3 credentials come from AWS_* env vars,
 passed explicitly in storage_options (the library does not read the env itself).
 """
@@ -18,7 +19,11 @@ where, mode, target = sys.argv[1:4]
 region = sys.argv[4] if len(sys.argv) > 4 else "us-east-2"
 
 opts = None
-if where == "s3":
+if where == "s3" and os.environ.get("PRS_ENDPOINT"):
+    # an S3-compatible server (e.g. a local nginx or moto): dummy credentials, plain HTTP
+    opts = {"aws_endpoint_url": os.environ["PRS_ENDPOINT"], "aws_allow_http": "true",
+            "aws_access_key_id": "x", "aws_secret_access_key": "x", "aws_region": "us-east-1"}
+elif where == "s3":
     opts = {"aws_region": region}
     for env, key in (("AWS_ACCESS_KEY_ID", "aws_access_key_id"),
                      ("AWS_SECRET_ACCESS_KEY", "aws_secret_access_key"),
