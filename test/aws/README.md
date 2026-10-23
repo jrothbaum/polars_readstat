@@ -21,6 +21,16 @@ uv run pytest test/aws -v -s
 uploads one small sample per format, then reads and writes each format against S3 and prints a
 PASS/FAIL table. `PRS_VERSION=x.y.z` pins the release. sas7bdat is read-only (no binary writer).
 
+## Local S3 server (no AWS account)
+`test_local_s3_endpoint.py` runs the same read/write/catalog checks against a local `moto` S3 server
+over plain HTTP, with dummy credentials supplied only through `AWS_*` variables and no region, so
+it also covers credential/region resolution. It is skipped unless `moto` and `boto3` are installed:
+```bash
+uv pip install "moto[server]"
+uv run pytest test/aws/test_local_s3_endpoint.py -v
+```
+It is not part of the default test run (`tests/` only).
+
 ## Cleanup
 `./teardown.sh` empties and deletes the bucket.
 
