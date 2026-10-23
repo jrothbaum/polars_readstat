@@ -49,9 +49,9 @@ def record(fmt: str, step: str, fn) -> object:
 print(f"polars {pl.__version__}  polars_readstat {getattr(prs, '__version__', '?')}")
 
 # Credential/region resolution as Polars does it: no credentials and no region in
-# storage_options. (1) AWS_* environment variables only; (2) a shared credentials file
-# selected with AWS_SHARED_CREDENTIALS_FILE / AWS_PROFILE, with the env credentials
-# removed. The bucket's region is looked up in both.
+# storage_options. (1) AWS_* environment variables only; (2) ~/.aws/credentials only,
+# in a temporary HOME, with the env credentials removed. The bucket's region is looked
+# up in both.
 _dta = next(sample_dir.glob("*.dta"))
 _dta_url = f"s3://{bucket}/{prefix}/in/{_dta.name}"
 record(
@@ -63,26 +63,27 @@ record(
 
 def _from_credentials_file():
     saved = {k: os.environ.pop(k) for k in list(_ENV_KEYS) + ["AWS_REGION", "AWS_DEFAULT_REGION"] if k in os.environ}
+    old_home = os.environ.get("HOME")
     with tempfile.TemporaryDirectory() as d:
-        cred = Path(d) / "credentials"
-        cred.write_text(
-            "[other]\naws_access_key_id = WRONG\naws_secret_access_key = WRONG\n\n[prs]\n"
+        (Path(d) / ".aws").mkdir()
+        (Path(d) / ".aws" / "credentials").write_text(
+            "[default]\n"
             f"aws_access_key_id = {saved['AWS_ACCESS_KEY_ID']}\n"
             f"aws_secret_access_key = {saved['AWS_SECRET_ACCESS_KEY']}\n"
             + (f"aws_session_token = {saved['AWS_SESSION_TOKEN']}\n" if "AWS_SESSION_TOKEN" in saved else "")
         )
-        os.environ["AWS_SHARED_CREDENTIALS_FILE"] = str(cred)
-        os.environ["AWS_CONFIG_FILE"] = str(Path(d) / "no-such-config")
-        os.environ["AWS_PROFILE"] = "prs"
+        os.environ["HOME"] = d
         try:
             return prs.scan_readstat(_dta_url, storage_options={}).collect()
         finally:
-            for k in ("AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_PROFILE"):
-                os.environ.pop(k, None)
+            if old_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old_home
             os.environ.update(saved)
 
 
-record("resolution", "credentials file + AWS_PROFILE", _from_credentials_file)
+record("resolution", "~/.aws/credentials only", _from_credentials_file)
 
 for ext in READ_FORMATS:
     sample = next(sample_dir.glob(f"*.{ext}"))

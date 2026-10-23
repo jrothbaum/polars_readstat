@@ -3,9 +3,11 @@
 //!
 //! For `s3://`, lowest to highest precedence:
 //! 1. `AWS_*` environment variables (as `AmazonS3Builder::from_env`),
-//! 2. the shared AWS files — `~/.aws/config` (region) and `~/.aws/credentials`
-//!    (access key, secret, session token) for the `AWS_PROFILE` profile (default
-//!    `default`), honouring `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE`,
+//! 2. `~/.aws/config` (region) and `~/.aws/credentials` (access key, secret, session
+//!    token) — read exactly as polars-io does: those two fixed paths, and the *first*
+//!    occurrence of each key anywhere in the file, regardless of profile
+//!    (`AWS_PROFILE`, `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` are not
+//!    consulted). Keys already set by the environment are left alone,
 //! 3. the explicit `storage_options` passed by the caller.
 //!
 //! If no region results and no custom endpoint is set, the bucket's region is looked
@@ -63,7 +65,7 @@ pub(crate) fn build_store(
 }
 
 fn build_s3(url: &Url, options: &[(String, String)]) -> IoResult<AmazonS3> {
-    let mut b = s3_builder(url, options, std::env::vars(), &AwsSharedFiles::from_env());
+    let mut b = s3_builder(url, options, std::env::vars(), home_dir().as_deref());
 
     let unset = |b: &AmazonS3Builder, k| b.get_config_value(&k).is_none();
     if unset(&b, AmazonS3ConfigKey::DefaultRegion) && unset(&b, AmazonS3ConfigKey::Region) {
@@ -85,7 +87,7 @@ fn s3_builder(
     url: &Url,
     options: &[(String, String)],
     env: impl IntoIterator<Item = (String, String)>,
-    files: &AwsSharedFiles,
+    home: Option<&Path>,
 ) -> AmazonS3Builder {
     let mut b = AmazonS3Builder::new();
     // Same as `AmazonS3Builder::from_env`.
@@ -97,10 +99,17 @@ fn s3_builder(
         }
     }
     b = b.with_url(url.to_string());
-    for (key, value) in files.settings() {
-        if b.get_config_value(&key).is_none() {
-            b = b.with_config(key, value);
-        }
+    if let Some(home) = home {
+        b = read_config(b, &home.join(".aws").join("config"), &[("region", AmazonS3ConfigKey::Region)]);
+        b = read_config(
+            b,
+            &home.join(".aws").join("credentials"),
+            &[
+                ("aws_access_key_id", AmazonS3ConfigKey::AccessKeyId),
+                ("aws_secret_access_key", AmazonS3ConfigKey::SecretAccessKey),
+                ("aws_session_token", AmazonS3ConfigKey::Token),
+            ],
+        );
     }
     for (k, v) in options {
         if let Ok(key) = k.to_ascii_lowercase().parse::<AmazonS3ConfigKey>() {
@@ -125,79 +134,56 @@ fn bucket_region(bucket: &str) -> Option<String> {
     Some(region)
 }
 
-/// Locations and profile of the shared AWS config/credentials files.
-struct AwsSharedFiles {
-    credentials: Option<PathBuf>,
-    config: Option<PathBuf>,
-    profile: String,
+fn home_dir() -> Option<PathBuf> {
+    ["HOME", "USERPROFILE"]
+        .iter()
+        .find_map(|k| std::env::var_os(k).filter(|v| !v.is_empty()))
+        .map(PathBuf::from)
 }
 
-impl AwsSharedFiles {
-    fn from_env() -> Self {
-        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-        let home = var("HOME").or_else(|| var("USERPROFILE")).map(PathBuf::from);
-        let in_home = |name: &str| home.as_ref().map(|h| h.join(".aws").join(name));
-        Self {
-            credentials: var("AWS_SHARED_CREDENTIALS_FILE")
-                .map(PathBuf::from)
-                .or_else(|| in_home("credentials")),
-            config: var("AWS_CONFIG_FILE")
-                .map(PathBuf::from)
-                .or_else(|| in_home("config")),
-            profile: var("AWS_PROFILE").unwrap_or_else(|| "default".to_string()),
-        }
+/// Port of polars-io's `read_config`: for each `(name, key)` not already set on the
+/// builder, take the first `name = value` in the file and set `key` from it. Skipped
+/// entirely if every key is already set or the file can't be read, and stops at the
+/// first name that has no match (as Polars does).
+fn read_config(
+    mut b: AmazonS3Builder,
+    path: &Path,
+    entries: &[(&str, AmazonS3ConfigKey)],
+) -> AmazonS3Builder {
+    if entries.iter().all(|(_, key)| b.get_config_value(key).is_some()) {
+        return b;
     }
-
-    /// Settings found for the profile, as builder config entries.
-    fn settings(&self) -> Vec<(AmazonS3ConfigKey, String)> {
-        let mut out = Vec::new();
-        let profile = self.profile.as_str();
-        // The config file names non-default profiles `[profile NAME]`; the credentials
-        // file uses `[NAME]`. Accept either form in both.
-        let prefixed = format!("profile {profile}");
-        let names = [profile, prefixed.as_str()];
-        let entries = [
-            (self.credentials.as_deref(), "aws_access_key_id", AmazonS3ConfigKey::AccessKeyId),
-            (self.credentials.as_deref(), "aws_secret_access_key", AmazonS3ConfigKey::SecretAccessKey),
-            (self.credentials.as_deref(), "aws_session_token", AmazonS3ConfigKey::Token),
-            (self.config.as_deref(), "region", AmazonS3ConfigKey::Region),
-        ];
-        let mut sections: HashMap<&Path, Option<HashMap<String, String>>> = HashMap::new();
-        for (file, ini_key, key) in entries {
-            let Some(file) = file else { continue };
-            let section = sections
-                .entry(file)
-                .or_insert_with(|| read_ini_section(file, &names));
-            if let Some(value) = section.as_ref().and_then(|s| s.get(ini_key)) {
-                out.push((key, value.clone()));
-            }
-        }
-        out
-    }
-}
-
-/// Key/value pairs of the first-listed matching sections of an INI file; `None` if the
-/// file can't be read. Header whitespace is collapsed (`[profile  x]` == `[profile x]`),
-/// keys are lowercased, and `#` / `;` lines are comments.
-fn read_ini_section(path: &Path, names: &[&str]) -> Option<HashMap<String, String>> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let mut out = HashMap::new();
-    let mut inside = false;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return b;
+    };
+    for (name, key) in entries {
+        if b.get_config_value(key).is_some() {
             continue;
         }
-        if let Some(header) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
-            let header = header.split_whitespace().collect::<Vec<_>>().join(" ");
-            inside = names.contains(&header.as_str());
-        } else if inside {
-            if let Some((k, v)) = line.split_once('=') {
-                out.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
-            }
-        }
+        let Some(value) = first_value(&content, name) else {
+            break;
+        };
+        b = b.with_config(*key, value);
     }
-    Some(out)
+    b
+}
+
+/// The value of the first `name <ws>* = <ws>* value` in `text`, up to the end of that
+/// line — the match polars-io's regex `name\s*=\s*([^\r\n]*)` finds (case-sensitive,
+/// not anchored to a line start, not section-aware). Surrounding whitespace is trimmed.
+fn first_value<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let mut from = 0;
+    while let Some(i) = text[from..].find(name) {
+        let after = &text[from + i + name.len()..];
+        let rest = after.trim_start();
+        if let Some(rest) = rest.strip_prefix('=') {
+            let rest = rest.trim_start();
+            let line = rest.split(['\r', '\n']).next().unwrap_or("");
+            return Some(line.trim());
+        }
+        from += i + name.len();
+    }
+    None
 }
 
 #[cfg(test)]
@@ -212,26 +198,28 @@ mod tests {
         v.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
-    fn no_files() -> AwsSharedFiles {
-        AwsSharedFiles { credentials: None, config: None, profile: "default".into() }
-    }
-
     fn get(b: &AmazonS3Builder, k: AmazonS3ConfigKey) -> Option<String> {
         b.get_config_value(&k)
     }
 
-    /// A unique temp file with `contents`, removed on drop.
-    struct TempFile(PathBuf);
-    impl TempFile {
-        fn new(name: &str, contents: &str) -> Self {
-            let p = std::env::temp_dir().join(format!("prs-cloud-config-{}-{name}", std::process::id()));
-            std::fs::write(&p, contents).unwrap();
-            Self(p)
+    /// A unique temp "home" with a `.aws` directory holding the given files; removed on drop.
+    struct TempHome(PathBuf);
+    impl TempHome {
+        fn new(name: &str, credentials: Option<&str>, config: Option<&str>) -> Self {
+            let home = std::env::temp_dir().join(format!("prs-cloud-config-{}-{name}", std::process::id()));
+            std::fs::create_dir_all(home.join(".aws")).unwrap();
+            if let Some(c) = credentials {
+                std::fs::write(home.join(".aws").join("credentials"), c).unwrap();
+            }
+            if let Some(c) = config {
+                std::fs::write(home.join(".aws").join("config"), c).unwrap();
+            }
+            Self(home)
         }
     }
-    impl Drop for TempFile {
+    impl Drop for TempHome {
         fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 
@@ -262,66 +250,54 @@ region = eu-west-1
             ("AWS_REGION", "ap-south-1"),
             ("NOT_AWS_REGION", "ignored"),
         ]);
-        let b = s3_builder(&url(), &pairs(&[("aws_access_key_id", "explicit")]), env, &no_files());
+        let b = s3_builder(&url(), &pairs(&[("aws_access_key_id", "explicit")]), env, None);
         assert_eq!(get(&b, AmazonS3ConfigKey::AccessKeyId).as_deref(), Some("explicit"));
         assert_eq!(get(&b, AmazonS3ConfigKey::SecretAccessKey).as_deref(), Some("envsecret"));
         assert_eq!(get(&b, AmazonS3ConfigKey::Region).as_deref(), Some("ap-south-1"));
     }
 
     #[test]
-    fn shared_files_fill_what_the_environment_did_not() {
-        let creds = TempFile::new("creds1", CREDENTIALS);
-        let config = TempFile::new("config1", CONFIG);
-        let files = AwsSharedFiles {
-            credentials: Some(creds.0.clone()),
-            config: Some(config.0.clone()),
-            profile: "default".into(),
-        };
+    fn aws_files_fill_what_the_environment_did_not() {
+        let home = TempHome::new("fill", Some(CREDENTIALS), Some(CONFIG));
         let env = pairs(&[("AWS_ACCESS_KEY_ID", "envkey")]);
-        let b = s3_builder(&url(), &[], env, &files);
-        // env wins for the key it set; the file supplies the rest.
+        let b = s3_builder(&url(), &[], env, Some(&home.0));
+        // env wins for the key it set; the first match in each file supplies the rest.
         assert_eq!(get(&b, AmazonS3ConfigKey::AccessKeyId).as_deref(), Some("envkey"));
         assert_eq!(get(&b, AmazonS3ConfigKey::SecretAccessKey).as_deref(), Some("DEFAULTSECRET"));
         assert_eq!(get(&b, AmazonS3ConfigKey::Region).as_deref(), Some("us-east-2"));
-        assert_eq!(get(&b, AmazonS3ConfigKey::Token), None);
-    }
-
-    #[test]
-    fn named_profile_is_selected_from_both_files() {
-        let creds = TempFile::new("creds2", CREDENTIALS);
-        let config = TempFile::new("config2", CONFIG);
-        let files = AwsSharedFiles {
-            credentials: Some(creds.0.clone()),
-            config: Some(config.0.clone()),
-            profile: "work".into(),
-        };
-        let b = s3_builder(&url(), &[], Vec::new(), &files);
-        assert_eq!(get(&b, AmazonS3ConfigKey::AccessKeyId).as_deref(), Some("WORKKEY"));
-        assert_eq!(get(&b, AmazonS3ConfigKey::SecretAccessKey).as_deref(), Some("WORKSECRET"));
+        // The first session token in the file is the one under [work] — Polars is not
+        // profile-aware.
         assert_eq!(get(&b, AmazonS3ConfigKey::Token).as_deref(), Some("WORKTOKEN"));
-        assert_eq!(get(&b, AmazonS3ConfigKey::Region).as_deref(), Some("eu-west-1"));
     }
 
     #[test]
-    fn missing_files_and_unknown_profiles_are_not_errors() {
-        let files = AwsSharedFiles {
-            credentials: Some(PathBuf::from("/nonexistent/credentials")),
-            config: None,
-            profile: "nope".into(),
-        };
-        let b = s3_builder(&url(), &[], Vec::new(), &files);
+    fn aws_profile_is_ignored_like_polars() {
+        let home = TempHome::new("profile", Some(CREDENTIALS), Some(CONFIG));
+        let env = pairs(&[("AWS_PROFILE", "work")]);
+        let b = s3_builder(&url(), &[], env, Some(&home.0));
+        assert_eq!(get(&b, AmazonS3ConfigKey::AccessKeyId).as_deref(), Some("DEFAULTKEY"));
+        assert_eq!(get(&b, AmazonS3ConfigKey::Region).as_deref(), Some("us-east-2"));
+    }
+
+    #[test]
+    fn missing_files_are_not_errors() {
+        let b = s3_builder(&url(), &[], Vec::new(), Some(Path::new("/nonexistent-home")));
         assert_eq!(get(&b, AmazonS3ConfigKey::AccessKeyId), None);
-
-        let creds = TempFile::new("creds3", CREDENTIALS);
-        let files = AwsSharedFiles { credentials: Some(creds.0.clone()), config: None, profile: "nope".into() };
-        assert_eq!(get(&s3_builder(&url(), &[], Vec::new(), &files), AmazonS3ConfigKey::AccessKeyId), None);
+        assert_eq!(get(&b, AmazonS3ConfigKey::Region), None);
+        let home = TempHome::new("nofiles", None, None);
+        assert_eq!(get(&s3_builder(&url(), &[], Vec::new(), Some(&home.0)), AmazonS3ConfigKey::Region), None);
     }
 
     #[test]
-    fn ini_parser_handles_comments_spacing_and_header_whitespace() {
-        let f = TempFile::new("ini", "; c\n[  profile   x ]\n  Region =  r1 \n# c\n[other]\nregion=r2\n");
-        let s = read_ini_section(&f.0, &["profile x"]).unwrap();
-        assert_eq!(s.get("region").map(String::as_str), Some("r1"));
-        assert_eq!(s.len(), 1);
+    fn first_value_matches_the_polars_regex() {
+        assert_eq!(first_value("region = us-east-1\n", "region"), Some("us-east-1"));
+        assert_eq!(first_value("region=us-east-1", "region"), Some("us-east-1"));
+        assert_eq!(first_value("a\n  region  =  r1  \r\nregion = r2", "region"), Some("r1"));
+        // Not section-aware or line-anchored: a commented-out entry still matches.
+        assert_eq!(first_value("# region = r0\nregion = r1", "region"), Some("r0"));
+        assert_eq!(first_value("region_name = x\nregion = r1", "region"), Some("r1"));
+        assert_eq!(first_value("no such key", "region"), None);
+        // Case-sensitive, like the regex.
+        assert_eq!(first_value("Region = r1", "region"), None);
     }
 }
