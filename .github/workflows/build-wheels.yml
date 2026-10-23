@@ -53,6 +53,55 @@ jobs:
           name: wheels-linux-manylinux_2_28-x86_64
           path: dist
 
+  build-linux-aarch64:
+    name: Build wheels on Linux ARM (manylinux_2_28 aarch64)
+    # Native build on GitHub's free ARM runner. Not yet proven on a tagged release, so a
+    # failure here must not block the other wheels; remove this once it has succeeded.
+    continue-on-error: true
+    runs-on: ubuntu-24.04-arm
+    container: quay.io/pypa/manylinux_2_28_aarch64:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source ~/.cargo/env
+          rustup toolchain install 1.95.0
+          rustup default 1.95.0
+          rustup target add aarch64-unknown-linux-gnu
+        shell: bash
+
+      - name: Install Python build tools
+        run: |
+          /opt/python/cp39-cp39/bin/pip install --upgrade pip maturin
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wheel-manylinux_2_28-aarch64
+
+      - name: Build wheels
+        run: |
+          source ~/.cargo/env
+          /opt/python/cp39-cp39/bin/maturin build --release --strip --out dist \
+            --interpreter /opt/python/cp39-cp39/bin/python \
+            --target aarch64-unknown-linux-gnu \
+            --compatibility manylinux_2_28 \
+            --jobs 2
+        env:
+          RUST_BACKTRACE: full
+          CARGO_BUILD_JOBS: 2
+          CARGO_INCREMENTAL: 0
+          RUSTFLAGS: -C debuginfo=0 -C codegen-units=1
+        shell: bash
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-manylinux_2_28-aarch64
+          path: dist
+
   build-linux-legacy:
     name: Build wheels on Linux (manylinux2014 / RHEL7 compatible)
     runs-on: ubuntu-latest
@@ -104,6 +153,9 @@ jobs:
   build-others:
     name: Build wheels on ${{ matrix.os }} (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
+    # Rows marked experimental are new and not yet proven on a tagged release; their
+    # failure must not block the other wheels. Remove the flag once one has succeeded.
+    continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -112,6 +164,14 @@ jobs:
             arch: x64
             rust-target: x86_64-pc-windows-msvc
             python-version: '3.9'
+
+          # CPython has no ARM64 Windows build before 3.11; the wheel is abi3 (cp39-abi3),
+          # so it still installs on any ARM64 Python >= 3.11.
+          - os: windows-11-arm
+            arch: arm64
+            rust-target: aarch64-pc-windows-msvc
+            python-version: '3.11'
+            experimental: true
 
           - os: macos-14
             arch: arm64
@@ -164,7 +224,7 @@ jobs:
         shell: bash
 
       - name: Build wheels (Windows)
-        if: matrix.os == 'windows-latest'
+        if: startsWith(matrix.os, 'windows-')
         run: |
           maturin build --release --strip --out dist `
             --interpreter ${{ steps.setup-python.outputs.python-path }} `
@@ -184,7 +244,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [build-linux, build-linux-legacy, build-others]
+    needs: [build-linux, build-linux-aarch64, build-linux-legacy, build-others]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
