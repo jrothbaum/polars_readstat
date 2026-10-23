@@ -7,6 +7,8 @@
 #[cfg(feature = "cloud")]
 pub mod cloud_destination;
 #[cfg(feature = "cloud")]
+pub(crate) mod cloud_config;
+#[cfg(feature = "cloud")]
 pub mod cloud_source;
 pub mod destination;
 pub mod metadata_df;

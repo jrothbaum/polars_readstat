@@ -8,6 +8,7 @@ it back. Credentials come from the standard AWS_* environment variables.
 """
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -17,7 +18,6 @@ import polars_readstat as prs
 
 bucket, prefix, region, sample_dir = sys.argv[1:5]
 sample_dir = Path(sample_dir)
-import os
 
 # Explicit credentials from the standard env vars (object_store's
 # parse_url_opts does not read the environment itself).
@@ -48,18 +48,41 @@ def record(fmt: str, step: str, fn) -> object:
 
 print(f"polars {pl.__version__}  polars_readstat {getattr(prs, '__version__', '?')}")
 
-# Informational probe: does S3 work with ONLY the AWS_* env vars (no explicit
-# credentials in storage_options), the way pl.scan_parquet does? Short timeouts
-# so a miss fails fast instead of walking the EC2-metadata retry chain.
+# Credential/region resolution as Polars does it: no credentials and no region in
+# storage_options. (1) AWS_* environment variables only; (2) a shared credentials file
+# selected with AWS_SHARED_CREDENTIALS_FILE / AWS_PROFILE, with the env credentials
+# removed. The bucket's region is looked up in both.
 _dta = next(sample_dir.glob("*.dta"))
+_dta_url = f"s3://{bucket}/{prefix}/in/{_dta.name}"
 record(
-    "env-only",
-    "read s3 (no explicit creds)",
-    lambda: prs.scan_readstat(
-        f"s3://{bucket}/{prefix}/in/{_dta.name}",
-        storage_options={"aws_region": region, "aws_connect_timeout": "2s", "aws_timeout": "3s"},
-    ).collect(),
+    "resolution",
+    "env vars only, no region",
+    lambda: prs.scan_readstat(_dta_url, storage_options={}).collect(),
 )
+
+
+def _from_credentials_file():
+    saved = {k: os.environ.pop(k) for k in list(_ENV_KEYS) + ["AWS_REGION", "AWS_DEFAULT_REGION"] if k in os.environ}
+    with tempfile.TemporaryDirectory() as d:
+        cred = Path(d) / "credentials"
+        cred.write_text(
+            "[other]\naws_access_key_id = WRONG\naws_secret_access_key = WRONG\n\n[prs]\n"
+            f"aws_access_key_id = {saved['AWS_ACCESS_KEY_ID']}\n"
+            f"aws_secret_access_key = {saved['AWS_SECRET_ACCESS_KEY']}\n"
+            + (f"aws_session_token = {saved['AWS_SESSION_TOKEN']}\n" if "AWS_SESSION_TOKEN" in saved else "")
+        )
+        os.environ["AWS_SHARED_CREDENTIALS_FILE"] = str(cred)
+        os.environ["AWS_CONFIG_FILE"] = str(Path(d) / "no-such-config")
+        os.environ["AWS_PROFILE"] = "prs"
+        try:
+            return prs.scan_readstat(_dta_url, storage_options={}).collect()
+        finally:
+            for k in ("AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_PROFILE"):
+                os.environ.pop(k, None)
+            os.environ.update(saved)
+
+
+record("resolution", "credentials file + AWS_PROFILE", _from_credentials_file)
 
 for ext in READ_FORMATS:
     sample = next(sample_dir.glob(f"*.{ext}"))

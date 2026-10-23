@@ -590,8 +590,14 @@ def scan_readstat(
         Read from these bytes instead of opening `path`.
     storage_options : dict[str, str], optional
         Credentials and settings for a cloud `path`, in the same form as
-        Polars' ``storage_options`` for ``scan_parquet``. Not needed when
-        credentials come from the environment or an instance/task role.
+        Polars' ``storage_options`` for ``scan_parquet``. Anything not given
+        is resolved the way Polars does it: for ``s3://``, the ``AWS_*``
+        environment variables, then the ``~/.aws/config`` region and
+        ``~/.aws/credentials`` keys of the ``AWS_PROFILE`` profile, with the
+        bucket's region looked up if none is set (``gs://`` and ``az://`` use
+        their ``GOOGLE_*`` / ``AZURE_*`` environment variables). Explicit
+        options override all of these. SSO / ``aws login`` profiles are not
+        read; export their credentials as ``AWS_*`` variables instead.
     """
     path = str(path)
     compress = _normalize_compress_opts(compress)

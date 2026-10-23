@@ -6,9 +6,9 @@
 //! MinIO/localstack instance for testing); [`ObjectStoreSource::from_url`]
 //! is the entry point for all of them.
 //!
-//! `from_url` is a thin wrapper over [`object_store::parse_url_opts`] — the
-//! same universal scheme-dispatching function Polars' own `CloudOptions`
-//! machinery is built on. It recognizes `s3://`/`s3a://` (AWS/S3-compatible,
+//! `from_url` builds the store with the same credential/region resolution Polars
+//! uses (see [`crate::cloud_config`]: environment, shared AWS files, then explicit
+//! `options`), on top of [`object_store`]'s scheme dispatch. It recognizes `s3://`/`s3a://` (AWS/S3-compatible,
 //! e.g. MinIO via an endpoint override), `gs://` (GCS), and
 //! `az://`/`abfs://`/`abfss://`/`adl://`/`azure://` (Azure, including the
 //! `https://<account>.blob.core.windows.net/...` form) in one call, and the
@@ -102,11 +102,11 @@ impl ObjectStoreSource {
     /// `gs://bucket/key.sas7bdat`, `az://container/key.sas7bdat`, etc. (see
     /// the module docs for the full scheme list) — configured the same way
     /// Polars' `storage_options` dict is: `options` is parsed by whichever
-    /// provider's config-key enum matches the URL's scheme. Credentials/
-    /// region not present in `options` fall back to the environment the
-    /// same way each provider's own CLI/SDK does, so `options` can be empty
-    /// when the environment (or an instance/task role) already provides
-    /// everything needed.
+    /// provider's config-key enum matches the URL's scheme. Anything not in
+    /// `options` is resolved as Polars does it — environment variables
+    /// (`AWS_*`, `GOOGLE_*`, `AZURE_*`) and, for S3, the shared `~/.aws` files —
+    /// so `options` can be empty when those (or an instance/task role) already
+    /// provide everything needed.
     pub fn from_url<I, K, V>(url: &str, options: I) -> IoResult<Self>
     where
         I: IntoIterator<Item = (K, V)>,
@@ -138,7 +138,7 @@ where
         .into_iter()
         .map(|(k, v)| (k.as_ref().to_string(), v.into()))
         .collect();
-    object_store::parse_url_opts(&parsed, options).map_err(IoError::other)
+    crate::cloud_config::build_store(&parsed, &options)
 }
 
 impl ReadSource for ObjectStoreSource {
