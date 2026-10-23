@@ -30,7 +30,9 @@ impl SpssReader {
     /// caller-supplied remote-object backend.
     pub fn open_source(source: Arc<dyn ReadSource>) -> Result<Self> {
         let file = source.open_reader()?;
-        let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
+        // The dictionary is small (well under 1MB for 1000+ variables); a bigger buffer
+        // just makes an object-store source fetch that much extra up front.
+        let mut reader = BufReader::with_capacity(1 << 20, file);
         let header = read_header(&mut reader)?;
         let metadata = read_metadata(&mut reader, &header)?;
         Ok(Self {

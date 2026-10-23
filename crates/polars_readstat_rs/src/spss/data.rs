@@ -594,7 +594,11 @@ pub fn read_data_columns_uncompressed(
         .sum::<usize>();
 
     let file = source.open_reader()?;
-    let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
+    // One call per chunk (uncompressed data only): don't buffer 8MB for a smaller chunk.
+    let capacity = limit
+        .saturating_mul(record_len)
+        .clamp(64 * 1024, 8 * 1024 * 1024);
+    let mut reader = BufReader::with_capacity(capacity, file);
     reader.seek(SeekFrom::Start(data_offset))?;
 
     let total_rows = metadata.row_count as usize;
@@ -1368,7 +1372,11 @@ pub fn read_data_frame_with_indicators(
         .sum::<usize>();
 
     let file = source.open_reader()?;
-    let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
+    // One call per chunk (uncompressed data only): don't buffer 8MB for a smaller chunk.
+    let capacity = limit
+        .saturating_mul(record_len)
+        .clamp(64 * 1024, 8 * 1024 * 1024);
+    let mut reader = BufReader::with_capacity(capacity, file);
     reader.seek(SeekFrom::Start(data_offset))?;
 
     let total_rows = metadata.row_count as usize;

@@ -29,6 +29,7 @@ use crate::source::{ReadSeek, ReadSource};
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectMeta, ObjectStore, ObjectStoreExt};
 use std::io::{Error as IoError, ErrorKind, Read, Result as IoResult, Seek, SeekFrom};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::runtime::Runtime;
 use url::Url;
@@ -60,6 +61,16 @@ pub(crate) fn shared_runtime() -> &'static Runtime {
 pub struct ObjectStoreSource {
     store: Arc<dyn ObjectStore>,
     meta: ObjectMeta,
+    stats: Arc<FetchStats>,
+}
+
+/// Range requests issued and bytes fetched by every reader opened from one
+/// [`ObjectStoreSource`] — for measuring how a parser behaves against object
+/// storage (each request is a network round trip there).
+#[derive(Debug, Default)]
+struct FetchStats {
+    requests: AtomicUsize,
+    bytes: AtomicU64,
 }
 
 impl ObjectStoreSource {
@@ -71,7 +82,20 @@ impl ObjectStoreSource {
         let meta = shared_runtime()
             .block_on(store.head(&path))
             .map_err(IoError::other)?;
-        Ok(Self { store, meta })
+        Ok(Self {
+            store,
+            meta,
+            stats: Arc::default(),
+        })
+    }
+
+    /// `(range requests, bytes fetched)` so far, across all readers opened
+    /// from this source.
+    pub fn fetch_stats(&self) -> (usize, u64) {
+        (
+            self.stats.requests.load(Ordering::Relaxed),
+            self.stats.bytes.load(Ordering::Relaxed),
+        )
     }
 
     /// A cloud object addressed by URL — `s3://bucket/key.sas7bdat`,
@@ -122,6 +146,7 @@ impl ReadSource for ObjectStoreSource {
         Ok(Box::new(BlockingObjectReader::new(
             self.store.clone(),
             self.meta.clone(),
+            self.stats.clone(),
         )))
     }
 
@@ -136,6 +161,11 @@ impl ReadSource for ObjectStoreSource {
 const MIN_FETCH: u64 = 1 << 20;
 /// Largest range fetched for one miss, however big the caller's read buffer is.
 const MAX_FETCH: u64 = 8 << 20;
+/// A miss larger than this is split into concurrent range requests of about this
+/// size (at most [`MAX_PARTS`]): one connection rarely saturates the link, and a
+/// sequential stream (e.g. SPSS bytecode) has nothing else in flight.
+const PART_SIZE: u64 = 2 << 20;
+const MAX_PARTS: u64 = 4;
 
 /// `std::io::{Read, Seek}` over a cloud object, by blocking on the shared
 /// background runtime.
@@ -154,12 +184,13 @@ struct BlockingObjectReader {
     pos: u64,
     window_start: u64,
     window: Vec<u8>,
-    /// Number of range requests issued (for tests).
+    /// Number of range requests this reader issued (for tests).
     fetches: usize,
+    stats: Arc<FetchStats>,
 }
 
 impl BlockingObjectReader {
-    fn new(store: Arc<dyn ObjectStore>, meta: ObjectMeta) -> Self {
+    fn new(store: Arc<dyn ObjectStore>, meta: ObjectMeta, stats: Arc<FetchStats>) -> Self {
         Self {
             store,
             meta,
@@ -167,12 +198,46 @@ impl BlockingObjectReader {
             window_start: 0,
             window: Vec::new(),
             fetches: 0,
+            stats,
         }
     }
 
     fn window_end(&self) -> u64 {
         self.window_start + self.window.len() as u64
     }
+}
+
+/// Fetches `range`, as one request if it is small or as up to [`MAX_PARTS`]
+/// concurrent requests otherwise. Returns the bytes and the request count.
+fn fetch_range(
+    store: &Arc<dyn ObjectStore>,
+    location: &ObjectPath,
+    range: std::ops::Range<u64>,
+) -> IoResult<(Vec<u8>, usize)> {
+    let len = range.end - range.start;
+    let n_parts = len.div_ceil(PART_SIZE).clamp(1, MAX_PARTS);
+    let part_len = len.div_ceil(n_parts);
+    let rt = shared_runtime();
+    let handles: Vec<_> = (0..n_parts)
+        .map(|i| {
+            let start = range.start + i * part_len;
+            let end = (start + part_len).min(range.end);
+            let (store, location) = (store.clone(), location.clone());
+            rt.spawn(async move { store.get_range(&location, start..end).await })
+        })
+        .collect();
+    let mut out = Vec::with_capacity(len as usize);
+    rt.block_on(async {
+        for h in handles {
+            let bytes = h
+                .await
+                .map_err(IoError::other)?
+                .map_err(IoError::other)?;
+            out.extend_from_slice(&bytes);
+        }
+        IoResult::Ok(())
+    })?;
+    Ok((out, n_parts as usize))
 }
 
 impl Read for BlockingObjectReader {
@@ -183,12 +248,12 @@ impl Read for BlockingObjectReader {
         if self.pos < self.window_start || self.pos >= self.window_end() {
             let want = (buf.len() as u64).clamp(MIN_FETCH, MAX_FETCH);
             let end = (self.pos + want).min(self.meta.size);
-            let bytes = shared_runtime()
-                .block_on(self.store.get_range(&self.meta.location, self.pos..end))
-                .map_err(IoError::other)?;
-            self.fetches += 1;
+            let (bytes, requests) = fetch_range(&self.store, &self.meta.location, self.pos..end)?;
+            self.fetches += requests;
+            self.stats.requests.fetch_add(requests, Ordering::Relaxed);
+            self.stats.bytes.fetch_add(bytes.len() as u64, Ordering::Relaxed);
             self.window_start = self.pos;
-            self.window = bytes.to_vec();
+            self.window = bytes;
             if self.window.is_empty() {
                 return Ok(0);
             }
@@ -453,7 +518,7 @@ mod tests {
             .block_on(store.put(&path, PutPayload::from(data.clone())))
             .unwrap();
         let meta = shared_runtime().block_on(store.head(&path)).unwrap();
-        let mut r = BlockingObjectReader::new(store, meta);
+        let mut r = BlockingObjectReader::new(store, meta, Arc::default());
 
         // Label-table-like pattern: read a little, skip a few bytes, repeat.
         let mut pos = 100usize;
@@ -486,5 +551,30 @@ mod tests {
         assert_eq!(tail, &data[data.len() - 4..]);
         assert_eq!(r.read(&mut b).unwrap(), 0);
         assert!(r.seek(SeekFrom::Current(-(1 << 40))).is_err());
+    }
+
+    #[test]
+    fn large_miss_is_split_into_concurrent_ranges_with_correct_bytes() {
+        let data: Vec<u8> = (0..9u32 << 20).map(|i| (i % 253) as u8).collect();
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let path = ObjectPath::from("split.bin");
+        shared_runtime()
+            .block_on(store.put(&path, PutPayload::from(data.clone())))
+            .unwrap();
+        let meta = shared_runtime().block_on(store.head(&path)).unwrap();
+        let mut r = BlockingObjectReader::new(store, meta, Arc::default());
+
+        // An 8MiB read buffer asks for one 8MiB window, fetched as 4 x 2MiB parts.
+        let mut buf = vec![0u8; 8 << 20];
+        r.read_exact(&mut buf).unwrap();
+        assert_eq!(buf, &data[..8 << 20]);
+        assert_eq!(r.fetches, 4);
+
+        // The final 1MiB is a single small request.
+        let mut rest = Vec::new();
+        r.read_to_end(&mut rest).unwrap();
+        assert_eq!(rest, &data[8 << 20..]);
+        assert_eq!(r.fetches, 5);
+        assert_eq!(r.stats.bytes.load(Ordering::Relaxed), data.len() as u64);
     }
 }
