@@ -95,6 +95,7 @@ fn stata_from_source_matches_path() {
             None,
             true,
             None,
+            None,
         )
         .map_err(|e| e.to_string())
         .and_then(stream_row_count)
@@ -177,6 +178,7 @@ fn spss_from_source_matches_path() {
             0,
             None,
             true,
+            None,
             None,
         )
         .map_err(|e| e.to_string())

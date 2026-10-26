@@ -493,6 +493,73 @@ pub(crate) fn append_row_index_schema(
     Ok(schema)
 }
 
+/// A requested subset of the columns an Arrow FFI schema function declares.
+///
+/// Indices refer to that schema: the file's columns in order, then the row-index
+/// column last when one was asked for.
+pub(crate) struct ColumnSubset {
+    /// Data columns to decode, by index into the file's columns; `None` = all.
+    pub decode_indices: Option<Vec<usize>>,
+    /// The same columns by name, for readers that select by name.
+    pub decode_names: Option<Vec<String>>,
+    /// Whether the row-index column is part of the output.
+    pub want_row_index: bool,
+    /// The schema to export: the requested columns, in request order.
+    pub schema: polars::prelude::Schema,
+}
+
+pub(crate) fn resolve_column_subset(
+    full: polars::prelude::Schema,
+    columns: Option<&[usize]>,
+    has_row_index: bool,
+) -> polars::prelude::PolarsResult<ColumnSubset> {
+    use polars::prelude::{PolarsError, Schema};
+
+    let Some(columns) = columns else {
+        return Ok(ColumnSubset {
+            decode_indices: None,
+            decode_names: None,
+            want_row_index: has_row_index,
+            schema: full,
+        });
+    };
+    let n_data = full.len() - usize::from(has_row_index);
+
+    let mut seen = std::collections::HashSet::new();
+    let mut schema = Schema::with_capacity(columns.len());
+    let mut indices = Vec::new();
+    let mut names = Vec::new();
+    for &i in columns {
+        let (name, dtype) = full.get_at_index(i).ok_or_else(|| {
+            PolarsError::ComputeError(format!("column index {i} out of range ({} columns)", full.len()).into())
+        })?;
+        if !seen.insert(i) {
+            return Err(PolarsError::ComputeError(format!("column index {i} requested twice").into()));
+        }
+        schema.with_column(name.clone(), dtype.clone());
+        if i < n_data {
+            indices.push(i);
+            names.push(name.to_string());
+        }
+    }
+    let want_row_index = has_row_index && seen.contains(&n_data);
+
+    // A batch with no columns has no row count, so when only the row index (or
+    // nothing) is wanted still decode one column to carry it; it is not exported.
+    if indices.is_empty() && n_data > 0 {
+        let (name, _) = full.get_at_index(0).expect("n_data > 0");
+        indices.push(0);
+        names.push(name.to_string());
+    }
+
+    Ok(ColumnSubset {
+        decode_indices: Some(indices),
+        decode_names: Some(names),
+        want_row_index,
+        schema,
+    })
+}
+
 pub fn compress_df_if_enabled(
     df: &DataFrame,
     opts: &CompressOptionsLite,

@@ -80,7 +80,7 @@ fn from_source_matches_path_for_all_sas_files() {
             }
         };
         let rows_via_source =
-            match read_to_arrow_stream_ffi_from_source(source, None, true, None, 0, None, true, None) {
+            match read_to_arrow_stream_ffi_from_source(source, None, true, None, 0, None, true, None, None) {
                 Ok(p) => stream_row_count(p),
                 Err(e) => {
                     mismatches.push(format!("{path_str}: source stream failed: {e}"));

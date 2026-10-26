@@ -177,11 +177,14 @@ pub fn read_to_arrow_stream_ffi_from_source(
     n_rows: Option<usize>,
     preserve_order: bool,
     row_index_name: Option<String>,
+    columns: Option<Vec<usize>>,
 ) -> PolarsResult<*mut ArrowArrayStream> {
     let reader = SpssReader::open_source(source.clone())
         .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
     let value_labels_as_strings = value_labels_as_strings.unwrap_or(true);
-    let schema = schema_from_spss_metadata(reader.metadata(), value_labels_as_strings, None, row_index_name.as_deref())?;
+    let full_schema = schema_from_spss_metadata(reader.metadata(), value_labels_as_strings, None, row_index_name.as_deref())?;
+    let subset = crate::resolve_column_subset(full_schema, columns.as_deref(), row_index_name.is_some())?;
+    let schema = subset.schema.clone();
     let field = build_struct_field(&Arc::new(schema));
     let field_for_iter = field.clone();
 
@@ -193,8 +196,8 @@ pub fn read_to_arrow_stream_ffi_from_source(
         value_labels_as_strings,
         chunk_size,
         preserve_order,
-        row_index_name,
-        None,
+        if subset.want_row_index { row_index_name } else { None },
+        subset.decode_names.clone(),
         offset,
         n_rows,
         None,
