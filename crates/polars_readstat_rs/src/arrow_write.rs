@@ -9,7 +9,7 @@
 //! The format writers need the whole table, so all batches are combined in memory
 //! before writing.
 
-use crate::{SasWriter, SpssWriter, StataWriter};
+use crate::{write_por, PorWriteOptions, SasWriter, SpssWriter, StataWriter, XptWriter};
 use polars::prelude::*;
 use polars_arrow::array::{Array, PrimitiveArray, StructArray};
 use polars_arrow::datatypes::ArrowDataType;
@@ -27,6 +27,14 @@ pub enum ArrowWriteFormat {
     Stata { compress: bool },
     /// An SPSS `.sav` file; `compressed` selects standard SAV compression.
     Spss { compressed: bool },
+    /// A SAS transport (`.xpt`) file; `version` is 5 or 8.
+    Xpt {
+        version: u8,
+        table_name: Option<String>,
+        file_label: Option<String>,
+    },
+    /// An SPSS portable (`.por`) file.
+    Por { file_label: Option<String> },
     /// A SAS import bundle: a `.csv` (or `.csv.gz`) data file and a `.sas` script.
     SasCsvImport {
         dataset_name: Option<String>,
@@ -194,6 +202,44 @@ pub fn write_arrow_ffi(
     builder.write(path, format, options)
 }
 
+/// XPT stores numbers as IBM floating point, which reaches about 7.2e75 in size. A larger value
+/// would be written as missing, so find the first such value. (A value too small to hold is
+/// written as zero, which is not refused: tiny values are rounding noise far more often than
+/// data.)
+fn value_outside_ibm_float_range(df: &DataFrame) -> Option<(String, f64)> {
+    const LARGEST: f64 = 7.237005577332262e75; // (1 - 16^-14) * 16^63
+    for col in df.columns() {
+        if !matches!(col.dtype(), DataType::Float32 | DataType::Float64) {
+            continue;
+        }
+        let values = col.cast(&DataType::Float64).ok()?;
+        let bad = values
+            .f64()
+            .ok()?
+            .iter()
+            .flatten()
+            .find(|v| v.is_finite() && v.abs() > LARGEST);
+        if let Some(value) = bad {
+            return Some((col.name().to_string(), value));
+        }
+    }
+    None
+}
+
+/// Whether the table has only text columns and its last row is blank in all of them. An XPT
+/// file stores no row count, so such a row cannot be told apart from the padding after the data.
+fn ends_with_blank_text_row(df: &DataFrame) -> bool {
+    let height = df.height();
+    if height == 0 || df.width() == 0 {
+        return false;
+    }
+    df.columns().iter().all(|col| {
+        col.str()
+            .map(|strings| strings.get(height - 1).is_none_or(|s| s.trim_end().is_empty()))
+            .unwrap_or(false)
+    })
+}
+
 fn write_table(
     path: &Path,
     format: ArrowWriteFormat,
@@ -217,6 +263,40 @@ fn write_table(
                 writer = writer.with_variable_labels(options.variable_labels);
             }
             writer.write_df(&df).map_err(|e| io(&e))?;
+            Ok(vec![path.to_path_buf()])
+        }
+        ArrowWriteFormat::Xpt { version, table_name, file_label } => {
+            if let Some((column, value)) = value_outside_ibm_float_range(&df) {
+                return Err(invalid(format!(
+                    "column '{column}' has the value {value:e}, outside the range an XPT file can hold \
+                     (up to about 7.2e75 in size); it would be written as missing"
+                )));
+            }
+            if ends_with_blank_text_row(&df) {
+                return Err(invalid(
+                    "the last row is blank in every column, and an XPT file has no row count, so it would \
+                     be read back as padding and lost; remove trailing blank rows or add a numeric column",
+                ));
+            }
+            let mut writer = XptWriter::new(path).with_version(version);
+            if let Some(name) = table_name {
+                writer = writer.with_table_name(name);
+            }
+            if let Some(label) = file_label {
+                writer = writer.with_file_label(label);
+            }
+            if !options.variable_labels.is_empty() {
+                writer = writer.with_variable_labels(options.variable_labels);
+            }
+            writer.write_df(&df)?;
+            Ok(vec![path.to_path_buf()])
+        }
+        ArrowWriteFormat::Por { file_label } => {
+            let opts = PorWriteOptions {
+                file_label,
+                variable_labels: (!options.variable_labels.is_empty()).then_some(options.variable_labels),
+            };
+            write_por(&df, path, opts).map_err(|e| io(&e))?;
             Ok(vec![path.to_path_buf()])
         }
         ArrowWriteFormat::SasCsvImport {

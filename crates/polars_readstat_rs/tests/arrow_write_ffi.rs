@@ -6,7 +6,7 @@ use polars_arrow::array::StructArray;
 use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
 use polars_arrow::ffi::{export_array_to_c, export_field_to_c, ArrowArray, ArrowSchema};
 use polars_readstat_rs::arrow_write::{write_arrow_ffi, ArrowWriteFormat, ArrowWriteOptions};
-use polars_readstat_rs::readstat_scan;
+use polars_readstat_rs::{readstat_scan, scan_por, ScanOptions};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -165,3 +165,189 @@ fn zero_batches_writes_an_empty_table() {
     assert_eq!(schema.len(), 4);
     assert_eq!(read_back(&path).height(), 0);
 }
+
+#[test]
+fn xpt_roundtrip_both_versions() {
+    for version in [5u8, 8u8] {
+        let dir = TempDir::new(&format!("xpt{version}"));
+        let path = dir.path().join("out.xpt");
+        let df = sample();
+        let (schema, batches) = export(&df, 2);
+        let mut labels = HashMap::new();
+        labels.insert("score".to_string(), "Test score".to_string());
+        write_arrow_ffi(
+            &path,
+            ArrowWriteFormat::Xpt { version, table_name: Some("MYDATA".into()), file_label: Some("A file".into()) },
+            ArrowWriteOptions { variable_labels: labels },
+            schema,
+            batches,
+        )
+        .unwrap();
+
+        let back = read_back(&path);
+        assert_eq!(back.height(), 4, "version {version}");
+        let score = back.column("score").unwrap().f64().unwrap().to_vec();
+        assert_eq!(score, vec![Some(1.5), None, Some(3.25), Some(-4.0)], "version {version}");
+        let name = back.column("name").unwrap().str().unwrap().iter().collect::<Vec<_>>();
+        assert_eq!(name, vec![Some("alpha"), Some("beta"), None, Some("delta")], "version {version}");
+    }
+}
+
+#[test]
+fn xpt_rejects_an_unknown_version() {
+    let dir = TempDir::new("xptbad");
+    let df = sample();
+    let (schema, batches) = export(&df, 1);
+    let result = write_arrow_ffi(
+        &dir.path().join("out.xpt"),
+        ArrowWriteFormat::Xpt { version: 6, table_name: None, file_label: None },
+        ArrowWriteOptions::default(),
+        schema,
+        batches,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn por_roundtrip() {
+    let dir = TempDir::new("por");
+    let path = dir.path().join("out.por");
+    let df = sample();
+    let (schema, batches) = export(&df, 2);
+    write_arrow_ffi(
+        &path,
+        ArrowWriteFormat::Por { file_label: Some("A file".into()) },
+        ArrowWriteOptions::default(),
+        schema,
+        batches,
+    )
+    .unwrap();
+
+    let back = scan_por(&path, ScanOptions::default()).unwrap().collect().unwrap();
+    assert_eq!(back.height(), 4);
+    // POR names are upper case
+    assert_eq!(back.column("SCORE").unwrap().f64().unwrap().to_vec(),
+               vec![Some(1.5), None, Some(3.25), Some(-4.0)]);
+    // a missing string is written and read back as an empty string
+    assert_eq!(back.column("NAME").unwrap().str().unwrap().iter().collect::<Vec<_>>(),
+               vec![Some("alpha"), Some("beta"), Some(""), Some("delta")]);
+}
+
+fn one_column(name: &str, values: Vec<Option<&str>>) -> DataFrame {
+    df!(name => values).unwrap()
+}
+
+#[test]
+fn por_keeps_very_large_and_small_numbers() {
+    let dir = TempDir::new("porbig");
+    let path = dir.path().join("big.por");
+    let values = vec![1.7498005798264095e100, -2e307, 1e17, 1e18, 3e17, 5.5e19, 123.456, 0.5, -7.0, 1e-5];
+    let df = df!("x" => values.clone()).unwrap();
+    let (schema, batches) = export(&df, 1);
+    write_arrow_ffi(&path, ArrowWriteFormat::Por { file_label: None }, ArrowWriteOptions::default(), schema, batches).unwrap();
+    let back = scan_por(&path, ScanOptions::default()).unwrap().collect().unwrap();
+    let got = back.column("X").unwrap().f64().unwrap().to_vec();
+    for (want, got) in values.iter().zip(got) {
+        let got = got.expect("not missing");
+        assert!((got - want).abs() <= 1e-9 * want.abs().max(1e-300), "{want} came back as {got}");
+    }
+}
+
+#[test]
+fn por_all_empty_text_column_stays_text() {
+    let dir = TempDir::new("porempty");
+    let path = dir.path().join("empty_text.por");
+    let df = one_column("T", vec![Some(""), Some(""), None]);
+    let (schema, batches) = export(&df, 1);
+    write_arrow_ffi(&path, ArrowWriteFormat::Por { file_label: None }, ArrowWriteOptions::default(), schema, batches).unwrap();
+    let back = scan_por(&path, ScanOptions::default()).unwrap().collect().unwrap();
+    assert_eq!(back.column("T").unwrap().dtype(), &DataType::String);
+    assert_eq!(back.height(), 3);
+}
+
+#[test]
+fn por_refuses_characters_it_cannot_store() {
+    let dir = TempDir::new("pornonascii");
+    for text in ["caf\u{e9}", "line\nbreak", "\u{6211}"] {
+        let path = dir.path().join("t.por");
+        let df = one_column("T", vec![Some("fine"), Some(text)]);
+        let (schema, batches) = export(&df, 1);
+        let result = write_arrow_ffi(&path, ArrowWriteFormat::Por { file_label: None }, ArrowWriteOptions::default(), schema, batches);
+        let message = result.expect_err("must be refused").to_string();
+        assert!(message.contains("cannot be stored in an SPSS portable file"), "{message}");
+    }
+}
+
+#[test]
+fn xpt_refuses_a_blank_last_row_in_an_all_text_table() {
+    let dir = TempDir::new("xptblank");
+    let path = dir.path().join("t.xpt");
+    let df = df!("a" => ["x", "y", ""], "b" => ["p", "q", ""]).unwrap();
+    let (schema, batches) = export(&df, 1);
+    let message = write_arrow_ffi(
+        &path, ArrowWriteFormat::Xpt { version: 8, table_name: None, file_label: None },
+        ArrowWriteOptions::default(), schema, batches,
+    )
+    .expect_err("must be refused")
+    .to_string();
+    assert!(message.contains("would be read back as padding"), "{message}");
+
+    // a numeric column makes the row distinguishable, and a blank row in the middle is fine
+    for df in [
+        df!("a" => ["x", "y", ""], "n" => [Some(1.0), Some(2.0), None]).unwrap(),
+        df!("a" => ["x", "", "z"], "b" => ["p", "", "r"]).unwrap(),
+    ] {
+        let (schema, batches) = export(&df, 1);
+        write_arrow_ffi(
+            &path, ArrowWriteFormat::Xpt { version: 8, table_name: None, file_label: None },
+            ArrowWriteOptions::default(), schema, batches,
+        )
+        .unwrap();
+        assert_eq!(read_back(&path).height(), 3);
+    }
+}
+
+#[test]
+fn por_date_times_in_every_unit() {
+    // 2018-03-17 12:34:56 UTC in milliseconds, microseconds and nanoseconds
+    let ms: i64 = 1_521_290_096_000;
+    for (unit, scale) in [(TimeUnit::Milliseconds, 1i64), (TimeUnit::Microseconds, 1_000), (TimeUnit::Nanoseconds, 1_000_000)] {
+        let dir = TempDir::new("pordt");
+        let path = dir.path().join("dt.por");
+        let col = Series::new("T".into(), [ms * scale]).cast(&DataType::Datetime(unit, None)).unwrap();
+        let df = DataFrame::new(1, vec![col.into_column()]).unwrap();
+        let (schema, batches) = export(&df, 1);
+        write_arrow_ffi(&path, ArrowWriteFormat::Por { file_label: None }, ArrowWriteOptions::default(), schema, batches).unwrap();
+        let back = scan_por(&path, ScanOptions::default()).unwrap().collect().unwrap();
+        let got = back.column("T").unwrap().cast(&DataType::Int64).unwrap().i64().unwrap().get(0).unwrap();
+        assert_eq!(got, ms, "{unit:?}: stored {got} ms, expected {ms} ms");
+    }
+}
+
+#[test]
+fn xpt_refuses_numbers_outside_its_range() {
+    let dir = TempDir::new("xptrange");
+    for bad in [1.7e100, -2e307, 7.3e75] {
+        let path = dir.path().join("t.xpt");
+        let df = df!("x" => [1.0, bad]).unwrap();
+        let (schema, batches) = export(&df, 1);
+        let message = write_arrow_ffi(
+            &path, ArrowWriteFormat::Xpt { version: 8, table_name: None, file_label: None },
+            ArrowWriteOptions::default(), schema, batches,
+        )
+        .expect_err("must be refused")
+        .to_string();
+        assert!(message.contains("outside the range an XPT file can hold"), "{message}");
+    }
+    // the largest values it can hold are fine, and tiny ones are written as zero
+    let path = dir.path().join("ok.xpt");
+    let df = df!("x" => [7.0e75, -7.0e75, 1e-300, 0.0, 123.456]).unwrap();
+    let (schema, batches) = export(&df, 1);
+    write_arrow_ffi(
+        &path, ArrowWriteFormat::Xpt { version: 8, table_name: None, file_label: None },
+        ArrowWriteOptions::default(), schema, batches,
+    )
+    .unwrap();
+    assert_eq!(read_back(&path).height(), 5);
+}
+

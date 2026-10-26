@@ -52,6 +52,21 @@ static POR_ASCII_LOOKUP: [u8; 256] = {
     t
 };
 
+/// The characters a portable file can hold: the values of [`POR_ASCII_LOOKUP`], indexed by
+/// character. Anything else (control characters, line breaks, everything beyond ASCII) has no
+/// place in the file's character table and would be read back as a NUL.
+static POR_ENCODABLE: [bool; 256] = {
+    let mut t = [false; 256];
+    let mut i = 0;
+    while i < 256 {
+        if POR_ASCII_LOOKUP[i] != 0 {
+            t[POR_ASCII_LOOKUP[i] as usize] = true;
+        }
+        i += 1;
+    }
+    t
+};
+
 // ─── Variable / Metadata ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -916,6 +931,21 @@ impl<W: Write> PorLineWriter<W> {
         }
         if v < 0.0 { self.write_byte(b'-')?; }
         let abs = v.abs();
+        if abs >= LARGE_MAGNITUDE {
+            // Too large for the integer digits below (a u64 would saturate): write a mantissa
+            // that fits and the power of 30 it is multiplied by.
+            let mut mantissa = abs;
+            let mut exponent: u64 = 0;
+            while mantissa >= LARGE_MAGNITUDE {
+                mantissa /= 30.0;
+                exponent += 1;
+            }
+            self.write_base30_int(mantissa.round() as u64)?;
+            self.write_byte(b'+')?;
+            self.write_base30_int(exponent)?;
+            self.write_byte(b'/')?;
+            return Ok(());
+        }
         let int_part = abs.trunc() as u64;
         let mut frac = abs.fract();
 
@@ -967,6 +997,10 @@ impl<W: Write> PorLineWriter<W> {
         Ok(())
     }
 }
+
+/// From this magnitude up, numbers are written as a mantissa and a power of 30 (30^12 is about
+/// 5.3e17, comfortably inside a u64).
+const LARGE_MAGNITUDE: f64 = 3.0e17;
 
 fn count_base30_digits(mut n: u64) -> usize {
     if n == 0 { return 1; }
@@ -1022,6 +1056,25 @@ pub fn write_por_to_destination(
     destination: WriteTarget,
     opts: PorWriteOptions,
 ) -> Result<()> {
+    // Text is written as raw bytes translated through the file's character table, so a byte the
+    // table cannot represent (anything beyond plain printable ASCII, and line breaks) would be
+    // stored as a NUL or break the file's line layout. Refuse it rather than write bad data.
+    for col in df.columns() {
+        if let Ok(strings) = col.str() {
+            if strings
+                .iter()
+                .flatten()
+                .any(|s| s.bytes().any(|b| !POR_ENCODABLE[b as usize]))
+            {
+                return Err(Error::Unsupported(format!(
+                    "column '{}' contains characters that cannot be stored in an SPSS portable file \
+                     (only plain printable ASCII text is supported)",
+                    col.name()
+                )));
+            }
+        }
+    }
+
     let writer = destination.create_writer()?;
     let mut w = PorLineWriter::new(writer);
 
@@ -1098,7 +1151,7 @@ pub fn write_por_to_destination(
         let (str_width, data) = match dtype {
             DataType::String => {
                 let ca = col.str().map_err(polars_err)?.clone();
-                let width = ca.iter().filter_map(|o| o).map(|s| s.len()).max().unwrap_or(8) as u32;
+                let width = ca.iter().filter_map(|o| o).map(|s| s.len()).max().unwrap_or(8).max(1) as u32;
                 (width, PorWriteData::String(ca))
             }
             DataType::Float64 => (0, PorWriteData::Float64(col.f64().map_err(polars_err)?.clone())),
@@ -1107,9 +1160,16 @@ pub fn write_por_to_destination(
                 let s = col.as_materialized_series().cast(&DataType::Int32).map_err(polars_err)?;
                 (0, PorWriteData::Date(s.i32().map_err(polars_err)?.clone()))
             }
-            DataType::Datetime(_, _) => {
+            DataType::Datetime(unit, _) => {
                 let s = col.as_materialized_series().cast(&DataType::Int64).map_err(polars_err)?;
-                (0, PorWriteData::Datetime(s.i64().map_err(polars_err)?.clone()))
+                let raw = s.i64().map_err(polars_err)?;
+                // The writer below works in milliseconds, whatever the column's unit.
+                let millis: Int64Chunked = match unit {
+                    TimeUnit::Milliseconds => raw.clone(),
+                    TimeUnit::Microseconds => raw.apply_values(|v| v.div_euclid(1_000)),
+                    TimeUnit::Nanoseconds => raw.apply_values(|v| v.div_euclid(1_000_000)),
+                };
+                (0, PorWriteData::Datetime(millis))
             }
             DataType::Time => {
                 let s = col.as_materialized_series().cast(&DataType::Int64).map_err(polars_err)?;
