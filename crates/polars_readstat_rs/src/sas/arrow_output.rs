@@ -206,3 +206,61 @@ pub fn read_to_arrow_stream_ffi_from_source(
     let stream = export_iterator(iter, field);
     Ok(Box::into_raw(Box::new(stream)))
 }
+
+/// Schema of an XPT (SAS transport) file, read through a caller-supplied [`ReadSource`].
+pub fn read_xpt_to_arrow_schema_ffi_from_source(
+    source: Arc<dyn ReadSource>,
+    row_index_name: Option<&str>,
+) -> PolarsResult<*mut ArrowSchema> {
+    let meta = crate::sas::xpt::read_xpt_metadata_from_source(source.as_ref())?;
+    let schema = crate::sas::xpt::schema_from_xpt_metadata(&meta, None, row_index_name)?;
+    let field = build_struct_field(&Arc::new(schema));
+    Ok(Box::into_raw(Box::new(export_field_to_c(&field))))
+}
+
+/// Stream of an XPT (SAS transport) file, read through a caller-supplied [`ReadSource`].
+///
+/// `columns`, `preserve_order` and `row_index_name` behave as for
+/// [`read_to_arrow_stream_ffi_from_source`].
+pub fn read_xpt_to_arrow_stream_ffi_from_source(
+    source: Arc<dyn ReadSource>,
+    threads: Option<usize>,
+    missing_string_as_null: bool,
+    chunk_size: Option<usize>,
+    offset: usize,
+    n_rows: Option<usize>,
+    preserve_order: bool,
+    row_index_name: Option<String>,
+    columns: Option<Vec<usize>>,
+) -> PolarsResult<*mut ArrowArrayStream> {
+    let meta = crate::sas::xpt::read_xpt_metadata_from_source(source.as_ref())?;
+    let full_schema = crate::sas::xpt::schema_from_xpt_metadata(&meta, None, row_index_name.as_deref())?;
+    let subset = crate::resolve_column_subset(full_schema, columns.as_deref(), row_index_name.is_some())?;
+    let field = build_struct_field(&Arc::new(subset.schema.clone()));
+    let field_for_iter = field.clone();
+
+    let mut iter = crate::sas::xpt::xpt_batch_iter(
+        source,
+        threads,
+        missing_string_as_null,
+        chunk_size,
+        preserve_order,
+        if subset.want_row_index { row_index_name } else { None },
+        subset.decode_names.clone(),
+        offset,
+        n_rows,
+    )?;
+    let iter = Box::new(std::iter::from_fn(move || {
+        let next = iter.next()?;
+        match next {
+            Ok(df) => match df_to_struct_array(&df, &field_for_iter) {
+                Ok(array) => Some(Ok(Box::new(array) as Box<dyn polars_arrow::array::Array>)),
+                Err(e) => Some(Err(e)),
+            },
+            Err(e) => Some(Err(e)),
+        }
+    }));
+
+    let stream = export_iterator(iter, field);
+    Ok(Box::into_raw(Box::new(stream)))
+}

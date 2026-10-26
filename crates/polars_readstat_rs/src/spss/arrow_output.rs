@@ -216,3 +216,91 @@ pub fn read_to_arrow_stream_ffi_from_source(
     let stream = export_iterator(iter, field);
     Ok(Box::into_raw(Box::new(stream)))
 }
+
+fn por_error(e: impl std::fmt::Display) -> PolarsError {
+    PolarsError::ComputeError(e.to_string().into())
+}
+
+/// Schema of an SPSS portable (`.por`) file, read through a caller-supplied [`ReadSource`].
+pub fn read_por_to_arrow_schema_ffi_from_source(
+    source: Arc<dyn ReadSource>,
+    row_index_name: Option<&str>,
+) -> PolarsResult<*mut ArrowSchema> {
+    let meta = crate::spss::por::metadata_por_from_source(source.as_ref()).map_err(por_error)?;
+    let mut schema = crate::spss::por::schema_from_por_metadata(&meta);
+    if let Some(name) = row_index_name {
+        schema = crate::append_row_index_schema(schema, name)?;
+    }
+    let field = build_struct_field(&Arc::new(schema));
+    Ok(Box::into_raw(Box::new(export_field_to_c(&field))))
+}
+
+/// Stream of an SPSS portable (`.por`) file, read through a caller-supplied [`ReadSource`].
+///
+/// A `.por` file is read in one sequential pass into a table, which is then handed out in
+/// batches of `chunk_size` rows (default 65,536), so memory is the size of the table.
+/// `columns` and `row_index_name` behave as for [`read_to_arrow_stream_ffi_from_source`];
+/// order is always the file's order.
+pub fn read_por_to_arrow_stream_ffi_from_source(
+    source: Arc<dyn ReadSource>,
+    missing_string_as_null: bool,
+    chunk_size: Option<usize>,
+    offset: usize,
+    n_rows: Option<usize>,
+    row_index_name: Option<String>,
+    columns: Option<Vec<usize>>,
+) -> PolarsResult<*mut ArrowArrayStream> {
+    let (meta, mut df) = crate::spss::por::read_por_from_source(source.as_ref()).map_err(por_error)?;
+
+    let mut full_schema = crate::spss::por::schema_from_por_metadata(&meta);
+    if let Some(name) = row_index_name.as_deref() {
+        full_schema = crate::append_row_index_schema(full_schema, name)?;
+    }
+    let subset = crate::resolve_column_subset(full_schema, columns.as_deref(), row_index_name.is_some())?;
+
+    if offset > 0 || n_rows.is_some() {
+        df = df.slice(offset as i64, n_rows.unwrap_or(usize::MAX));
+    }
+    if missing_string_as_null {
+        let names: Vec<PlSmallStr> = df.get_column_names().into_iter().cloned().collect();
+        for name in names {
+            if let Ok(strings) = df.column(name.as_str())?.str() {
+                let blanked: StringChunked = strings
+                    .iter()
+                    .map(|v| v.filter(|s| !s.is_empty()))
+                    .collect_ca(name.clone());
+                df.with_column(blanked.into_column())?;
+            }
+        }
+    }
+    if let (true, Some(name)) = (subset.want_row_index, row_index_name.as_deref()) {
+        df = crate::append_row_index(df, name, offset)?;
+    }
+    if let Some(names) = &subset.decode_names {
+        let mut keep: Vec<&str> = names.iter().map(String::as_str).collect();
+        if let (true, Some(name)) = (subset.want_row_index, row_index_name.as_deref()) {
+            keep.push(name);
+        }
+        df = df.select(keep)?;
+    }
+
+    let field = build_struct_field(&Arc::new(subset.schema.clone()));
+    let field_for_iter = field.clone();
+    let batch_rows = chunk_size.unwrap_or(65_536).max(1);
+    let total = df.height();
+    let mut start = 0usize;
+    let iter = Box::new(std::iter::from_fn(move || {
+        if start >= total {
+            return None;
+        }
+        let batch = df.slice(start as i64, batch_rows);
+        start += batch_rows;
+        match df_to_struct_array(&batch, &field_for_iter) {
+            Ok(array) => Some(Ok(Box::new(array) as Box<dyn polars_arrow::array::Array>)),
+            Err(e) => Some(Err(e)),
+        }
+    }));
+
+    let stream = export_iterator(iter, field);
+    Ok(Box::into_raw(Box::new(stream)))
+}
