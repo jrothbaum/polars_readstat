@@ -101,3 +101,6 @@ harness = false
 [profile.test]
 debug = 0
 incremental = false
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libc = "0.2"

@@ -4,6 +4,7 @@
 //! It supports all format variants (32/64-bit, big/little endian) and
 //! all compression types (None, RLE, RDC).
 
+pub mod arrow_write;
 #[cfg(feature = "cloud")]
 pub mod cloud_destination;
 #[cfg(feature = "cloud")]
