@@ -59,7 +59,7 @@ fn stata_from_source_matches_path() {
         };
         let source = Arc::new(LocalFileSource::new(path)) as Arc<dyn polars_readstat_rs::ReadSource>;
         let schema_via_source =
-            match read_to_arrow_schema_ffi_from_source(source.clone(), Some(true)) {
+            match read_to_arrow_schema_ffi_from_source(source.clone(), Some(true), None) {
                 Ok(p) => schema_field_names(p),
                 Err(e) => {
                     mismatches.push(format!("{path_str}: source schema failed: {e}"));
@@ -92,6 +92,8 @@ fn stata_from_source_matches_path() {
             Some(true),
             None,
             0,
+            None,
+            true,
             None,
         )
         .map_err(|e| e.to_string())
@@ -140,7 +142,7 @@ fn spss_from_source_matches_path() {
         };
         let source = Arc::new(LocalFileSource::new(path)) as Arc<dyn polars_readstat_rs::ReadSource>;
         let schema_via_source =
-            match read_to_arrow_schema_ffi_from_source(source.clone(), Some(true)) {
+            match read_to_arrow_schema_ffi_from_source(source.clone(), Some(true), None) {
                 Ok(p) => schema_field_names(p),
                 Err(e) => {
                     mismatches.push(format!("{path_str}: source schema failed: {e}"));
@@ -173,6 +175,8 @@ fn spss_from_source_matches_path() {
             Some(true),
             None,
             0,
+            None,
+            true,
             None,
         )
         .map_err(|e| e.to_string())

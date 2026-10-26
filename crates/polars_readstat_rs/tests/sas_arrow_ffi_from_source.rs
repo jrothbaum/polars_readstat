@@ -58,7 +58,7 @@ fn from_source_matches_path_for_all_sas_files() {
             }
         };
         let source = Arc::new(LocalFileSource::new(path)) as Arc<dyn polars_readstat_rs::ReadSource>;
-        let schema_via_source = match read_to_arrow_schema_ffi_from_source(source.clone()) {
+        let schema_via_source = match read_to_arrow_schema_ffi_from_source(source.clone(), None) {
             Ok(p) => schema_field_names(p),
             Err(e) => {
                 mismatches.push(format!("{path_str}: source schema failed: {e}"));
@@ -80,7 +80,7 @@ fn from_source_matches_path_for_all_sas_files() {
             }
         };
         let rows_via_source =
-            match read_to_arrow_stream_ffi_from_source(source, None, true, None, 0, None) {
+            match read_to_arrow_stream_ffi_from_source(source, None, true, None, 0, None, true, None) {
                 Ok(p) => stream_row_count(p),
                 Err(e) => {
                     mismatches.push(format!("{path_str}: source stream failed: {e}"));

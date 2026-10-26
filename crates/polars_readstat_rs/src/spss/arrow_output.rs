@@ -23,11 +23,20 @@ fn build_struct_field(schema: &SchemaRef) -> ArrowField {
 fn df_to_struct_array(df: &DataFrame, field: &ArrowField) -> PolarsResult<StructArray> {
     let struct_dtype = field.dtype().clone();
     let len = df.height();
-    let arrays: Vec<Box<dyn polars_arrow::array::Array>> = df
-        .columns()
+    let ArrowDataType::Struct(fields) = &struct_dtype else {
+        return Err(PolarsError::ComputeError(
+            "expected a struct field for the batch schema".into(),
+        ));
+    };
+    // Match columns to the schema by name rather than position: a row-index
+    // column is added at the front of each batch but declared last in the schema.
+    let arrays = fields
         .iter()
-        .map(|col| col.clone().rechunk_to_arrow(CompatLevel::newest()))
-        .collect();
+        .map(|f| {
+            df.column(f.name.as_str())
+                .map(|col| col.clone().rechunk_to_arrow(CompatLevel::newest()))
+        })
+        .collect::<PolarsResult<Vec<Box<dyn polars_arrow::array::Array>>>>()?;
     StructArray::try_new(struct_dtype, len, arrays, None)
 }
 
@@ -142,6 +151,7 @@ pub fn read_to_arrow_ffi(path: &Path) -> PolarsResult<(*mut ArrowSchema, *mut Ar
 pub fn read_to_arrow_schema_ffi_from_source(
     source: Arc<dyn ReadSource>,
     value_labels_as_strings: Option<bool>,
+    row_index_name: Option<&str>,
 ) -> PolarsResult<*mut ArrowSchema> {
     let reader = SpssReader::open_source(source)
         .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
@@ -149,7 +159,7 @@ pub fn read_to_arrow_schema_ffi_from_source(
         reader.metadata(),
         value_labels_as_strings.unwrap_or(true),
         None,
-        None,
+        row_index_name,
     )?;
     let field = build_struct_field(&Arc::new(schema));
     Ok(Box::into_raw(Box::new(export_field_to_c(&field))))
@@ -165,11 +175,13 @@ pub fn read_to_arrow_stream_ffi_from_source(
     chunk_size: Option<usize>,
     offset: usize,
     n_rows: Option<usize>,
+    preserve_order: bool,
+    row_index_name: Option<String>,
 ) -> PolarsResult<*mut ArrowArrayStream> {
     let reader = SpssReader::open_source(source.clone())
         .map_err(|e| PolarsError::ComputeError(e.to_string().into()))?;
     let value_labels_as_strings = value_labels_as_strings.unwrap_or(true);
-    let schema = schema_from_spss_metadata(reader.metadata(), value_labels_as_strings, None, None)?;
+    let schema = schema_from_spss_metadata(reader.metadata(), value_labels_as_strings, None, row_index_name.as_deref())?;
     let field = build_struct_field(&Arc::new(schema));
     let field_for_iter = field.clone();
 
@@ -180,8 +192,8 @@ pub fn read_to_arrow_stream_ffi_from_source(
         missing_string_as_null,
         value_labels_as_strings,
         chunk_size,
-        true,
-        None,
+        preserve_order,
+        row_index_name,
         None,
         offset,
         n_rows,
