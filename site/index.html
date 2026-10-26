@@ -412,6 +412,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#reading-from-s3-gcs-or-azure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading from S3, GCS or Azure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#getting-metadata-from-the-file" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -561,6 +572,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#reading-from-s3-gcs-or-azure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading from S3, GCS or Azure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#getting-metadata-from-the-file" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -621,6 +643,11 @@ from polars_readstat import scan_readstat
 lf = scan_readstat(&quot;/path/file.sas7bdat&quot;)
 df = lf.select([&quot;SERIALNO&quot;, &quot;AGEP&quot;]).filter(pl.col(&quot;AGEP&quot;) &gt;= 18).collect()
 </code></pre>
+<h3 id="reading-from-s3-gcs-or-azure">Reading from S3, GCS or Azure</h3>
+<pre><code class="language-python">lf = scan_readstat(&quot;s3://my-bucket/path/file.sas7bdat&quot;)   # also gs:// and az://
+</code></pre>
+<p>Credentials come from the usual <code>AWS_*</code> / <code>GOOGLE_*</code> / <code>AZURE_*</code> environment variables, <code>~/.aws</code> files, or
+<code>storage_options</code>, the same as for Polars. See <a href="read/#cloud-storage">Cloud storage</a>.</p>
 <h3 id="getting-metadata-from-the-file">Getting metadata from the file</h3>
 <pre><code class="language-python">import polars as pl
 from polars_readstat import ScanReadstat

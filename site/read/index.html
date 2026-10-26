@@ -418,6 +418,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#cloud-storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud storage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#compression-options" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -651,6 +662,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#cloud-storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud storage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#compression-options" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -841,7 +863,7 @@ df = lf.collect()
 </code></pre>
 <p>Because <code>scan_readstat</code> returns a <code>LazyFrame</code>, Polars can push operations into the reader before data is loaded:</p>
 <ul>
-<li><strong>Column selection</strong> — only the selected columns are read from disk:
+<li><strong>Column selection</strong> — only the selected columns are decoded and kept (for cloud paths the whole file is still downloaded; see <a href="#cloud-storage">Cloud storage</a>):
   <code>python
   df = scan_readstat("file.sav").select(["id", "age"]).collect()</code></li>
 <li><strong>Row limit</strong> — <code>head()</code> / <code>limit()</code> stops the reader after N rows without loading the full file:
@@ -906,8 +928,54 @@ df = lf.collect()
 <td><code>None</code></td>
 <td>SAS catalog for value labels. See <a href="#sas-catalog">SAS catalog</a>.</td>
 </tr>
+<tr>
+<td><code>storage_options</code></td>
+<td><code>None</code></td>
+<td>Credentials and settings for a cloud <code>path</code> (<code>s3://</code>, <code>gs://</code>, <code>az://</code>). See <a href="#cloud-storage">Cloud storage</a>.</td>
+</tr>
 </tbody>
 </table>
+<h2 id="cloud-storage">Cloud storage</h2>
+<p><code>path</code> can be a cloud URL: <code>s3://</code>, <code>gs://</code> or <code>az://</code>. S3-compatible servers can be used by setting
+<code>aws_endpoint_url</code> in <code>storage_options</code>. It works the same way for every format and for <code>scan_readstat</code>,
+<code>ScanReadstat</code>, <code>read_readstat</code>, <code>read_sas7bcat</code>, and the <code>catalog=</code> argument.</p>
+<pre><code class="language-python">from polars_readstat import scan_readstat
+
+lf = scan_readstat(&quot;s3://my-bucket/path/file.sas7bdat&quot;)
+df = lf.select([&quot;id&quot;, &quot;age&quot;]).collect()
+
+# S3-compatible server (plain HTTP shown for a local test server)
+lf = scan_readstat(&quot;s3://bucket/file.dta&quot;, storage_options={
+    &quot;aws_endpoint_url&quot;: &quot;http://127.0.0.1:9000&quot;,
+    &quot;aws_allow_http&quot;: &quot;true&quot;,
+    &quot;aws_access_key_id&quot;: &quot;...&quot;,
+    &quot;aws_secret_access_key&quot;: &quot;...&quot;,
+})
+
+# A catalog can be a cloud URL too
+lf = scan_readstat(&quot;s3://bucket/file.sas7bdat&quot;, catalog=&quot;s3://bucket/formats.sas7bcat&quot;)
+</code></pre>
+<p><strong>Credentials and region</strong> are resolved the way Polars resolves them for <code>scan_parquet</code>, so the same
+setup works for both. For <code>s3://</code>, from lowest to highest precedence:</p>
+<ol>
+<li>the <code>AWS_*</code> environment variables (<code>AWS_ACCESS_KEY_ID</code>, <code>AWS_SECRET_ACCESS_KEY</code>,
+   <code>AWS_SESSION_TOKEN</code>, <code>AWS_REGION</code>, ...);</li>
+<li>the region in <code>~/.aws/config</code> and the keys in <code>~/.aws/credentials</code>: the first value found in each
+   file (commented-out lines are ignored). <code>AWS_PROFILE</code> is <strong>not</strong> consulted, so with several profiles
+   export the one you want as <code>AWS_*</code> variables;</li>
+<li><code>storage_options</code>, which override everything above. The keys are the ones Polars documents
+   (<code>aws_access_key_id</code>, <code>aws_secret_access_key</code>, <code>aws_session_token</code>, <code>aws_region</code>,
+   <code>aws_endpoint_url</code>, <code>aws_allow_http</code>, ...).</li>
+</ol>
+<p>If no region is set (and no custom endpoint), the bucket's region is looked up once. For <code>gs://</code> and
+<code>az://</code>, the usual <code>GOOGLE_*</code> / <code>AZURE_*</code> environment variables are read first, then <code>storage_options</code>.
+SSO, <code>aws login</code> and assume-role profiles are not read; export their credentials as environment
+variables instead, e.g. <code>eval "$(aws configure export-credentials --format env)"</code>.</p>
+<p><strong>What is downloaded.</strong> The readers fetch the file in large ranges, and every byte is fetched about once
+(roughly 1.0 to 1.1 times the file size). These formats store whole rows together, so
+<code>select(...)</code> / <code>filter(...)</code> do <strong>not</strong> reduce the download; they only reduce what is kept in memory.
+<code>head(n)</code> / <code>limit(n)</code> do: only the first range or two (about 10 to 20 MB) is fetched. In our tests
+download speed was limited by the network link, not the reader.</p>
 <h2 id="compression-options">Compression options</h2>
 <p><code>compress</code> accepts:</p>
 <ul>

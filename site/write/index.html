@@ -504,6 +504,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#writing-to-cloud-storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing to cloud storage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#sas-csv-import-bundle-write_sas_csv_import" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -710,6 +721,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#writing-to-cloud-storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing to cloud storage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#sas-csv-import-bundle-write_sas_csv_import" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -860,6 +882,10 @@ write_xpt(df, &quot;/path/out.xpt&quot;)
 <td>Override format detection. Accepted values: <code>"dta"</code> or <code>"stata"</code> for Stata; <code>"sav"</code>, <code>"zsav"</code>, or <code>"spss"</code> for SPSS; <code>"por"</code> or <code>"spss_por"</code> for SPSS Portable. Inferred from the file extension if omitted.</td>
 </tr>
 <tr>
+<td><code>storage_options</code></td>
+<td>Credentials and settings when <code>path</code> is a cloud URL (<code>s3://</code>, <code>gs://</code>, <code>az://</code>). See <a href="#writing-to-cloud-storage">Writing to cloud storage</a>.</td>
+</tr>
+<tr>
 <td><code>metadata</code></td>
 <td>Metadata from <code>ScanReadstat(...).metadata</code> (dict) or <code>ScanReadstat(...).metadata_df</code> (Polars DataFrame, faster for very wide files). Extracts variable labels, value labels, and formats automatically. See <a href="#preserving-metadata-from-a-source-file">Preserving metadata</a>. Explicit kwargs take precedence.</td>
 </tr>
@@ -994,6 +1020,16 @@ write_xpt(df, &quot;/path/out.xpt&quot;, version=8, table_name=&quot;MYDATA&quot
 write_por(df, &quot;/path/out.por&quot;, file_label=&quot;My dataset&quot;, variable_labels={&quot;ID&quot;: &quot;Record ID&quot;})
 </code></pre>
 <p>Parameters: <code>file_label</code>, <code>variable_labels</code>. Also callable as <code>write_readstat(df, "out.por")</code>. Variable names are uppercased and truncated to 8 characters.</p>
+<h2 id="writing-to-cloud-storage">Writing to cloud storage</h2>
+<p><code>write_readstat</code>, <code>write_xpt</code> and <code>write_por</code> accept a cloud URL as <code>path</code> (<code>s3://</code>, <code>gs://</code>, <code>az://</code>)
+and a <code>storage_options</code> dict. Credentials and region are resolved exactly as for reading; see
+<a href="../read/#cloud-storage">Cloud storage</a>.</p>
+<pre><code class="language-python">write_readstat(df, &quot;s3://my-bucket/out/data.dta&quot;)
+write_readstat(df, &quot;s3://bucket/out.sav&quot;, storage_options={&quot;aws_region&quot;: &quot;us-east-2&quot;})
+</code></pre>
+<p>Large files are uploaded in parts as they are produced. Writing a <code>LazyFrame</code> to Stata (<code>sink_stata</code>)
+first builds the file in a local temporary file and uploads it when finished, so it needs free local disk
+space for the whole file. <code>write_sas_csv_import</code> writes to local paths only.</p>
 <h2 id="sas-csv-import-bundle-write_sas_csv_import">SAS CSV import bundle (<code>write_sas_csv_import</code>)</h2>
 <p>Binary <code>.sas7bdat</code> writing is not supported. Instead, <code>write_sas_csv_import</code> writes two files: a CSV with the data, and a <code>.sas</code> script that you run in SAS to load it with the right types, formats, and labels.</p>
 <pre><code class="language-python">from polars_readstat import write_sas_csv_import
