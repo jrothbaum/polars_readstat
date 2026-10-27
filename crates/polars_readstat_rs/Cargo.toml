@@ -4,7 +4,7 @@ version = "0.27.0"
 edition = "2021"
 rust-version="1.95"
 description = "Pure Rust readers for SAS, Stata, and SPSS with Polars and Arrow outputs"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/jrothbaum/polars_readstat"
 readme = "README.md"
 # Binary test fixtures are needed for `cargo test` from a repo checkout but

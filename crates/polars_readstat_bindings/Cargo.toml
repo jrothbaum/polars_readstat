@@ -5,7 +5,7 @@ authors = ["Jonathan Rothbaum <jon.rothbaum@gmail.com"]
 edition = "2021"
 rust-version = "1.95"
 description = "Streaming crate for polars-readstat"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/jrothbaum/polars_readstat"
 
 [lib]

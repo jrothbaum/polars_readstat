@@ -9,7 +9,7 @@ description = "Read SAS (sas7bdat), Stata (dta), and SPSS (sav) files with polar
 readme = "README.md"
 authors = [{name = "Jon Rothbaum", email = "jlrothbaum@gmail.com"}]
 requires-python = ">=3.9"
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 
 classifiers = [
   "Programming Language :: Rust",
