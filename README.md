@@ -111,7 +111,7 @@ scan_readstat("/path/file.sas7bdat").sink_parquet("/path/file.parquet")
 To give context, I converted a very tall sas file (over 8 billion rows) that was 500GB on disk to parquet and never exceeded 1GB of RAM.
 
 #### Keep the Row Order
-Row order isn't guaranteed by default. Add `preserve_order=True` to keep the file's order; it doesn't cost extra RAM or speed.
+Row order isn't guaranteed by default. Add `preserve_order=True` to keep the file's order; it shouldn't cost much (if any) extra RAM or speed.
 ```
 scan_readstat("/path/file.sas7bdat",preserve_order=True).sink_parquet("/path/file.parquet")
 ```
