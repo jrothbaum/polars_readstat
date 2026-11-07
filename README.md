@@ -110,16 +110,10 @@ scan_readstat("/path/file.sas7bdat").sink_parquet("/path/file.parquet")
 ```
 To give context, I converted a very tall sas file (over 8 billion rows) that was 500GB on disk to parquet and never exceeded 1GB of RAM.
 
-#### Fast, Order-Preserving, but High-RAM Conversion
-However, that code doesn't guarantee the row order is preserved, if you need that, use add `preserve_order=True` (at the cost of greater RAM usage).
+#### Keep the Row Order
+Row order isn't guaranteed by default. Add `preserve_order=True` to keep the file's order; it doesn't cost extra RAM or speed.
 ```
 scan_readstat("/path/file.sas7bdat",preserve_order=True).sink_parquet("/path/file.parquet")
-```
-
-#### Slower, Order-Preserving, Low-RAM Conversion
-If you don't care as much about speed, but want the row order preserved and low RAM, set `threads=1` and it will stream in order (somewhat slower) with super low ram usage.
-```
-scan_readstat("/path/file.sas7bdat",threads=1).sink_parquet("/path/file.parquet")
 ```
 
 

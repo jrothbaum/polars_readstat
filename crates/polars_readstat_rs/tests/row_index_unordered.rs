@@ -39,7 +39,7 @@ fn test_row_index_unordered_matches_ordered() {
             // Ground truth: ordered read assigns row indices in file order.
             let ordered = read_with_index(path, true, threads);
 
-            // Unordered read: workers race, but the row index reflects file order.
+            // Unordered read: batches may arrive in any order, but the row index reflects file order.
             let unordered = read_with_index(path, false, threads);
 
             assert_eq!(

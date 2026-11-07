@@ -190,7 +190,6 @@ pub fn read_to_arrow_stream_ffi_from_source(
         preserve_order,
         if subset.want_row_index { row_index_name } else { None },
         None,
-        false,
     )?;
     let iter = Box::new(std::iter::from_fn(move || {
         let next = iter.next()?;

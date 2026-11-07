@@ -570,10 +570,10 @@ def scan_readstat(
     value_labels_as_strings : bool, optional
         Use value labels as strings for labeled numeric columns (Stata/SPSS).
     preserve_order : bool, PreserveOrderOpts, or dict, optional
-        ``False`` (default) allows out-of-order batches for higher throughput.
-        ``True`` maps to ``PreserveOrderOpts(mode="buffered")`` (current behavior).
-        ``PreserveOrderOpts`` or a dict with ``mode``/``row_index_name`` allows
-        row-index-based ordering without buffering.
+        ``False`` (default) allows out-of-order batches.
+        ``True`` keeps file order (same as ``PreserveOrderOpts(mode="buffered")``).
+        ``PreserveOrderOpts`` or a dict with ``mode``/``row_index_name`` adds a
+        row index column.
     compress : bool, CompressOptions, or dict, optional
         Read-side type compression after scan.
         ``True`` enables all transforms (numeric downcast, datetime-to-date,

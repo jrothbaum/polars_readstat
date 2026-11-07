@@ -140,34 +140,9 @@ fn next_batch(&mut self, batch_size: usize) -> Result<Option<DataFrame>> {
 }
 ```
 
-### Parallel Reading (Uncompressed Files Only)
+### Parallel Reading
 
-For uncompressed files, pages can be read in parallel:
-
-```rust
-fn read_batch_parallel(&mut self, batch_size: usize) -> Result<Option<DataFrame>> {
-    if self.metadata.compression != Compression::None {
-        return self.read_batch_sequential(batch_size);
-    }
-    
-    // Calculate page ranges
-    let pages_needed = (batch_size + self.rows_per_page - 1) / self.rows_per_page;
-    
-    // Parallel page reads
-    let page_data: Vec<Vec<u8>> = (0..pages_needed)
-        .into_par_iter()
-        .map(|page_idx| self.read_page(self.current_page + page_idx))
-        .collect::<Result<Vec<_>>>()?;
-    
-    // Parallel row parsing by page
-    let chunks: Vec<DataFrame> = page_data
-        .into_par_iter()
-        .map(|page| parse_page_to_dataframe(&page, &self.metadata))
-        .collect::<Result<Vec<_>>>()?;
-    
-    Ok(Some(concat(&chunks)?))
-}
-```
+Reads are split into page-range jobs that run on the shared Polars thread pool, for compressed and uncompressed files alike. See [PARALLELIZATION.md](PARALLELIZATION.md).
 
 ## Type Mapping
 
@@ -275,7 +250,7 @@ Create or collect test files covering:
 
 ### Phase 3: Polish (Week 3-4)
 
-1. Parallel reading for uncompressed files
+1. Parallel reading
 2. Memory optimization
 3. Error handling and edge cases
 4. Documentation

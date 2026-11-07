@@ -113,7 +113,6 @@ pub fn readstat_batch_iter_with_offset(
                 preserve_order,
                 row_index_name.clone(),
                 opts.informative_nulls.clone(),
-                false,
             )?;
             Box::new(iter)
         }
@@ -239,7 +238,6 @@ pub fn readstat_batch_iter_from_source_with_offset(
                 preserve_order,
                 row_index_name.clone(),
                 opts.informative_nulls.clone(),
-                false,
             )?;
             Box::new(iter)
         }

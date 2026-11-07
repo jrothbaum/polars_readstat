@@ -153,9 +153,9 @@ opts = InformativeNullOpts(
 
 | Value | Behavior |
 | --- | --- |
-| `False` | Allow out-of-order batches for higher throughput. |
-| `True` | Current behavior: buffer batches to preserve order (more memory). |
-| `PreserveOrderOpts(...)` or `dict` | Row-index-based modes (less buffering). |
+| `False` | Batches may arrive out of order (default). |
+| `True` | Batches arrive in file order. |
+| `PreserveOrderOpts(...)` or `dict` | Add a row index column (see modes below). |
 
 `PreserveOrderOpts` fields:
 
@@ -168,9 +168,9 @@ Modes:
 
 | Mode | Description |
 | --- | --- |
-| `"buffered"` | Keep original row order by buffering batches in Rust.  This can result in higher RAM spikes as it affects the streaming of results to polars. |
-| `"row_index"` | Add a row index column in Rust, but return unsorted batches (so you can sort on the row_index later). |
-| `"sort"` | Add a row index in Rust, then sort and drop it in Python. |
+| `"buffered"` | Batches arrive in file order (same as `True`). |
+| `"row_index"` | Add a row index column; batches may arrive out of order, so sort on it later if needed. |
+| `"sort"` | Add a row index, sort by it, then drop it. |
 
 Example:
 

@@ -426,75 +426,6 @@ impl SasScan {
 
 pub(crate) type SasBatchIter = Box<dyn Iterator<Item = PolarsResult<DataFrame>> + Send>;
 
-// Converts `_polars_rs_thread_` / `_polars_rs_row_` tag columns into a proper row index.
-// Workers tag each row with their thread ID (file-order) and a per-thread sequential counter.
-// Cumulative offset per thread is computed here so the caller gets a correct global index
-// without requiring ordered output.
-fn assign_row_index_from_tags(mut df: DataFrame, name: &str) -> PolarsResult<DataFrame> {
-    let thread_ca = df.column("_polars_rs_thread_")?.u32()?.clone();
-    let row_ca = df.column("_polars_rs_row_")?.u32()?.clone();
-
-    // Count rows per thread using a BTreeMap so iteration order matches file order.
-    let mut thread_counts: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
-    for t in thread_ca.iter().flatten() {
-        *thread_counts.entry(t).or_insert(0) += 1;
-    }
-
-    // Compute cumulative starting offset for each thread.
-    let mut offsets: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-    let mut cumulative: u32 = 0;
-    for (&t, &count) in &thread_counts {
-        offsets.insert(t, cumulative);
-        cumulative += count;
-    }
-
-    // Build the global row index: offset[thread] + row_within_thread.
-    let row_indices: Vec<u32> = thread_ca
-        .iter()
-        .zip(row_ca.iter())
-        .map(|(t, r)| offsets.get(&t.unwrap_or(0)).copied().unwrap_or(0) + r.unwrap_or(0))
-        .collect();
-
-    df.drop_in_place("_polars_rs_thread_")?;
-    df.drop_in_place("_polars_rs_row_")?;
-
-    let idx_series = Series::new(name.into(), row_indices);
-    df.insert_column(0, idx_series.into())?;
-    Ok(df)
-}
-
-// Collects all batches from an unordered tagged iterator and resolves thread/row tags into
-// a correct file-order row index.  Yields the combined DataFrame as a single batch.
-struct SortIndexCollectorIter {
-    inner: Option<SasBatchIter>,
-    row_index_name: String,
-}
-
-impl Iterator for SortIndexCollectorIter {
-    type Item = PolarsResult<DataFrame>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let inner = self.inner.take()?;
-        let mut out: Option<DataFrame> = None;
-        for batch in inner {
-            match batch {
-                Ok(df) => {
-                    if let Some(acc) = out.as_mut() {
-                        if let Err(e) = acc.vstack_mut(&df) {
-                            return Some(Err(e));
-                        }
-                    } else {
-                        out = Some(df);
-                    }
-                }
-                Err(e) => return Some(Err(e)),
-            }
-        }
-        let df = out.unwrap_or_else(DataFrame::empty);
-        Some(assign_row_index_from_tags(df, &self.row_index_name))
-    }
-}
-
 struct SlicedBatchIter {
     inner: SasBatchIter,
     skip: usize,
@@ -590,9 +521,7 @@ fn estimate_data_rows_per_page(
 }
 
 /// Decode pages `[page_start, page_start + page_count)` into batches of at most
-/// `batch_size` rows. With `sort_tag`, each row is tagged with `_polars_rs_thread_` =
-/// tag and a `_polars_rs_row_` counter so a file-order row index can be rebuilt after
-/// unordered collection (see `assign_row_index_from_tags`).
+/// `batch_size` rows.
 fn decode_page_range(
     source: &dyn ReadSource,
     header: &Header,
@@ -604,7 +533,6 @@ fn decode_page_range(
     batch_size: usize,
     page_start: usize,
     page_count: usize,
-    sort_tag: Option<u32>,
 ) -> PolarsResult<Vec<DataFrame>> {
     let to_polars = |e: crate::Error| PolarsError::ComputeError(e.to_string().into());
     let row_length = metadata.row_length;
@@ -614,7 +542,6 @@ fn decode_page_range(
     .map_err(to_polars)?;
 
     let mut batches = Vec::new();
-    let mut row_cursor: u32 = 0;
     let mut buf = Vec::new();
     loop {
         buf.clear();
@@ -662,22 +589,10 @@ fn decode_page_range(
                 builder.add_row_raw(&buf[rs..rs + row_length], plans);
             }
         }
-        let mut df = {
+        let df = {
             let _t = crate::sas::profile::stage(&crate::sas::profile::STAGE_TIMERS.df_build_ns);
             builder.build().map_err(to_polars)?
         };
-        if let Some(tag) = sort_tag {
-            let n = df.height();
-            df.with_column(Column::from(Series::new(
-                "_polars_rs_thread_".into(),
-                vec![tag; n],
-            )))?;
-            df.with_column(Column::from(Series::new(
-                "_polars_rs_row_".into(),
-                (row_cursor..row_cursor + n as u32).collect::<Vec<u32>>(),
-            )))?;
-            row_cursor += n as u32;
-        }
         batches.push(df);
     }
     Ok(batches)
@@ -685,8 +600,7 @@ fn decode_page_range(
 
 /// Decode pages `[first_page, total_pages)` on the shared pool, `pages_per_job` pages per
 /// job. Page byte offsets are exact (header_length + page_num * page_length) whatever the
-/// page type, and each row decompresses independently, so jobs share no state. With
-/// `sort_tags`, rows are tagged with their job index (which follows file order).
+/// page type, and each row decompresses independently, so jobs share no state.
 fn page_jobs(
     source: Arc<dyn ReadSource>,
     header: Header,
@@ -701,7 +615,6 @@ fn page_jobs(
     pages_per_job: usize,
     max_running: usize,
     ordered: bool,
-    sort_tags: bool,
 ) -> crate::parallel::ParallelBatches {
     let pages_per_job = pages_per_job.max(1);
     let n_jobs = total_pages.saturating_sub(first_page).div_ceil(pages_per_job);
@@ -718,7 +631,6 @@ fn page_jobs(
             batch_size,
             page_start,
             pages_per_job.min(total_pages - page_start),
-            sort_tags.then_some(j as u32),
         )
     };
     crate::parallel::ParallelBatches::new(n_jobs, max_running, ordered, Arc::new(job))
@@ -1002,7 +914,6 @@ pub(crate) fn sas_batch_iter(
         preserve_order,
         row_index_name,
         informative_nulls,
-        false,
     )
 }
 
@@ -1018,7 +929,6 @@ pub(crate) fn sas_batch_iter_with_reader(
     preserve_order: bool,
     row_index_name: Option<String>,
     informative_nulls: Option<crate::InformativeNullOpts>,
-    add_sort_tags: bool,
 ) -> PolarsResult<SasBatchIter> {
     let max_rows = reader.metadata().row_count.saturating_sub(offset);
     let total = n_rows.unwrap_or(max_rows).min(max_rows);
@@ -1145,7 +1055,6 @@ pub(crate) fn sas_batch_iter_with_reader(
                 true,
                 row_index_name,
                 None,
-                add_sort_tags,
             )?;
             return Ok(Box::new(SlicedBatchIter {
                 inner,
@@ -1275,7 +1184,6 @@ pub(crate) fn sas_batch_iter_with_reader(
                 pages_per_job,
                 n_workers.min(jobs_needed),
                 true,
-                false,
             );
             let data_iter: SasBatchIter = Box::new(SlicedBatchIter {
                 inner: Box::new(jobs),
@@ -1300,13 +1208,9 @@ pub(crate) fn sas_batch_iter_with_reader(
     // Row index, partial reads, and compressed files all require file-order output.
     // Compressed files need ordering so that the row-count cap (applied below) always
     // trims the same trailing phantom rows rather than random job tails.
-    // When add_sort_tags is true, row index assignment happens post-collection via job/row
-    // tags, so row_index_name alone no longer forces ordered mode.
     let is_compressed = reader.metadata().compression != crate::Compression::None;
-    let use_ordered = preserve_order
-        || (row_index_name.is_some() && !add_sort_tags)
-        || partial_read
-        || is_compressed;
+    let use_ordered =
+        preserve_order || row_index_name.is_some() || partial_read || is_compressed;
     let jobs = page_jobs(
         source.clone(),
         header.clone(),
@@ -1321,27 +1225,19 @@ pub(crate) fn sas_batch_iter_with_reader(
         pages_per_job,
         n_workers,
         use_ordered,
-        add_sort_tags,
     );
     // The row index is assigned here, from realized row counts, rather than in the jobs.
     let parallel: SasBatchIter = match row_index_name.clone() {
-        Some(name) if !add_sort_tags => Box::new(RowIndexedIter {
+        Some(name) => Box::new(RowIndexedIter {
             inner: Box::new(jobs),
             row_index_name: name,
             row_cursor: mix_data_rows,
         }),
-        _ => Box::new(jobs),
+        None => Box::new(jobs),
     };
-    let base: SasBatchIter = match mix_iter {
+    let base_iter: SasBatchIter = match mix_iter {
         Some(mix) => Box::new(mix.chain(parallel)),
         None => parallel,
-    };
-    let base_iter: SasBatchIter = match row_index_name.clone() {
-        Some(name) if add_sort_tags => Box::new(SortIndexCollectorIter {
-            inner: Some(base),
-            row_index_name: name,
-        }),
-        _ => base,
     };
 
     if partial_read {
@@ -1399,19 +1295,6 @@ impl AnonymousScan for SasScan {
             None
         };
 
-        // Use thread/row tags + post-collection index assignment when:
-        // - caller wants a row index but not strict ordering
-        // - no mix-page rows (which are already handled serially in file order)
-        // - uncompressed (compressed always forces ordered mode anyway)
-        // - full file read (partial reads use their own ordered path)
-        let is_compressed = reader.metadata().compression != crate::Compression::None;
-        let mix_data_rows = reader.mix_data_rows();
-        let add_sort_tags = self.row_index_name.is_some()
-            && !self.preserve_order
-            && mix_data_rows == 0
-            && !is_compressed
-            && opts.n_rows.is_none();
-
         let iter = sas_batch_iter_with_reader(
             &reader,
             reader.source(),
@@ -1424,7 +1307,6 @@ impl AnonymousScan for SasScan {
             self.preserve_order,
             self.row_index_name.clone(),
             self.informative_nulls.clone(),
-            add_sort_tags,
         )?;
 
         let prefetch = crate::scan_prefetch::spawn_prefetcher(iter.map(|batch| batch));
