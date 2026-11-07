@@ -1083,15 +1083,15 @@ opts = InformativeNullOpts(
 <tbody>
 <tr>
 <td><code>False</code></td>
-<td>Allow out-of-order batches for higher throughput.</td>
+<td>Batches may arrive out of order (default).</td>
 </tr>
 <tr>
 <td><code>True</code></td>
-<td>Current behavior: buffer batches to preserve order (more memory).</td>
+<td>Batches arrive in file order.</td>
 </tr>
 <tr>
 <td><code>PreserveOrderOpts(...)</code> or <code>dict</code></td>
-<td>Row-index-based modes (less buffering).</td>
+<td>Add a row index column (see modes below).</td>
 </tr>
 </tbody>
 </table>
@@ -1128,15 +1128,15 @@ opts = InformativeNullOpts(
 <tbody>
 <tr>
 <td><code>"buffered"</code></td>
-<td>Keep original row order by buffering batches in Rust.  This can result in higher RAM spikes as it affects the streaming of results to polars.</td>
+<td>Batches arrive in file order (same as <code>True</code>).</td>
 </tr>
 <tr>
 <td><code>"row_index"</code></td>
-<td>Add a row index column in Rust, but return unsorted batches (so you can sort on the row_index later).</td>
+<td>Add a row index column; batches may arrive out of order, so sort on it later if needed.</td>
 </tr>
 <tr>
 <td><code>"sort"</code></td>
-<td>Add a row index in Rust, then sort and drop it in Python.</td>
+<td>Add a row index, sort by it, then drop it.</td>
 </tr>
 </tbody>
 </table>
