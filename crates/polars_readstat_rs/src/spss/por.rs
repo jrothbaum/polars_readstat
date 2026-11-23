@@ -300,7 +300,14 @@ fn parse_base30_double(chars: &[u8]) -> Result<f64> {
     let mut val = num + frac;
     if exp != 0.0 {
         let e = if exp_neg { -exp } else { exp };
-        val *= 30.0f64.powf(e);
+        if e < -200.0 {
+            // in two steps: 30^e alone is a subnormal from about 30^-209, holding few digits
+            let half = (e / 2.0).trunc();
+            val *= 30.0f64.powf(half);
+            val *= 30.0f64.powf(e - half);
+        } else {
+            val *= 30.0f64.powf(e);
+        }
     }
     if negative { val = -val; }
     Ok(val)
@@ -946,6 +953,14 @@ impl<W: Write> PorLineWriter<W> {
             self.write_byte(b'/')?;
             return Ok(());
         }
+        if abs != 0.0 && abs < SMALL_MAGNITUDE {
+            let (mantissa, exponent) = small_to_base30(abs);
+            self.write_base30_int(mantissa)?;
+            self.write_byte(b'-')?;
+            self.write_base30_int(exponent)?;
+            self.write_byte(b'/')?;
+            return Ok(());
+        }
         let int_part = abs.trunc() as u64;
         let mut frac = abs.fract();
 
@@ -1001,6 +1016,55 @@ impl<W: Write> PorLineWriter<W> {
 /// From this magnitude up, numbers are written as a mantissa and a power of 30 (30^12 is about
 /// 5.3e17, comfortably inside a u64).
 const LARGE_MAGNITUDE: f64 = 3.0e17;
+
+/// Below this magnitude, numbers are written as a mantissa and the power of 30 it is divided
+/// by. Written as a fraction, their leading zeros would use up the BASE30_PRECISION digits:
+/// precision is lost from about 1e-56, and from about 4e-73 the number is written as zero.
+const SMALL_MAGNITUDE: f64 = 1.0e-20;
+
+/// `abs` (finite, above zero) as `(m, k)`, where `abs` is `m / 30^k` rounded to the 12 base-30
+/// digits of `m`. Computed in integers: multiplying a float by 30 again and again would drift.
+fn small_to_base30(abs: f64) -> (u64, u64) {
+    const LOW: u128 = 30u128.pow(11);
+    let bits = abs.to_bits();
+    let biased = ((bits >> 52) & 0x7FF) as i64;
+    let fraction = (bits & ((1u64 << 52) - 1)) as u128;
+    // abs = x * 2^e
+    let (mut x, mut e) = if biased == 0 {
+        (fraction, -1074i64)
+    } else {
+        (fraction | (1u128 << 52), biased - 1075)
+    };
+    let floor = |x: u128, e: i64| -> u128 {
+        if e >= 0 {
+            x << e
+        } else if -e >= 128 {
+            0
+        } else {
+            x >> -e
+        }
+    };
+    let mut k = 0u64;
+    while floor(x, e) < LOW {
+        // times 30 = times 15, times 2. x is kept below 2^124 by dropping low bits, which only
+        // matter at a relative 2^-120.
+        x *= 15;
+        e += 1;
+        k += 1;
+        while x >= 1u128 << 120 {
+            x >>= 1;
+            e += 1;
+        }
+    }
+    // round to the nearest integer: e < 0 here, as abs * 30^k is below 30^12 < 2^60 < x
+    let shift = -e;
+    let mut m = (x >> shift) + ((x >> (shift - 1)) & 1);
+    while m % 30 == 0 && k > 0 {
+        m /= 30;
+        k -= 1;
+    }
+    (m as u64, k)
+}
 
 fn count_base30_digits(mut n: u64) -> usize {
     if n == 0 { return 1; }
