@@ -1,5 +1,6 @@
 use crate::destination::WriteTarget;
 use crate::source::{LocalFileSource, ReadSource};
+use crate::spss::base30;
 use crate::spss::error::{Error, Result};
 use crate::spss::types::FormatClass;
 use polars::prelude::*;
@@ -11,7 +12,6 @@ use std::sync::Arc;
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const POR_LINE_LEN: usize = 80;
-const BASE30_PRECISION: usize = 50;
 const SPSS_SEC_SHIFT: i64 = 12_219_379_200;
 const SEC_PER_DAY: i64 = 86_400;
 
@@ -246,64 +246,11 @@ impl<R: Read> PorStream<R> {
 
 // ─── Base-30 parser ───────────────────────────────────────────────────────────
 
-fn base30_digit(c: u8) -> Option<f64> {
-    match c {
-        b'0'..=b'9' => Some((c - b'0') as f64),
-        b'A'..=b'T' => Some((10 + c - b'A') as f64),
-        _ => None,
-    }
-}
-
 // Parse a base-30 encoded number from chars (the '/' terminator is already stripped).
 // Format: [-] integer_digits [. frac_digits] [+|- exp_digits]
 // Missing = "*." (handled by caller).
 fn parse_base30_double(chars: &[u8]) -> Result<f64> {
-    let mut i = 0;
-    let negative = i < chars.len() && chars[i] == b'-';
-    if negative || (i < chars.len() && chars[i] == b'+') { i += 1; }
-
-    let mut num = 0.0f64;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == b'.' || c == b'+' || c == b'-' { break; }
-        match base30_digit(c) {
-            Some(d) => { num = num * 30.0 + d; i += 1; }
-            None => return Err(Error::ParseError(format!("POR: invalid base-30 digit '{}'", c as char))),
-        }
-    }
-
-    let mut frac = 0.0f64;
-    if i < chars.len() && chars[i] == b'.' {
-        i += 1;
-        let mut denom = 30.0f64;
-        while i < chars.len() && chars[i] != b'+' && chars[i] != b'-' {
-            match base30_digit(chars[i]) {
-                Some(d) => { frac += d / denom; denom *= 30.0; i += 1; }
-                None => return Err(Error::ParseError(format!("POR: invalid base-30 frac digit '{}'", chars[i] as char))),
-            }
-        }
-    }
-
-    let mut exp_neg = false;
-    let mut exp = 0.0f64;
-    if i < chars.len() {
-        exp_neg = chars[i] == b'-';
-        i += 1;
-        while i < chars.len() {
-            match base30_digit(chars[i]) {
-                Some(d) => { exp = exp * 30.0 + d; i += 1; }
-                None => return Err(Error::ParseError(format!("POR: invalid base-30 exp digit '{}'", chars[i] as char))),
-            }
-        }
-    }
-
-    let mut val = num + frac;
-    if exp != 0.0 {
-        let e = if exp_neg { -exp } else { exp };
-        val *= 30.0f64.powf(e);
-    }
-    if negative { val = -val; }
-    Ok(val)
+    base30::parse(chars).map_err(|e| Error::ParseError(format!("POR: {e}")))
 }
 
 // ─── Format class ─────────────────────────────────────────────────────────────
@@ -929,55 +876,52 @@ impl<W: Write> PorLineWriter<W> {
             self.write_bytes(b"1+TT/")?;
             return Ok(());
         }
-        if v < 0.0 { self.write_byte(b'-')?; }
-        let abs = v.abs();
-        if abs >= LARGE_MAGNITUDE {
-            // Too large for the integer digits below (a u64 would saturate): write a mantissa
-            // that fits and the power of 30 it is multiplied by.
-            let mut mantissa = abs;
-            let mut exponent: u64 = 0;
-            while mantissa >= LARGE_MAGNITUDE {
-                mantissa /= 30.0;
-                exponent += 1;
-            }
-            self.write_base30_int(mantissa.round() as u64)?;
-            self.write_byte(b'+')?;
-            self.write_base30_int(exponent)?;
-            self.write_byte(b'/')?;
+        if v == 0.0 {
+            self.write_bytes(b"0/")?;
             return Ok(());
         }
-        let int_part = abs.trunc() as u64;
-        let mut frac = abs.fract();
+        if v < 0.0 { self.write_byte(b'-')?; }
 
-        // Compress trailing zeros from integer part via exponent
-        let mut exponent: u64 = 0;
-        let mut int = int_part;
-        if int == 0 {
-            self.write_byte(b'0')?;
+        // As SPSS writes numbers: rounded to the declared precision in significant digits,
+        // trailing zeros dropped, `digits.digits` or `digits+exp` / `digits-exp`.
+        let (m, q) = base30::shortest(v.abs());
+        let mut buf = [0u8; 16];
+        let mut n = 0usize;
+        let mut x = m;
+        while x > 0 {
+            buf[n] = base30::digit_char((x % 30) as u32);
+            x /= 30;
+            n += 1;
+        }
+        let digits = &mut buf[..n];
+        digits.reverse();
+
+        if q >= 0 {
+            self.write_bytes(digits)?;
+            if q > 0 {
+                self.write_byte(b'+')?;
+                self.write_base30_int(q as u64)?;
+            }
         } else {
-            while frac == 0.0 && int != 0 && int % 30 == 0 {
-                int /= 30;
-                exponent += 1;
+            let k = q.unsigned_abs() as usize;
+            // "1.3" / "0.00F" against "13-1" / "F-4": the shorter, the point form on a tie
+            let point_len = if n > k { n + 1 } else { k + 2 };
+            let exp_len = n + 1 + count_base30_digits(k as u64);
+            if point_len <= exp_len {
+                if n > k {
+                    self.write_bytes(&digits[..n - k])?;
+                    self.write_byte(b'.')?;
+                    self.write_bytes(&digits[n - k..])?;
+                } else {
+                    self.write_bytes(b"0.")?;
+                    for _ in n..k { self.write_byte(b'0')?; }
+                    self.write_bytes(digits)?;
+                }
+            } else {
+                self.write_bytes(digits)?;
+                self.write_byte(b'-')?;
+                self.write_base30_int(k as u64)?;
             }
-            self.write_base30_int(int)?;
-        }
-
-        if frac != 0.0 {
-            self.write_byte(b'.')?;
-            let mut printed = count_base30_digits(int_part);
-            while frac != 0.0 && printed < BASE30_PRECISION {
-                frac *= 30.0;
-                let d = frac.trunc() as u64;
-                frac = frac.fract();
-                let ch = if d < 10 { b'0' + d as u8 } else { b'A' + d as u8 - 10 };
-                self.write_byte(ch)?;
-                printed += 1;
-            }
-        }
-
-        if exponent > 0 {
-            self.write_byte(b'+')?;
-            self.write_base30_int(exponent)?;
         }
         self.write_byte(b'/')?;
         Ok(())
@@ -997,10 +941,6 @@ impl<W: Write> PorLineWriter<W> {
         Ok(())
     }
 }
-
-/// From this magnitude up, numbers are written as a mantissa and a power of 30 (30^12 is about
-/// 5.3e17, comfortably inside a u64).
-const LARGE_MAGNITUDE: f64 = 3.0e17;
 
 fn count_base30_digits(mut n: u64) -> usize {
     if n == 0 { return 1; }
@@ -1120,7 +1060,7 @@ pub fn write_por_to_destination(
 
     // 7. Precision.
     w.write_byte(b'5')?;
-    w.write_double(BASE30_PRECISION as f64)?;
+    w.write_double(base30::PRECISION as f64)?;
 
     // 8. Variable records.
     let columns = df.columns();

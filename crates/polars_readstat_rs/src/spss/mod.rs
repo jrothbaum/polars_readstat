@@ -4,6 +4,7 @@ pub(crate) mod error;
 pub(crate) mod header;
 pub(crate) mod metadata;
 pub mod polars_output;
+mod base30;
 pub mod por;
 pub(crate) mod reader;
 pub(crate) mod types;
