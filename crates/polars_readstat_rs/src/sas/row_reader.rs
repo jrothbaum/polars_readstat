@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -331,6 +332,7 @@ impl SasRowReader {
 
 fn spawn_serial_raw_worker(
     tx: mpsc::SyncSender<Result<Vec<u8>>>,
+    tally: Arc<RowTally>,
     path: std::path::PathBuf,
     header: Header,
     metadata: Arc<Metadata>,
@@ -380,15 +382,18 @@ fn spawn_serial_raw_worker(
                 break;
             }
             buf.truncate(n_read * row_length);
+            tally.add(n_read);
             if tx.send(Ok(buf)).is_err() {
                 return;
             }
         }
+        tally.worker_done(&tx);
     })
 }
 
 fn spawn_parallel_raw_worker(
     tx: mpsc::SyncSender<Result<Vec<u8>>>,
+    tally: Arc<RowTally>,
     path: std::path::PathBuf,
     header: Header,
     metadata: Arc<Metadata>,
@@ -400,8 +405,9 @@ fn spawn_parallel_raw_worker(
     worker_page_count: usize,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
+        let source = crate::source::LocalFileSource::new(&path);
         let mut data_reader = match data_reader_at_page_range(
-            &path,
+            &source,
             &header,
             &metadata,
             endian,
@@ -429,11 +435,55 @@ fn spawn_parallel_raw_worker(
                 break;
             }
             buf.truncate(n_read * row_length);
+            tally.add(n_read);
             if tx.send(Ok(buf)).is_err() {
                 return;
             }
         }
+        tally.worker_done(&tx);
     })
+}
+
+/// Rows the workers of one read produced, checked against the header's row count when the
+/// last worker finishes: a shortfall (a truncated file, or rows the reader could not find)
+/// is an error rather than a silently shorter result.
+struct RowTally {
+    produced: AtomicUsize,
+    workers_left: AtomicUsize,
+    expected: usize,
+    /// Compressed reads trim rows past the header's count (the reader caps them), so only a
+    /// shortfall is an error there.
+    allow_extra: bool,
+}
+
+impl RowTally {
+    fn new(workers: usize, expected: usize, allow_extra: bool) -> Arc<Self> {
+        Arc::new(Self {
+            produced: AtomicUsize::new(0),
+            workers_left: AtomicUsize::new(workers),
+            expected,
+            allow_extra,
+        })
+    }
+
+    fn add(&self, rows: usize) {
+        self.produced.fetch_add(rows, Ordering::SeqCst);
+    }
+
+    /// Called by each worker that read its range to the end; the last one checks the total.
+    fn worker_done(&self, tx: &mpsc::SyncSender<Result<Vec<u8>>>) {
+        if self.workers_left.fetch_sub(1, Ordering::SeqCst) != 1 {
+            return;
+        }
+        let produced = self.produced.load(Ordering::SeqCst);
+        if produced < self.expected || (!self.allow_extra && produced > self.expected) {
+            let _ = tx.send(Err(crate::error::Error::ParseError(format!(
+                "SAS file: expected {} rows (from its header), found {}; the file may be \
+                 truncated or damaged",
+                self.expected, produced
+            ))));
+        }
+    }
 }
 
 // ── public entry point ────────────────────────────────────────────────────────
@@ -477,7 +527,8 @@ pub fn sas_row_readers(path: &Path, opts: &crate::ScanOptions) -> Result<Vec<Sas
 
     let mix_data_rows = reader.mix_data_rows();
     let is_compressed = metadata.compression != crate::Compression::None;
-    let row_count = metadata.row_count;
+    // A dataset without variables yields no rows, whatever its header's row count.
+    let row_count = if row_length == 0 { 0 } else { metadata.row_count };
 
     // Serial path: mix-page rows present or single thread.
     if mix_data_rows > 0 || n_threads == 1 {
@@ -485,6 +536,7 @@ pub fn sas_row_readers(path: &Path, opts: &crate::ScanOptions) -> Result<Vec<Sas
         let (tx, rx) = mpsc::sync_channel(4);
         let handle = spawn_serial_raw_worker(
             tx,
+            RowTally::new(1, row_count, false),
             path.to_path_buf(),
             header,
             metadata,
@@ -521,6 +573,13 @@ pub fn sas_row_readers(path: &Path, opts: &crate::ScanOptions) -> Result<Vec<Sas
         // (mirrors OrderedParallelIter + SlicedBatchIter).
         let mut rxs = VecDeque::with_capacity(n_workers);
         let mut handles = Vec::with_capacity(n_workers);
+        let tally = RowTally::new(
+            (0..n_workers)
+                .filter(|w| first_data_page + w * pages_per_worker < total_pages)
+                .count(),
+            row_count,
+            true,
+        );
         for worker_idx in 0..n_workers {
             let wp_start = first_data_page + worker_idx * pages_per_worker;
             if wp_start >= total_pages {
@@ -530,6 +589,7 @@ pub fn sas_row_readers(path: &Path, opts: &crate::ScanOptions) -> Result<Vec<Sas
             let (tx, rx) = mpsc::sync_channel(4);
             handles.push(spawn_parallel_raw_worker(
                 tx,
+                tally.clone(),
                 path.to_path_buf(),
                 header.clone(),
                 metadata.clone(),
@@ -554,6 +614,13 @@ pub fn sas_row_readers(path: &Path, opts: &crate::ScanOptions) -> Result<Vec<Sas
 
     // Uncompressed parallel: one independent reader per worker.
     let mut readers = Vec::with_capacity(n_workers);
+    let tally = RowTally::new(
+        (0..n_workers)
+            .filter(|w| first_data_page + w * pages_per_worker < total_pages)
+            .count(),
+        row_count,
+        false,
+    );
     for worker_idx in 0..n_workers {
         let wp_start = first_data_page + worker_idx * pages_per_worker;
         if wp_start >= total_pages {
@@ -563,6 +630,7 @@ pub fn sas_row_readers(path: &Path, opts: &crate::ScanOptions) -> Result<Vec<Sas
         let (tx, rx) = mpsc::sync_channel(4);
         let handle = spawn_parallel_raw_worker(
             tx,
+            tally.clone(),
             path.to_path_buf(),
             header.clone(),
             metadata.clone(),

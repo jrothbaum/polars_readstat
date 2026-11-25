@@ -16,6 +16,9 @@ pub struct DataReader<R: Read + Seek> {
     page_state: Option<PageState>,
     /// Reusable buffer for decompressed rows (avoids per-row allocation)
     decompress_buf: Vec<u8>,
+    /// The page a moved row was last read from, and its index.
+    moved_page: Vec<u8>,
+    moved_page_index: Option<usize>,
     /// When Some(n), stop reading after n more data-bearing pages (page-limited parallel mode).
     /// In this mode the current_row >= metadata.row_count guard is bypassed; the
     /// page budget is the sole stopping condition.
@@ -29,10 +32,11 @@ pub struct DataReader<R: Read + Seek> {
     physical_pages_consumed: usize,
 }
 
-/// State for tracking position within a page
+/// State for tracking position within a page. `current_index` counts the page's live rows:
+/// deleted rows are never visited.
 #[derive(Debug)]
 enum PageState {
-    /// META page with data subheaders
+    /// Page whose rows are subheaders (compressed files)
     Meta {
         data_subheaders: Vec<DataSubheader>,
         current_index: usize,
@@ -43,6 +47,8 @@ enum PageState {
         offset: usize,
         row_length: usize,
         current_index: usize,
+        /// On a page flagged as having deleted rows: the live rows' physical indices.
+        live: Option<Vec<u32>>,
     },
     /// MIX page with metadata and data
     Mix {
@@ -50,16 +56,48 @@ enum PageState {
         offset: usize,
         row_length: usize,
         current_index: usize,
+        /// On a page flagged as having deleted rows: the live rows' physical indices.
+        live: Option<Vec<u32>>,
     },
 }
 
-/// Data subheader from META or MIX pages
+/// A row stored as a subheader (compressed files).
 #[derive(Debug, Clone)]
 pub struct DataSubheader {
     pub offset: usize,
     pub length: usize,
     pub compression: u8, // 4 = compressed, 0 = uncompressed
+    /// Set when SAS moved the row: it is read from this page's subheader instead, at this
+    /// row's place in the file.
+    pub moved_to: Option<MovedRow>,
 }
+
+/// Where a moved row now lives: a page index and a subheader index on that page.
+#[derive(Debug, Clone, Copy)]
+pub struct MovedRow {
+    pub page: usize,
+    pub subheader: usize,
+}
+
+/// Where the current row's bytes are.
+#[derive(Debug, Clone, Copy)]
+enum RowLocation {
+    /// In the current page buffer
+    Here { offset: usize, length: usize },
+    /// In a subheader of another page
+    Moved(MovedRow),
+}
+
+// Subheader-pointer compression codes (SAS_COMPRESSION_* in ReadStat).
+const SH_NONE: u8 = 0x00;
+const SH_TRUNCATED: u8 = 0x01;
+const SH_NONE_MOVED: u8 = 0x02;
+const SH_REFERENCE: u8 = 0x03;
+const SH_ROW: u8 = 0x04;
+const SH_DELETED_ROW: u8 = 0x05;
+const SH_ROW_MOVED: u8 = 0x06;
+const SH_NONE_UNREFERENCED: u8 = 0x09;
+const SH_ROW_UNREFERENCED: u8 = 0x0D;
 
 impl<R: Read + Seek> DataReader<R> {
     pub fn new(
@@ -90,6 +128,8 @@ impl<R: Read + Seek> DataReader<R> {
             current_row: 0,
             page_state,
             decompress_buf,
+            moved_page: Vec::new(),
+            moved_page_index: None,
             remaining_pages: None,
             max_physical_pages: None,
             physical_pages_consumed: 0,
@@ -138,88 +178,87 @@ impl<R: Read + Seek> DataReader<R> {
 
     /// Read the next row (allocating). Used by streaming paths that need owned data.
     pub fn read_row(&mut self) -> Result<Option<RowBytes>> {
-        // Check if we've read all rows
-        if self.current_row >= self.metadata.row_count {
-            return Ok(None);
-        }
-
-        // Get row offset, length, and compression flag from current page state
-        let (offset, length, compression) = match self.get_current_row_info() {
-            Some(info) => info,
-            None => {
-                // Need to advance to next page
-                self.advance_page()?;
-                match self.get_current_row_info() {
-                    Some(info) => info,
-                    None => return Ok(None),
-                }
-            }
-        };
-
-        let row_bytes = self.extract_row_bytes(offset, length, compression)?;
-
-        // Advance to next row
-        self.advance_row();
-
-        Ok(Some(row_bytes))
+        Ok(self.read_row_borrowed()?.map(|row| row.to_vec()))
     }
 
     /// Ensure we're positioned on a valid row, advancing pages if needed.
-    /// Returns (offset, length) or None if no more rows.
-    fn ensure_row_ready(&mut self) -> Result<Option<(usize, usize)>> {
+    /// Returns its location, or None if no more rows.
+    fn ensure_row_ready(&mut self) -> Result<Option<RowLocation>> {
         if self.current_row >= self.metadata.row_count {
             return Ok(None);
         }
-        let (offset, length, _) = match self.get_current_row_info() {
-            Some(info) => info,
+        match self.get_current_row_info() {
+            Some(loc) => Ok(Some(loc)),
             None => {
                 self.advance_page()?;
-                match self.get_current_row_info() {
-                    Some(info) => info,
-                    None => return Ok(None),
+                Ok(self.get_current_row_info())
+            }
+        }
+    }
+
+    /// Fill `decompress_buf` with the row at `loc` (compressed files).
+    fn load_subheader_row(&mut self, loc: RowLocation) -> Result<()> {
+        let row_length = self.metadata.row_length;
+        let (page, offset, length): (&[u8], usize, usize) = match loc {
+            RowLocation::Here { offset, length } => (self.page_reader.page_buffer(), offset, length),
+            RowLocation::Moved(moved) => {
+                if self.moved_page_index != Some(moved.page) {
+                    self.moved_page_index = None;
+                    self.page_reader.read_page_at(moved.page, &mut self.moved_page)?;
+                    self.moved_page_index = Some(moved.page);
                 }
+                let target = self
+                    .page_reader
+                    .subheader_pointer(&self.moved_page, moved.subheader)?;
+                if !matches!(target.compression, SH_NONE | SH_NONE_MOVED | SH_ROW | SH_ROW_MOVED)
+                    || target.length == 0
+                    || target.length > row_length
+                {
+                    return Err(Error::ParseError(format!(
+                        "moved row points to page {} subheader {}, which holds no row",
+                        moved.page, moved.subheader
+                    )));
+                }
+                (&self.moved_page, target.offset, target.length)
             }
         };
-        Ok(Some((offset, length)))
+        if offset + length > page.len() {
+            return Err(Error::BufferOutOfBounds { offset, length });
+        }
+        let raw_bytes = &page[offset..offset + length];
+        if length < row_length {
+            // Truly compressed subheader: decompress into the reusable buffer.
+            self.decompressor
+                .decompress_into(raw_bytes, &mut self.decompress_buf)?;
+        } else {
+            // Uncompressed subheader on a compressed file: copy bytes directly.
+            self.decompress_buf[..length].copy_from_slice(raw_bytes);
+        }
+        Ok(())
     }
 
     /// Read the next row without allocating. Returns a reference to either the
     /// page buffer (uncompressed) or the internal decompress buffer (compressed).
     /// The returned slice is valid until the next call to any read method.
     pub fn read_row_borrowed(&mut self) -> Result<Option<&[u8]>> {
-        let (offset, length) = match self.ensure_row_ready()? {
+        let loc = match self.ensure_row_ready()? {
             Some(v) => v,
             None => return Ok(None),
         };
 
-        let page_buffer = self.page_reader.page_buffer();
-
-        if offset + length > page_buffer.len() {
+        if self.metadata.compression != Compression::None {
+            self.load_subheader_row(loc)?;
+            self.advance_row();
+            return Ok(Some(&self.decompress_buf));
+        }
+        let RowLocation::Here { offset, length } = loc else {
+            return Err(Error::ParseError("moved row in an uncompressed file".into()));
+        };
+        if offset + length > self.page_reader.page_buffer().len() {
             return Err(Error::BufferOutOfBounds { offset, length });
         }
-
-        let row_length = self.metadata.row_length;
-        let is_compressed = self.metadata.compression != Compression::None;
-
-        if is_compressed {
-            let raw_bytes = &page_buffer[offset..offset + length];
-            if length < row_length {
-                // Truly compressed subheader: decompress into the reusable buffer.
-                self.decompressor
-                    .decompress_into(raw_bytes, &mut self.decompress_buf)?;
-            } else {
-                // Uncompressed subheader on a compressed file: copy bytes directly.
-                // (length == row_length; the compression flag on the subheader was 0)
-                self.decompress_buf[..length].copy_from_slice(raw_bytes);
-            }
-            self.advance_row();
-            Ok(Some(&self.decompress_buf))
-        } else {
-            self.advance_row();
-            Ok(Some(
-                &self.page_reader.page_buffer()[offset..offset + length],
-            ))
-        }
+        self.advance_row();
+        Ok(Some(&self.page_reader.page_buffer()[offset..offset + length]))
     }
 
     /// Read up to `n` rows into `buf` as flat bytes (`row_length` bytes per row, consecutive).
@@ -249,27 +288,22 @@ impl<R: Read + Seek> DataReader<R> {
                 continue;
             }
 
-            // Slow path: per-row copy (MIX/META pages, or compressed data).
-            let (offset, length) = match self.ensure_row_ready()? {
+            // Slow path: per-row copy (MIX/META pages, pages with deleted rows, compressed).
+            let loc = match self.ensure_row_ready()? {
                 Some(v) => v,
                 None => break,
             };
-            if offset + length > self.page_reader.page_buffer().len() {
-                return Err(Error::BufferOutOfBounds { offset, length });
-            }
 
-            let is_compressed = self.metadata.compression != Compression::None;
-
-            if is_compressed {
-                let raw_bytes = &self.page_reader.page_buffer()[offset..offset + length];
-                if length < row_length {
-                    self.decompressor
-                        .decompress_into(raw_bytes, &mut self.decompress_buf)?;
-                } else {
-                    self.decompress_buf[..length].copy_from_slice(raw_bytes);
-                }
+            if self.metadata.compression != Compression::None {
+                self.load_subheader_row(loc)?;
                 buf.extend_from_slice(&self.decompress_buf[..row_length]);
             } else {
+                let RowLocation::Here { offset, length } = loc else {
+                    return Err(Error::ParseError("moved row in an uncompressed file".into()));
+                };
+                if offset + length > self.page_reader.page_buffer().len() {
+                    return Err(Error::BufferOutOfBounds { offset, length });
+                }
                 buf.extend_from_slice(&self.page_reader.page_buffer()[offset..offset + length]);
             }
             self.advance_row();
@@ -279,7 +313,7 @@ impl<R: Read + Seek> DataReader<R> {
         Ok(count)
     }
 
-    /// Fast-path bulk copy for uncompressed DATA pages.
+    /// Fast-path bulk copy for uncompressed DATA pages without deleted rows.
     ///
     /// All rows on a DATA page are laid out contiguously in the page buffer, so
     /// we can copy `min(max_rows, available)` rows with a single `extend_from_slice`
@@ -303,6 +337,7 @@ impl<R: Read + Seek> DataReader<R> {
                 row_length: page_rl,
                 block_count,
                 current_index,
+                live: None,
             }) => {
                 if *page_rl != row_length || *current_index >= *block_count {
                     return Ok(0);
@@ -362,6 +397,16 @@ impl<R: Read + Seek> DataReader<R> {
         Ok(())
     }
 
+    /// Rows (or, on a block page, physical row slots) that fit in the page from `offset`.
+    fn rows_that_fit(&self, offset: usize, row_length: usize) -> usize {
+        let page_size = self.page_reader.header().page_length;
+        if row_length == 0 || offset >= page_size {
+            return 0;
+        }
+        (page_size - offset) / row_length
+    }
+
+    /// Live rows left on the current page.
     fn rows_remaining_in_page(&self) -> usize {
         match &self.page_state {
             Some(PageState::Meta {
@@ -369,37 +414,23 @@ impl<R: Read + Seek> DataReader<R> {
                 current_index,
             }) => data_subheaders.len().saturating_sub(*current_index),
             Some(PageState::Data {
-                block_count,
+                block_count: count,
                 offset,
                 row_length,
                 current_index,
-            }) => {
-                if *row_length == 0 {
-                    return 0;
-                }
-                let page_size = self.page_reader.header().page_length;
-                if *offset >= page_size {
-                    return 0;
-                }
-                let max_fit = (page_size - *offset) / *row_length;
-                let valid_rows = (*block_count).min(max_fit);
-                valid_rows.saturating_sub(*current_index)
-            }
-            Some(PageState::Mix {
-                row_count,
+                live,
+            })
+            | Some(PageState::Mix {
+                row_count: count,
                 offset,
                 row_length,
                 current_index,
+                live,
             }) => {
-                if *row_length == 0 {
-                    return 0;
-                }
-                let page_size = self.page_reader.header().page_length;
-                if *offset >= page_size {
-                    return 0;
-                }
-                let max_fit = (page_size - *offset) / *row_length;
-                let valid_rows = (*row_count).min(max_fit);
+                let valid_rows = match live {
+                    Some(live) => live.len(),
+                    None => (*count).min(self.rows_that_fit(*offset, *row_length)),
+                };
                 valid_rows.saturating_sub(*current_index)
             }
             None => 0,
@@ -419,58 +450,48 @@ impl<R: Read + Seek> DataReader<R> {
         }
     }
 
-    /// Get current row offset, length, and compression flag from page state
-    fn get_current_row_info(&self) -> Option<(usize, usize, u8)> {
+    /// Location of the current row, or None at the end of the page.
+    fn get_current_row_info(&self) -> Option<RowLocation> {
         match &self.page_state {
             Some(PageState::Meta {
                 data_subheaders,
                 current_index,
             }) => {
-                if *current_index < data_subheaders.len() {
-                    let sub = &data_subheaders[*current_index];
-                    Some((sub.offset, sub.length, sub.compression))
-                } else {
-                    None
-                }
+                let sub = data_subheaders.get(*current_index)?;
+                Some(match sub.moved_to {
+                    Some(moved) => RowLocation::Moved(moved),
+                    None => RowLocation::Here {
+                        offset: sub.offset,
+                        length: sub.length,
+                    },
+                })
             }
             Some(PageState::Data {
+                block_count: count,
                 offset,
                 row_length,
                 current_index,
-                block_count,
-            }) => {
-                if *current_index < *block_count {
-                    let row_offset = offset + row_length * current_index;
-                    // Check if row would fit in current page
-                    let page_size = self.page_reader.header().page_length;
-                    if row_offset + row_length <= page_size {
-                        // For DATA pages, assume compression=4 if file is compressed
-                        Some((row_offset, *row_length, 4))
-                    } else {
-                        // Row would extend beyond page, stop processing this page
-                        None
-                    }
-                } else {
-                    None
-                }
-            }
-            Some(PageState::Mix {
+                live,
+            })
+            | Some(PageState::Mix {
+                row_count: count,
                 offset,
                 row_length,
                 current_index,
-                row_count,
+                live,
             }) => {
-                if *current_index < *row_count {
-                    let row_offset = offset + row_length * current_index;
-                    // Check if row would fit in current page
-                    let page_size = self.page_reader.header().page_length;
-                    if row_offset + row_length <= page_size {
-                        // For MIX pages, assume compression=4 if file is compressed
-                        Some((row_offset, *row_length, 4))
-                    } else {
-                        // Row would extend beyond page, stop processing this page
-                        None
-                    }
+                let physical = match live {
+                    Some(live) => *live.get(*current_index)? as usize,
+                    None if *current_index < *count => *current_index,
+                    None => return None,
+                };
+                let row_offset = offset + row_length * physical;
+                // Stop at a row that would run past the end of the page.
+                if row_offset + row_length <= self.page_reader.header().page_length {
+                    Some(RowLocation::Here {
+                        offset: row_offset,
+                        length: *row_length,
+                    })
                 } else {
                     None
                 }
@@ -481,20 +502,7 @@ impl<R: Read + Seek> DataReader<R> {
 
     /// Advance to next row within current page
     fn advance_row(&mut self) {
-        self.current_row += 1;
-
-        match &mut self.page_state {
-            Some(PageState::Meta { current_index, .. }) => {
-                *current_index += 1;
-            }
-            Some(PageState::Data { current_index, .. }) => {
-                *current_index += 1;
-            }
-            Some(PageState::Mix { current_index, .. }) => {
-                *current_index += 1;
-            }
-            None => {}
-        }
+        self.advance_rows(1);
     }
 
     /// Advance to next page
@@ -534,6 +542,32 @@ impl<R: Read + Seek> DataReader<R> {
         }
     }
 
+    /// For a page flagged as having deleted rows, the physical indices of its live rows.
+    fn live_rows(
+        &self,
+        page_header: &PageHeader,
+        offset: usize,
+        page_row_count: usize,
+    ) -> Result<Option<Vec<u32>>> {
+        if !page_header.has_deleted_rows {
+            return Ok(None);
+        }
+        let row_length = self.metadata.row_length;
+        let bitmap_rows = page_row_count.min(self.metadata.total_row_count);
+        let rows = bitmap_rows.min(self.rows_that_fit(offset, row_length));
+        let header = self.page_reader.header();
+        live_rows_on_flagged_page(
+            self.page_reader.page_buffer(),
+            header.format,
+            header.endian,
+            offset,
+            bitmap_rows,
+            row_length,
+            rows,
+        )
+        .map(Some)
+    }
+
     /// Build page state based on page type
     fn build_page_state(&mut self, page_header: &PageHeader) -> Result<Option<PageState>> {
         let format = self.page_reader.header().format;
@@ -543,8 +577,21 @@ impl<R: Read + Seek> DataReader<R> {
         };
 
         match page_header.page_type {
-            PageType::Meta | PageType::Mix1 | PageType::Mix2 => {
-                // Extract data subheaders from META/MIX pages
+            PageType::Data => {
+                // DATA page: rows start at page_bit_offset + 8
+                let offset = page_bit_offset + 8;
+                let block_count = page_header.block_count as usize;
+                let live = self.live_rows(page_header, offset, block_count)?;
+                Ok(Some(PageState::Data {
+                    block_count,
+                    offset,
+                    row_length: self.metadata.row_length,
+                    current_index: 0,
+                    live,
+                }))
+            }
+            page_type if page_type.has_subheaders() => {
+                // Rows stored as subheaders (compressed files), on any subheader page.
                 let subheaders = self.page_reader.get_subheaders(page_header)?;
                 let data_subheaders = self.extract_data_subheaders(&subheaders)?;
 
@@ -555,13 +602,12 @@ impl<R: Read + Seek> DataReader<R> {
                     }));
                 }
 
-                // If it's a MIX page with no data subheaders, treat as MIX data page
-                if matches!(page_header.page_type, PageType::Mix1 | PageType::Mix2) {
+                // A MIX page with no row subheaders holds a block of rows after its table.
+                if page_type == PageType::Mix {
                     let integer_size = match format {
                         Format::Bit64 => 8,
                         Format::Bit32 => 4,
                     };
-                    // MIX pages: rows start immediately after the subheader table.
                     let offset = mix_page_data_start(
                         self.page_reader.page_buffer(),
                         self.page_reader.header().sas_release.as_str(),
@@ -572,109 +618,101 @@ impl<R: Read + Seek> DataReader<R> {
 
                     let row_count = self
                         .metadata
-                        .row_count
+                        .total_row_count
                         .min(self.metadata.mix_page_row_count);
+                    let live =
+                        self.live_rows(page_header, offset, self.metadata.mix_page_row_count)?;
 
                     return Ok(Some(PageState::Mix {
                         row_count,
                         offset,
                         row_length: self.metadata.row_length,
                         current_index: 0,
+                        live,
                     }));
                 }
 
                 Ok(None)
             }
-            PageType::Data => {
-                // DATA page: rows start at page_bit_offset + 8
-                Ok(Some(PageState::Data {
-                    block_count: page_header.block_count as usize,
-                    offset: page_bit_offset + 8,
-                    row_length: self.metadata.row_length,
-                    current_index: 0,
-                }))
-            }
             _ => Ok(None),
         }
     }
 
-    /// Extract data subheaders from page subheaders.
+    /// The rows stored as subheaders on this page, in file order (compressed files).
     ///
-    /// In compressed SAS files, data rows are stored as subheaders on META pages.
-    /// These pages also contain metadata subheaders (ROW_SIZE, COLUMN_SIZE, etc.)
-    /// with the same compression/type flags. We distinguish them by:
-    /// 1. Length: compressed data rows have length <= row_length
-    /// 2. Signature: known metadata subheaders have recognizable 4-byte signatures
+    /// Each subheader pointer's compression code says what it holds (ReadStat's
+    /// SAS_COMPRESSION_* codes): a row (compressed 4, or stored as is 0), a deleted row (5,
+    /// skipped), a reference to a row SAS moved to another page (3, read from there in this
+    /// row's place), or the moved row itself (2, 6, 9, 13; skipped where it lies, as it is
+    /// read through its reference). Code 0 is shared with metadata subheaders, so rows among
+    /// them are told apart by their length and signature.
     fn extract_data_subheaders(&self, subheaders: &[PageSubheader]) -> Result<Vec<DataSubheader>> {
         let mut data_subheaders = Vec::new();
+        if self.metadata.compression == Compression::None {
+            return Ok(data_subheaders);
+        }
         let page_buffer = self.page_reader.page_buffer();
         let row_length = self.metadata.row_length;
 
         for subheader in subheaders {
-            if self.metadata.compression == Compression::None {
-                continue;
+            match subheader.compression {
+                SH_NONE | SH_ROW => {}
+                SH_TRUNCATED | SH_DELETED_ROW | SH_NONE_MOVED | SH_ROW_MOVED
+                | SH_NONE_UNREFERENCED | SH_ROW_UNREFERENCED => continue,
+                SH_REFERENCE => {
+                    // offset holds the page index + 1, length the subheader index + 1
+                    if subheader.offset == 0 || subheader.length == 0 {
+                        return Err(Error::ParseError(
+                            "moved-row reference with no page or subheader".into(),
+                        ));
+                    }
+                    data_subheaders.push(DataSubheader {
+                        offset: 0,
+                        length: 0,
+                        compression: subheader.compression,
+                        moved_to: Some(MovedRow {
+                            page: subheader.offset - 1,
+                            subheader: subheader.length - 1,
+                        }),
+                    });
+                    continue;
+                }
+                code => {
+                    return Err(Error::ParseError(format!(
+                        "unsupported subheader compression code {code:#04x}"
+                    )));
+                }
             }
-            // Data subheaders have compression == 4 or 0, and type == 1
-            if !((subheader.compression == 4 || subheader.compression == 0)
-                && subheader.subheader_type == 1)
-            {
+            // Data subheaders have type == 1
+            if subheader.subheader_type != 1 {
                 continue;
             }
 
-            // A compressed or uncompressed data row can never be longer than row_length.
-            // Metadata subheaders (ROW_SIZE, COLUMN_TEXT, etc.) are typically much larger.
-            if subheader.length > row_length {
+            // A compressed row (4) is never longer than row_length, and a row stored as is (0)
+            // is exactly row_length, as ReadStat requires; metadata subheaders, which share
+            // code 0 and type 1 (AMD pages carry 0xFFFFFFFA ones), are told apart this way.
+            if subheader.length > row_length
+                || (subheader.compression == SH_NONE && subheader.length != row_length)
+            {
                 continue;
             }
 
             // Check against known metadata signatures. In compressed SAS files,
             // metadata and data subheaders share the same compression/type flags,
             // so we must check the actual content to distinguish them.
-            if subheader.length >= 4 && subheader.offset + 8 <= page_buffer.len() {
-                let sig8 = &page_buffer[subheader.offset..subheader.offset + 8];
-                if is_known_metadata_signature(sig8) {
+            let sig_len = if subheader.offset + 8 <= page_buffer.len() {
+                8
+            } else {
+                4
+            };
+            if subheader.length >= 4 && subheader.offset + sig_len <= page_buffer.len() {
+                let sig = &page_buffer[subheader.offset..subheader.offset + sig_len];
+                if is_known_metadata_signature(sig) {
                     continue;
                 }
-                // Skip the problematic [00, FC, FF, FF] pattern found in some compressed files
-                // This appears to be metadata/padding, not actual data
-                if sig8.len() >= 4
-                    && sig8[0] == 0x00
-                    && sig8[1] == 0xFC
-                    && sig8[2] == 0xFF
-                    && sig8[3] == 0xFF
-                {
-                    continue;
-                }
-                // Skip [FF, FF, FC, 00] pattern - another metadata variant seen in test12
-                if sig8.len() >= 4
-                    && sig8[0] == 0xFF
-                    && sig8[1] == 0xFF
-                    && sig8[2] == 0xFC
-                    && sig8[3] == 0x00
-                {
-                    continue;
-                }
-            } else if subheader.length >= 4 && subheader.offset + 4 <= page_buffer.len() {
-                let sig4 = &page_buffer[subheader.offset..subheader.offset + 4];
-                if is_known_metadata_signature(sig4) {
-                    continue;
-                }
-                // Skip the problematic [00, FC, FF, FF] pattern
-                if sig4.len() >= 4
-                    && sig4[0] == 0x00
-                    && sig4[1] == 0xFC
-                    && sig4[2] == 0xFF
-                    && sig4[3] == 0xFF
-                {
-                    continue;
-                }
-                // Skip [FF, FF, FC, 00] pattern
-                if sig4.len() >= 4
-                    && sig4[0] == 0xFF
-                    && sig4[1] == 0xFF
-                    && sig4[2] == 0xFC
-                    && sig4[3] == 0x00
-                {
+                // Skip the [00, FC, FF, FF] and [FF, FF, FC, 00] patterns found in some
+                // compressed files (metadata/padding, not rows; seen in test12)
+                if sig[..4] == [0x00, 0xFC, 0xFF, 0xFF] || sig[..4] == [0xFF, 0xFF, 0xFC, 0x00] {
                     continue;
                 }
             }
@@ -683,38 +721,60 @@ impl<R: Read + Seek> DataReader<R> {
                 offset: subheader.offset,
                 length: subheader.length,
                 compression: subheader.compression,
+                moved_to: None,
             });
         }
 
         Ok(data_subheaders)
     }
+}
 
-    /// Extract row bytes from page buffer
-    fn extract_row_bytes(
-        &mut self,
-        offset: usize,
-        length: usize,
-        _compression: u8,
-    ) -> Result<RowBytes> {
-        let page_buffer = self.page_reader.page_buffer();
-
-        // Validate bounds
-        if offset + length > page_buffer.len() {
-            return Err(Error::BufferOutOfBounds { offset, length });
-        }
-
-        let raw_bytes = &page_buffer[offset..offset + length];
-
-        // Match C++ behavior: decompress whenever length < row_length,
-        // regardless of the compression flag. The compression flag on the
-        // subheader isn't a reliable indicator; length comparison is.
-        if length < self.metadata.row_length {
-            self.decompressor
-                .decompress(raw_bytes, self.metadata.row_length)
-        } else {
-            Ok(raw_bytes.to_vec())
-        }
+/// Indices of the rows on a DATA or MIX page whose page type carries the deleted-rows flag
+/// that are not deleted.
+///
+/// SAS marks deleted rows in a bitmap after the page's row block: it starts
+/// `row_count * row_length` bytes after the first row, plus the page's unused-bytes count
+/// (page offset 24 in 64-bit files, 12 in 32-bit ones), one bit per row, most significant bit
+/// first. `row_count` is the page's row count (the page header's for DATA pages, the
+/// ROW_SIZE subheader's for MIX pages), capped at the file's total rows, as ReadStat does.
+/// `rows` (at most `row_count`) is how many rows to report on.
+pub(crate) fn live_rows_on_flagged_page(
+    page: &[u8],
+    format: Format,
+    endian: Endian,
+    data_start: usize,
+    row_count: usize,
+    row_length: usize,
+    rows: usize,
+) -> Result<Vec<u32>> {
+    let (at, n) = match format {
+        Format::Bit64 => (24usize, 8usize),
+        Format::Bit32 => (12usize, 4usize),
+    };
+    let field = page
+        .get(at..at + n)
+        .ok_or(Error::BufferOutOfBounds { offset: at, length: n })?;
+    let mut unused = 0u64;
+    for k in 0..n {
+        let byte = match endian {
+            Endian::Little => field[n - 1 - k],
+            Endian::Big => field[k],
+        };
+        unused = (unused << 8) | byte as u64;
     }
+    let bitmap_start = (data_start as u64)
+        .checked_add(row_count as u64 * row_length as u64)
+        .and_then(|v| v.checked_add(unused))
+        .filter(|&v| v <= page.len() as u64)
+        .ok_or_else(|| Error::ParseError("deleted-row bitmap lies outside its page".into()))?
+        as usize;
+    let bitmap = page
+        .get(bitmap_start..bitmap_start + row_count.div_ceil(8))
+        .ok_or_else(|| Error::ParseError("deleted-row bitmap lies outside its page".into()))?;
+    Ok((0..rows.min(row_count))
+        .filter(|&i| bitmap[i / 8] & (0x80 >> (i % 8)) == 0)
+        .map(|i| i as u32)
+        .collect())
 }
 
 pub(crate) fn is_stat_transfer_release(release: &str) -> bool {

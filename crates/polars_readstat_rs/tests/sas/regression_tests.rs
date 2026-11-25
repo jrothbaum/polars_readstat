@@ -1,8 +1,7 @@
-mod common;
 
 use polars_readstat_rs::reader::Sas7bdatReader;
 use polars_readstat_rs::{readstat_batch_iter, scan_sas7bdat, ScanOptions};
-use common::{test_data_path, all_sas_files};
+use crate::common::{test_data_path, all_sas_files};
 use polars::prelude::*;
 
 fn collect_via_batch_iter(path: &std::path::Path, threads: usize, batch_size: usize) -> DataFrame {
@@ -13,8 +12,12 @@ fn collect_via_batch_iter(path: &std::path::Path, threads: usize, batch_size: us
     };
     let iter = readstat_batch_iter(path, Some(opts), None, None, None, Some(batch_size))
         .expect("failed to create iter");
-    let frames: Vec<DataFrame> = iter.map(|r| r.expect("batch error")).collect();
-    polars::functions::concat_df_diagonal(&frames).expect("concat failed")
+    let mut frames = iter.map(|r| r.expect("batch error"));
+    let mut df = frames.next().unwrap_or_default();
+    for frame in frames {
+        df.vstack_mut(&frame).expect("concat failed");
+    }
+    df
 }
 
 /// Parallel SAS reader must produce the same data regardless of thread count or batch size.

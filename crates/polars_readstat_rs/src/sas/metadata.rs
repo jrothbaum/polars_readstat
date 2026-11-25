@@ -148,7 +148,7 @@ fn read_metadata_inner<R: Read + Seek>(
         // For MIX pages, count data rows they contain (uncompressed files only).
         // Do this AFTER processing subheaders so row_length / mix_page_row_count
         // are available even when the ROW_SIZE subheader lives on this same page.
-        if matches!(page_header.page_type, PageType::Mix1 | PageType::Mix2) {
+        if matches!(page_header.page_type, PageType::Mix) {
             if let (Some(row_length), Some(mix_row_count)) = (
                 metadata_builder.row_length,
                 metadata_builder.mix_page_row_count,
@@ -163,7 +163,25 @@ fn read_metadata_inner<R: Read + Seek>(
                     );
                     let available = header.page_length.saturating_sub(data_start);
                     let max_fit = available / row_length;
-                    let added = max_fit.min(mix_row_count);
+                    // As the DataReader reads the page: the ROW_SIZE page row count, capped
+                    // at the file's rows and at what fits, less deleted rows.
+                    let total_rows = metadata_builder.row_count.unwrap_or(mix_row_count);
+                    let bitmap_rows = mix_row_count.min(total_rows);
+                    let rows = max_fit.min(bitmap_rows);
+                    let added = if page_header.has_deleted_rows {
+                        crate::data::live_rows_on_flagged_page(
+                            page_buffer,
+                            format,
+                            endian,
+                            data_start,
+                            bitmap_rows,
+                            row_length,
+                            rows,
+                        )?
+                        .len()
+                    } else {
+                        rows
+                    };
                     mix_data_rows += added;
                 }
             }
@@ -173,7 +191,7 @@ fn read_metadata_inner<R: Read + Seek>(
         // data subheaders. Do this after subheader processing so row_length is known.
         if first_data_page.is_none()
             && metadata_builder.compression != Compression::None
-            && !matches!(page_header.page_type, PageType::Mix1 | PageType::Mix2)
+            && !matches!(page_header.page_type, PageType::Mix)
         {
             if let Some(row_length) = metadata_builder.row_length.filter(|&v| v > 0) {
                 if page_has_data_subheaders(&subheaders, page_buffer, row_length) {
@@ -215,7 +233,7 @@ fn is_fast_stop_on_mix_page(
 ) -> bool {
     use crate::types::PageType;
 
-    if !matches!(page_header.page_type, PageType::Mix1 | PageType::Mix2) {
+    if !matches!(page_header.page_type, PageType::Mix) {
         return false;
     }
 
@@ -253,6 +271,10 @@ fn is_fast_stop_on_mix_page(
 }
 
 fn is_mix_data_subheader(subheader: &PageSubheader, page_buffer: &[u8], row_length: usize) -> bool {
+    // a reference to a row SAS moved to another page is read in this page's place
+    if subheader.compression == 3 {
+        return true;
+    }
     if subheader.compression != 0 && subheader.compression != 4 {
         return false;
     }
@@ -310,11 +332,7 @@ fn page_has_data_subheaders(
 }
 
 fn is_metadata_page_type(page_header: &PageHeader) -> bool {
-    use crate::types::PageType;
-    matches!(
-        page_header.page_type,
-        PageType::Meta | PageType::Mix1 | PageType::Mix2 | PageType::Amd | PageType::Metc
-    )
+    page_header.page_type.has_subheaders()
 }
 
 /// Helper struct for building metadata incrementally
@@ -322,6 +340,7 @@ struct MetadataBuilder {
     encoding: &'static encoding_rs::Encoding,
     encoding_byte: u8,
     row_count: Option<usize>,
+    deleted_row_count: Option<usize>,
     row_length: Option<usize>,
     mix_page_row_count: Option<usize>,
     column_count: Option<usize>,
@@ -378,6 +397,7 @@ impl MetadataBuilder {
             encoding: encoding::get_encoding(encoding_byte),
             encoding_byte,
             row_count: None,
+            deleted_row_count: None,
             row_length: None,
             mix_page_row_count: None,
             column_count: None,
@@ -453,6 +473,8 @@ impl MetadataBuilder {
 
         let row_count = buf.get_integer(offset + 6 * integer_size, format)? as usize;
         self.row_count = Some(row_count);
+        let deleted_row_count = buf.get_integer(offset + 7 * integer_size, format)? as usize;
+        self.deleted_row_count = Some(deleted_row_count);
 
         let col_count_p1 = buf.get_integer(offset + 9 * integer_size, format)? as usize;
         let col_count_p2 = buf.get_integer(offset + 10 * integer_size, format)? as usize;
@@ -804,10 +826,17 @@ impl MetadataBuilder {
 
     fn build(self) -> Result<Metadata> {
         let resolved_column_count = self.resolve_column_count();
-        let row_count = self.row_count.ok_or(Error::MissingMetadata)?;
+        let total_row_count = self.row_count.ok_or(Error::MissingMetadata)?;
+        let deleted_row_count = self.deleted_row_count.unwrap_or(0);
+        if deleted_row_count > total_row_count {
+            return Err(Error::ParseError(format!(
+                "header records {deleted_row_count} deleted rows but only {total_row_count} rows"
+            )));
+        }
+        let row_count = total_row_count - deleted_row_count;
         let row_length = self.row_length.ok_or(Error::MissingMetadata)?;
         let column_count = resolved_column_count.ok_or(Error::MissingMetadata)?;
-        let mix_page_row_count = self.mix_page_row_count.unwrap_or(row_count);
+        let mix_page_row_count = self.mix_page_row_count.unwrap_or(total_row_count);
 
         let mut columns = vec![ColumnBuilder::default(); column_count];
 
@@ -880,6 +909,8 @@ impl MetadataBuilder {
         Ok(Metadata {
             compression: self.compression,
             row_count,
+            total_row_count,
+            deleted_row_count,
             row_length,
             mix_page_row_count,
             column_count,

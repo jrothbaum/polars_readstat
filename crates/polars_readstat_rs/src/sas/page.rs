@@ -1,11 +1,13 @@
 use crate::error::Result;
-use crate::types::{Endian, Format, Header, PageType};
-use std::io::{Read, Seek};
+use crate::types::{Endian, Format, Header, PageType, PAGE_FLAG_DELETED_ROWS};
+use std::io::{Read, Seek, SeekFrom};
 
 /// Page header containing metadata about the page
 #[derive(Debug, Clone)]
 pub struct PageHeader {
     pub page_type: PageType,
+    /// The page-type field's deleted-rows flag (DATA/MIX pages).
+    pub has_deleted_rows: bool,
     pub block_count: u16,
     pub subheader_count: u16,
 }
@@ -73,6 +75,7 @@ impl<R: Read + Seek> PageReader<R> {
 
         Ok(PageHeader {
             page_type,
+            has_deleted_rows: page_type_val & PAGE_FLAG_DELETED_ROWS != 0,
             block_count,
             subheader_count,
         })
@@ -105,6 +108,51 @@ impl<R: Read + Seek> PageReader<R> {
         }
 
         Ok(subheaders)
+    }
+
+    /// Read page `index` (0-based, after the file header) into `out`, leaving the reader where
+    /// it was. Used for rows SAS moved to another page.
+    pub fn read_page_at(&mut self, index: usize, out: &mut Vec<u8>) -> Result<()> {
+        let pos = self.reader.stream_position()?;
+        let start =
+            self.header.header_length as u64 + index as u64 * self.header.page_length as u64;
+        self.reader.seek(SeekFrom::Start(start))?;
+        out.resize(self.header.page_length, 0);
+        let read = self.reader.read_exact(out);
+        self.reader.seek(SeekFrom::Start(pos))?;
+        read?;
+        Ok(())
+    }
+
+    /// Subheader pointer `index` of `page` (any page buffer, not only the current one), with
+    /// empty pointers included.
+    pub fn subheader_pointer(&self, page: &[u8], index: usize) -> Result<PageSubheader> {
+        let at = self.page_bit_offset + 8 + index * self.subheader_size;
+        let int = |o: usize| -> Result<u64> {
+            let n = self.integer_size;
+            let b = page
+                .get(o..o + n)
+                .ok_or(crate::error::Error::BufferOutOfBounds { offset: o, length: n })?;
+            let mut v = 0u64;
+            for k in 0..n {
+                let byte = match self.endian {
+                    Endian::Little => b[n - 1 - k],
+                    Endian::Big => b[k],
+                };
+                v = (v << 8) | byte as u64;
+            }
+            Ok(v)
+        };
+        let flags = at + 2 * self.integer_size;
+        let bytes = page
+            .get(flags..flags + 2)
+            .ok_or(crate::error::Error::BufferOutOfBounds { offset: flags, length: 2 })?;
+        Ok(PageSubheader {
+            offset: int(at)? as usize,
+            length: int(at + self.integer_size)? as usize,
+            compression: bytes[0],
+            subheader_type: bytes[1],
+        })
     }
 
     /// Get reference to page buffer

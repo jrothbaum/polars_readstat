@@ -1,13 +1,12 @@
-mod common;
 
 use polars_readstat_rs::reader::Sas7bdatReader;
-use common::{all_sas_files, test_data_path};
+use crate::common::{all_sas_files, test_data_path};
 use polars::prelude::DataFrame;
 
 fn assert_same_df(left: &DataFrame, right: &DataFrame) {
     assert_eq!(left.shape(), right.shape(), "shape mismatch");
     assert_eq!(left.get_column_names(), right.get_column_names(), "column mismatch");
-    assert_eq!(left.get_columns(), right.get_columns(), "data mismatch");
+    assert!(left.equals_missing(right), "data mismatch");
 }
 
 #[test]

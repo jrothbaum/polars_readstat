@@ -81,7 +81,7 @@ mod tests {
         for col in df.columns() {
             if *col.dtype() == DataType::Float64 {
                 if let Ok(ca) = col.f64() {
-                    sum += ca.into_iter().flatten().sum::<f64>();
+                    sum += ca.iter().flatten().sum::<f64>();
                 }
             }
         }

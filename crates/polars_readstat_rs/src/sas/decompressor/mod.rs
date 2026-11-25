@@ -23,14 +23,6 @@ impl Decompressor {
         }
     }
 
-    pub fn decompress(&mut self, input: &[u8], expected_output_size: usize) -> Result<Vec<u8>> {
-        match self {
-            Self::None => Ok(input.to_vec()),
-            Self::Rle(d) => d.decompress(input, expected_output_size),
-            Self::Rdc(d) => d.decompress(input, expected_output_size),
-        }
-    }
-
     /// Decompress into a pre-allocated buffer, avoiding allocation.
     /// The buffer must be at least `expected_output_size` bytes.
     pub fn decompress_into(&mut self, input: &[u8], output: &mut [u8]) -> Result<()> {

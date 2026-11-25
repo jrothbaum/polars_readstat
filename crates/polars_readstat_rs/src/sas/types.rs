@@ -26,28 +26,51 @@ pub enum Platform {
     Unknown,
 }
 
+/// What a page holds. The page-type field's high byte is the kind; its low byte carries
+/// flags, such as [`PAGE_FLAG_DELETED_ROWS`] (so 0x0180 is a DATA page and 0x0280 a MIX page,
+/// each with some rows deleted). Classified as SAS and ReadStat do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageType {
-    Meta, // 0
-    Data, // 256
-    Mix1, // 512
-    Mix2, // 640
-    Amd,  // 1024
-    Metc, // 16384
-    Invalid,
+    /// 0x0000: subheaders (metadata, and rows in compressed files)
+    Meta,
+    /// 0x0100: a block of rows
+    Data,
+    /// 0x0200: subheaders followed by a block of rows
+    Mix,
+    /// 0x0400: subheaders added after the data ("amendment")
+    Amd,
+    /// 0x4000: more subheaders; compressed files can continue their rows here
+    Meta2,
+    /// 0x9000 / 0x8000: compression and index pages, which hold no rows
+    Comp,
+    /// Any other kind: searched for subheaders, as ReadStat does
+    Other,
 }
+
+/// Page-type flag: some rows on this DATA/MIX page are deleted; a bitmap after the rows
+/// marks which.
+pub const PAGE_FLAG_DELETED_ROWS: u16 = 0x0080;
 
 impl PageType {
     pub fn from_u16(value: u16) -> Self {
-        match value {
-            0 => Self::Meta,
-            256 => Self::Data,
-            512 => Self::Mix1,
-            640 => Self::Mix2,
-            1024 => Self::Amd,
-            16384 => Self::Metc,
-            _ => Self::Invalid,
+        if value & 0x0F00 == 0x0100 {
+            return Self::Data;
         }
+        if value & 0x9000 != 0 {
+            return Self::Comp;
+        }
+        match value & 0x0F00 {
+            0x0200 => Self::Mix,
+            0x0400 => Self::Amd,
+            0x0000 if value & 0x4000 != 0 => Self::Meta2,
+            0x0000 => Self::Meta,
+            _ => Self::Other,
+        }
+    }
+
+    /// Pages carrying a subheader table: everything but DATA and COMP pages.
+    pub fn has_subheaders(self) -> bool {
+        !matches!(self, Self::Data | Self::Comp)
     }
 }
 
@@ -100,7 +123,12 @@ pub struct PageIndex {
 #[derive(Debug, Clone)]
 pub struct Metadata {
     pub compression: Compression,
+    /// Rows in the dataset: rows in the file less those SAS marked deleted.
     pub row_count: usize,
+    /// Rows physically in the file, deleted ones included.
+    pub total_row_count: usize,
+    /// Rows marked deleted, which are skipped.
+    pub deleted_row_count: usize,
     pub row_length: usize,
     pub mix_page_row_count: usize,
     pub column_count: usize,

@@ -39,6 +39,7 @@ impl RleDecompressor {
         self.decompress_to_slice(input, output)
     }
 
+    #[cfg(test)]
     pub fn decompress(&mut self, input: &[u8], expected_output_size: usize) -> Result<Vec<u8>> {
         let mut output = vec![C_NULL; expected_output_size];
         self.decompress_to_slice(input, &mut output)?;

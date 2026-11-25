@@ -17,9 +17,11 @@ pub fn all_sas_files() -> Vec<PathBuf> {
         env!("CARGO_MANIFEST_DIR")
     );
 
+    // too_big holds multi-GB files: reading them all would exhaust memory
     glob(&pattern)
         .expect("Failed to read glob pattern")
         .filter_map(Result::ok)
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "too_big"))
         .collect()
 }
 

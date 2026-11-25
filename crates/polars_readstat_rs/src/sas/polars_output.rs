@@ -917,7 +917,103 @@ pub(crate) fn sas_batch_iter(
     )
 }
 
+/// Batches of the rows `[offset, offset + n_rows)`, checked against the row count the file's
+/// header records: a file that yields fewer rows (truncated, or rows the reader could not
+/// find) or more is an error, never a silently different result.
 pub(crate) fn sas_batch_iter_with_reader(
+    reader: &Sas7bdatReader,
+    source: Arc<dyn ReadSource>,
+    threads: Option<usize>,
+    missing_string_as_null: bool,
+    chunk_size: Option<usize>,
+    col_indices: Option<Vec<usize>>,
+    offset: usize,
+    n_rows: Option<usize>,
+    preserve_order: bool,
+    row_index_name: Option<String>,
+    informative_nulls: Option<crate::InformativeNullOpts>,
+) -> PolarsResult<SasBatchIter> {
+    let max_rows = reader.metadata().row_count.saturating_sub(offset);
+    // A dataset without variables yields no rows, whatever its header's row count.
+    let expected = if reader.metadata().row_length == 0 {
+        0
+    } else {
+        n_rows.unwrap_or(max_rows).min(max_rows)
+    };
+    let inner = sas_batch_iter_unchecked(
+        reader,
+        source,
+        threads,
+        missing_string_as_null,
+        chunk_size,
+        col_indices,
+        offset,
+        n_rows,
+        preserve_order,
+        row_index_name,
+        informative_nulls,
+    )?;
+    Ok(Box::new(RowCountCheckedIter {
+        inner,
+        expected,
+        seen: 0,
+        done: false,
+        header_rows: reader.metadata().row_count,
+    }))
+}
+
+/// Errors when the batches add up to other than `expected` rows.
+struct RowCountCheckedIter {
+    inner: SasBatchIter,
+    expected: usize,
+    seen: usize,
+    done: bool,
+    header_rows: usize,
+}
+
+impl Iterator for RowCountCheckedIter {
+    type Item = PolarsResult<DataFrame>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        let mismatch = |found: &str| {
+            PolarsError::ComputeError(
+                format!(
+                    "SAS file: expected {} rows (the header records {} rows), {found}; \
+                     the file may be truncated or damaged",
+                    self.expected, self.header_rows
+                )
+                .into(),
+            )
+        };
+        match self.inner.next() {
+            Some(Ok(df)) => {
+                self.seen += df.height();
+                if self.seen > self.expected {
+                    self.done = true;
+                    return Some(Err(mismatch("but the file holds more")));
+                }
+                Some(Ok(df))
+            }
+            Some(Err(e)) => {
+                self.done = true;
+                Some(Err(e))
+            }
+            None => {
+                self.done = true;
+                if self.seen < self.expected {
+                    Some(Err(mismatch(&format!("found {}", self.seen))))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+fn sas_batch_iter_unchecked(
     reader: &Sas7bdatReader,
     source: Arc<dyn ReadSource>,
     threads: Option<usize>,
